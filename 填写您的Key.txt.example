@@ -1,0 +1,14 @@
+# 请在下方填入您的 API Key
+# 如果您使用 OpenAI 官方 Key，只需填写第一行。
+# 如果您使用国内模型（如 DeepSeek），请修改 Base URL 和 Model。
+
+OPENAI_API_KEY=请将您的Key粘贴在这里
+
+# 如果您使用 Google Gemini，请填写下面这行 (OpenAI Key 留空即可)
+GEMINI_API_KEY=请将您的Key粘贴在这里
+
+# 选填配置 (如果您使用默认 OpenAI，无需修改以下内容)
+OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_MODEL=deepseek-reasoner
+# 如果使用 Gemini，建议模型填写 gemini-1.5-flash 或 gemini-1.5-pro
+# OPENAI_MODEL=gemini-1.5-flash
