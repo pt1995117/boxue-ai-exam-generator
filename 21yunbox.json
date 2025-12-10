@@ -1,0 +1,18 @@
+{
+  "name": "boxue-ai-exam-generator",
+  "description": "搏学AI出题生成器 - 基于LangGraph多智能体协同的智能出题系统",
+  "type": "streamlit",
+  "main": "app.py",
+  "python": "3.10",
+  "build": {
+    "commands": [
+      "pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple"
+    ]
+  },
+  "env": {
+    "OPENAI_API_KEY": "",
+    "GEMINI_API_KEY": "",
+    "OPENAI_BASE_URL": "https://api.deepseek.com",
+    "OPENAI_MODEL": "deepseek-chat"
+  }
+}
