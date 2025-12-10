@@ -17,18 +17,36 @@ st.markdown("基于 **LangGraph 多智能体协同 + 自适应反馈循环** 的
 with st.sidebar:
     st.header("⚙️ 配置")
     
-    # Load API Key from file
-    config_path = "填写您的Key.txt"
+    # Load API Key from Streamlit Secrets (for cloud deployment) or file (for local)
     default_openai_key = ""
     default_gemini_key = ""
+    default_base_url = "https://api.deepseek.com"
+    default_model = "deepseek-chat"
     
-    if os.path.exists(config_path):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if "OPENAI_API_KEY=" in line and "请将您的Key粘贴在这里" not in line:
-                    default_openai_key = line.split("=", 1)[1].strip()
-                if "GEMINI_API_KEY=" in line and "请将您的Key粘贴在这里" not in line:
-                    default_gemini_key = line.split("=", 1)[1].strip()
+    # Try to load from Streamlit Secrets first (for Streamlit Cloud)
+    try:
+        if hasattr(st, 'secrets') and st.secrets:
+            default_openai_key = st.secrets.get("OPENAI_API_KEY", "")
+            default_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+            default_base_url = st.secrets.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+            default_model = st.secrets.get("OPENAI_MODEL", "deepseek-chat")
+    except Exception:
+        pass
+    
+    # Fallback to file if secrets not available
+    if not default_openai_key and not default_gemini_key:
+        config_path = "填写您的Key.txt"
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if "OPENAI_API_KEY=" in line and "请将您的Key粘贴在这里" not in line:
+                        default_openai_key = line.split("=", 1)[1].strip()
+                    if "GEMINI_API_KEY=" in line and "请将您的Key粘贴在这里" not in line:
+                        default_gemini_key = line.split("=", 1)[1].strip()
+                    if "OPENAI_BASE_URL=" in line:
+                        default_base_url = line.split("=", 1)[1].strip()
+                    if "OPENAI_MODEL=" in line:
+                        default_model = line.split("=", 1)[1].strip()
     
     provider = st.radio("选择模型提供商", ["OpenAI / DeepSeek", "Google Gemini"], index=0)  # 默认选中 DeepSeek
     
@@ -45,8 +63,8 @@ with st.sidebar:
         base_url = "" # Not needed for Gemini
     else:
         api_key = st.text_input("OpenAI API Key", value=default_openai_key, type="password")
-        base_url = st.text_input("Base URL", value="https://api.deepseek.com")  # DeepSeek API
-        model_name = st.text_input("模型名称", value="deepseek-chat", help="所有节点统一使用此模型，推荐使用 deepseek-chat 速度更快")
+        base_url = st.text_input("Base URL", value=default_base_url)  # DeepSeek API
+        model_name = st.text_input("模型名称", value=default_model, help="所有节点统一使用此模型，推荐使用 deepseek-chat 速度更快")
     
     # Proxy Config
     st.divider()
