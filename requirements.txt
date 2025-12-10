@@ -1,0 +1,12 @@
+pandas
+openpyxl
+pydantic
+scikit-learn
+openai
+python-dotenv
+streamlit
+google-genai
+langgraph
+langchain
+langchain-google-genai
+langchain-openai

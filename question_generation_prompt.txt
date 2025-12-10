@@ -1,0 +1,62 @@
+
+# Role
+You are an expert exam question setter for the "Real Estate Broker Professional Exam".
+Your goal is to create a high-quality exam question based *strictly* on the provided [Reference Material].
+The question must match the style, format, and logic of the [Few-Shot Examples].
+
+# Reference Material
+【Path】: 第二篇 签前服务 > 第一章 房屋信息 > 第三节 建筑结构与设施 > 一、建筑结构分类 > （3）钢筋混凝土结构
+【Content】:
+主要承重构件用钢筋混凝土制成，内部空间可改造性较强，抗震性能较好，使用寿命较长，是当前住宅的主要建筑结构。
+
+# Few-Shot Examples (Follow this style!)
+
+### Example 1
+**Question**: 2023年贝壳将战略升级为“一体三翼”，房产经纪作为“一体”，三翼分别为：整装、惠居和贝好家。（ ）
+**Options**:
+A. 正确
+B. 错误
+C. nan
+D. nan
+**Answer**: Y
+**Explanation**: 1、教材原文：贝壳战略（了解） 2023年贝壳将战略升级为“一体三翼”，提出“翻越第二座山”，希望成为科技驱动的一站式新居住服务平台，帮消费者安居，助服务者乐业，构建和谐生态，推动行业进步，迈向美好组织。房产经纪作为“一体”，以ACN为基石，让房屋交易不再难。三翼分别为：（一）第一翼：整装；（二）第二翼：惠居；（三）第三翼：贝好家 。 2、试题分析：根据教材原文可知，贝壳的战略“一体三翼”中的三翼为：整装、惠居和贝好家，题干描述正确。 3、结论：本题答案为正确。
+**Difficulty**: 0.875
+---
+
+### Example 2
+**Question**: 贝壳七面旗帜是从链家到贝壳赢的关键，其中平凡人的协作是指我们的经营方式，是努力帮助平凡人实现不平凡的成绩。（ ）
+**Options**:
+A. 正确
+B. 错误
+C. nan
+D. nan
+**Answer**: Y
+**Explanation**: 1、教材原文：（3）平凡人的协作：我们的经营方式，是努力帮助平凡人实现不平凡的成绩。 2、试题分析：努力帮助平凡人实现不平凡的成绩，是平凡人协作的内容，题干表述正确。 3、试题结论：本题答案是正确。
+**Difficulty**: 0.875
+---
+
+### Example 3
+**Question**: 贝壳的使命是“有尊严的服务者、更美好的居住”。（ ）
+**Options**:
+A. 正确
+B. 错误
+C. nan
+D. nan
+**Answer**: Y
+**Explanation**: 1、教材原文。 贝壳的使命（掌握） （一）使命 ：有尊严的服务者、更美好的居住。 2、试题分析。依据原文，题干描述正确。 3、结论。本题答案为正确。
+**Difficulty**: 0.875
+---
+
+# Task
+Generate 1 new single-choice question based on the [Reference Material].
+
+# Requirements
+1.  **Accuracy**: The question must be directly answerable from the Reference Material. Do not use outside knowledge.
+2.  **Distractors**: The wrong options must be plausible but clearly incorrect based on the text. Design them to test common misunderstandings (e.g., swapping conditions, wrong numbers).
+3.  **Explanation Format**: You MUST strictly follow this format:
+    1、教材原文。 [Quote the exact sentence]
+    2、试题分析。 [Explain why the answer is right and why others are wrong]
+    3、结论。 [State the final answer]
+4.  **Output Format**: Provide the output as a JSON object with keys: "题干", "选项1", "选项2", "选项3", "选项4", "正确答案", "解析", "难度值", "考点".
+
+# Output
