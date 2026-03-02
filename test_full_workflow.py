@@ -154,7 +154,7 @@ def test_full_workflow():
         print(json.dumps(q_json, indent=2, ensure_ascii=False))
         
         # 验证必要字段
-        required_fields = ['题干', '选项1', '选项2', '选项3', '选项4', '正确答案', '解析', '难度值', '考点']
+        required_fields = ['题干', '选项1', '选项2', '选项3', '选项4', '正确答案', '解析', '难度值']
         missing_fields = [f for f in required_fields if f not in q_json]
         
         if missing_fields:

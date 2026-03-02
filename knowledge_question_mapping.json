@@ -1,0 +1,4485 @@
+{
+  "10": {
+    "完整路径": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第一节  贝壳发展历程 > （三）第三翼：贝好家",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 0,
+        "confidence": 0.765,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.765）",
+          "bge_score": 0.765
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "12": {
+    "完整路径": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第二节  贝壳文化理念 > 二、贝壳的使命",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 2,
+        "confidence": 0.791,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.791）",
+          "bge_score": 0.791
+        }
+      },
+      {
+        "question_index": 102,
+        "confidence": 0.778,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.778）",
+          "bge_score": 0.778
+        }
+      },
+      {
+        "question_index": 204,
+        "confidence": 0.778,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.778）",
+          "bge_score": 0.778
+        }
+      },
+      {
+        "question_index": 306,
+        "confidence": 0.778,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.778）",
+          "bge_score": 0.778
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "40": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第二节  常见住宅分类 > 三、低层住宅、多层住宅、高层住宅和超高层住宅",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 3,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅"
+        }
+      },
+      {
+        "question_index": 105,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅"
+        }
+      },
+      {
+        "question_index": 281,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅"
+        }
+      },
+      {
+        "question_index": 309,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅"
+        }
+      },
+      {
+        "question_index": 383,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/低层住宅/多层住宅/高层住宅和超高层住宅"
+        }
+      }
+    ],
+    "total_matches": 5,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "42": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第二节  常见住宅分类 > 五、平层住宅、错层住宅、复式住宅和跃层住宅",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 4,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/平层住宅/错层住宅/复式住宅和跃层住宅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/平层住宅/错层住宅/复式住宅和跃层住宅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/平层住宅/错层住宅/复式住宅和跃层住宅"
+        }
+      },
+      {
+        "question_index": 144,
+        "confidence": 0.807,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.807）",
+          "bge_score": 0.807
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "46": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第三节  建筑结构与设施 > 三、设备层",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 5,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/建筑结构与设施/设备层",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/建筑结构与设施/设备层",
+          "q_gps": "签前服务/房屋信息/建筑结构与设施/设备层"
+        }
+      },
+      {
+        "question_index": 310,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/建筑结构与设施/设备层",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/建筑结构与设施/设备层",
+          "q_gps": "签前服务/房屋信息/建筑结构与设施/设备层"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "48": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 一、建筑面积及其组成",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 6,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成"
+        }
+      },
+      {
+        "question_index": 45,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成"
+        }
+      },
+      {
+        "question_index": 350,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/建筑面积及其组成"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "50": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 三、层高与室内净高",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 7,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/层高与室内净高",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/层高与室内净高",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/层高与室内净高"
+        }
+      },
+      {
+        "question_index": 207,
+        "confidence": 0.793,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.793）",
+          "bge_score": 0.793
+        }
+      },
+      {
+        "question_index": 348,
+        "confidence": 0.774,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.774）",
+          "bge_score": 0.774
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "52": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 五、容积率",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 8,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/容积率",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/容积率",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/容积率"
+        }
+      },
+      {
+        "question_index": 106,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/容积率",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/容积率",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/容积率"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "61": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第一节  房源委托 > （三）出售委托协议失效",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 9,
+        "confidence": 0.845,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.845）",
+          "bge_score": 0.845
+        }
+      },
+      {
+        "question_index": 312,
+        "confidence": 0.818,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.818）",
+          "bge_score": 0.818
+        }
+      },
+      {
+        "question_index": 209,
+        "confidence": 0.786,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.786）",
+          "bge_score": 0.786
+        }
+      },
+      {
+        "question_index": 210,
+        "confidence": 0.756,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.756）",
+          "bge_score": 0.756
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "77": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第三节  房源聚焦 > 二、识别业主售房急迫性",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 10,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源聚焦/识别业主售房急迫性",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源聚焦/识别业主售房急迫性",
+          "q_gps": "签前服务/房源管理/房源聚焦/识别业主售房急迫性"
+        }
+      },
+      {
+        "question_index": 314,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源聚焦/识别业主售房急迫性",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源聚焦/识别业主售房急迫性",
+          "q_gps": "签前服务/房源管理/房源聚焦/识别业主售房急迫性"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "93": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第四节  房源规则 > （二）必须核销的房源",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 11,
+        "confidence": 0.814,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.814）",
+          "bge_score": 0.814
+        }
+      },
+      {
+        "question_index": 211,
+        "confidence": 0.8,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.8）",
+          "bge_score": 0.8
+        }
+      },
+      {
+        "question_index": 149,
+        "confidence": 0.798,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.798）",
+          "bge_score": 0.798
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "108": {
+    "完整路径": "第二篇  签前服务 > 第三章  客源管理 > 第二节  客源维护 > 五、客源相关产品",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 12,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源维护/客源相关产品-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源维护/客源相关产品",
+          "q_gps": "签前服务/客源管理/客源维护/客源相关产品-需要核实"
+        }
+      },
+      {
+        "question_index": 108,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源维护/客源相关产品-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源维护/客源相关产品",
+          "q_gps": "签前服务/客源管理/客源维护/客源相关产品-需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "137": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第二节  常见合同备件 > 四、房屋权属证明",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 13,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/房屋权属证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/房屋权属证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/房屋权属证明-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "151": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第一节  委托代理 > 二、委托代理的终止",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 14,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/委托代理/委托代理的终止",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/委托代理/委托代理的终止",
+          "q_gps": "签约服务/特殊交易双方/委托代理/委托代理的终止"
+        }
+      },
+      {
+        "question_index": 361,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/委托代理/委托代理的终止",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/委托代理/委托代理的终止",
+          "q_gps": "签约服务/特殊交易双方/委托代理/委托代理的终止"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "202": {
+    "完整路径": "第三篇  签约服务 > 第三章  特殊交易房屋 > 第二节  交易房屋若干问题 > 二、经纪人能否承诺交易房屋为学区房",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 15,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房",
+          "q_gps": "签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房-需要核实"
+        }
+      },
+      {
+        "question_index": 115,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房",
+          "q_gps": "签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房-需要核实"
+        }
+      },
+      {
+        "question_index": 323,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房",
+          "q_gps": "签约服务/特殊交易房屋/交易房屋若干问题/经纪人能否承诺交易房屋为学区房-需要核实"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "209": {
+    "完整路径": "第三篇  签约服务 > 第三章  特殊交易房屋 > 第二节  交易房屋若干问题 > 九、买卖双方选择自行贷款有什么风险",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 16,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易房屋/交易房屋若干问题/买卖双方选择自行贷款有什么风险-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易房屋/交易房屋若干问题/买卖双方选择自行贷款有什么风险",
+          "q_gps": "签约服务/特殊交易房屋/交易房屋若干问题/买卖双方选择自行贷款有什么风险-需要内化"
+        }
+      },
+      {
+        "question_index": 183,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易房屋/交易房屋若干问题/买卖双方选择自行贷款有什么风险-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易房屋/交易房屋若干问题/买卖双方选择自行贷款有什么风险",
+          "q_gps": "签约服务/特殊交易房屋/交易房屋若干问题/买卖双方选择自行贷款有什么风险-需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "221": {
+    "完整路径": "第三篇  签约服务 > 第四章  交易费用 > 第二节  服务佣金 > 二、国家对佣金的规定",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 18,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/服务佣金/国家对佣金的规定",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/服务佣金/国家对佣金的规定",
+          "q_gps": "签约服务/交易费用/服务佣金/国家对佣金的规定"
+        }
+      },
+      {
+        "question_index": 118,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/服务佣金/国家对佣金的规定",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/服务佣金/国家对佣金的规定",
+          "q_gps": "签约服务/交易费用/服务佣金/国家对佣金的规定"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "226": {
+    "完整路径": "第三篇  签约服务 > 第四章  交易费用 > 第三节  资金存管 > 二、资金存管的意义",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 19,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/资金存管/资金存管的意义",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/资金存管/资金存管的意义",
+          "q_gps": "签约服务/交易费用/资金存管/资金存管的意义"
+        }
+      },
+      {
+        "question_index": 221,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/资金存管/资金存管的意义",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/资金存管/资金存管的意义",
+          "q_gps": "签约服务/交易费用/资金存管/资金存管的意义"
+        }
+      },
+      {
+        "question_index": 324,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/资金存管/资金存管的意义",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/资金存管/资金存管的意义",
+          "q_gps": "签约服务/交易费用/资金存管/资金存管的意义"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "256": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 四、收入证明不足以覆盖月供两倍的应对方式",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 20,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/收入证明不足以覆盖月供两倍的应对方式-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/收入证明不足以覆盖月供两倍的应对方式",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/收入证明不足以覆盖月供两倍的应对方式-需要内化"
+        }
+      },
+      {
+        "question_index": 266,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/收入证明不足以覆盖月供两倍的应对方式-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/收入证明不足以覆盖月供两倍的应对方式",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/收入证明不足以覆盖月供两倍的应对方式-需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "276": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > （二）公积金贷款中套数认定细则 > 1、认定为首套的情形",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 21,
+        "confidence": 0.828,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.828）",
+          "bge_score": 0.828
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "278": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > （二）公积金贷款中套数认定细则 > 3、不予贷款情形（拒贷）",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 299,
+        "confidence": 0.782,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.782）",
+          "bge_score": 0.782
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "279": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > 五、申请市属住房公积金贷款的条件",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 225,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款/申请市属住房公积金贷款的条件-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/申请市属住房公积金贷款的条件",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/申请市属住房公积金贷款的条件-需要核实"
+        }
+      },
+      {
+        "question_index": 22,
+        "confidence": 0.771,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.771）",
+          "bge_score": 0.771
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "282": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > 八、市属公积金贷款额度确定 > 1、首付比例",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 201,
+        "confidence": 0.797,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.797）",
+          "bge_score": 0.797
+        }
+      },
+      {
+        "question_index": 268,
+        "confidence": 0.765,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.765）",
+          "bge_score": 0.765
+        }
+      },
+      {
+        "question_index": 297,
+        "confidence": 0.765,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.765）",
+          "bge_score": 0.765
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "283": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > 八、市属公积金贷款额度确定 > 2、个人住房公积金贷款最高额度",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 199,
+        "confidence": 0.851,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.851）",
+          "bge_score": 0.851
+        }
+      },
+      {
+        "question_index": 23,
+        "confidence": 0.833,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.833）",
+          "bge_score": 0.833
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "288": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第二节  组合贷款 > 二、组合贷款流程",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 24,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程-需要核实"
+        }
+      },
+      {
+        "question_index": 123,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程-需要核实"
+        }
+      },
+      {
+        "question_index": 331,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款流程-需要核实"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "302": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第四节  公积金贷款相关问题 > 一、基准利率调整对公积金贷款的影响",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 25,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/基准利率调整对公积金贷款的影响-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/基准利率调整对公积金贷款的影响",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/基准利率调整对公积金贷款的影响-需要内化"
+        }
+      },
+      {
+        "question_index": 124,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/基准利率调整对公积金贷款的影响-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/基准利率调整对公积金贷款的影响",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/基准利率调整对公积金贷款的影响-需要内化"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "330": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第三节  契税 > 四、契税免征或者减征的常见情形",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 27,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形",
+          "q_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要核实"
+        }
+      },
+      {
+        "question_index": 126,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形",
+          "q_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要内化"
+        }
+      },
+      {
+        "question_index": 232,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形",
+          "q_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要核实"
+        }
+      },
+      {
+        "question_index": 389,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形",
+          "q_gps": "交易服务/不动产交易税费/契税/契税免征或者减征的常见情形-需要核实"
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "331": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第四节  不动产交易其他税费 > 一、什么是印花税",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 28,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/不动产交易其他税费/什么是印花税-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是印花税",
+          "q_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是印花税-需要核实"
+        }
+      },
+      {
+        "question_index": 233,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/不动产交易其他税费/什么是印花税-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是印花税",
+          "q_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是印花税-需要内化"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "334": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第四节  不动产交易其他税费 > 四、需补交土地出让金的情形",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 29,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/不动产交易其他税费/需补交土地出让金的情形-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/不动产交易其他税费/需补交土地出让金的情形",
+          "q_gps": "交易服务/不动产交易税费/不动产交易其他税费/需补交土地出让金的情形-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "409": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第一节  新房业务流程概述 > 七、新房作业术语",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 33,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "q_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语"
+        }
+      },
+      {
+        "question_index": 87,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "q_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语"
+        }
+      },
+      {
+        "question_index": 133,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "q_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语"
+        }
+      },
+      {
+        "question_index": 237,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "q_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语"
+        }
+      },
+      {
+        "question_index": 337,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语",
+          "q_gps": "延伸服务/新房买卖/新房业务流程概述/新房作业术语"
+        }
+      }
+    ],
+    "total_matches": 5,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "449": {
+    "完整路径": "第五篇  延伸服务 > 第二章  贝壳租房 > 第二节  省心租出房 > 四、出房业绩",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 35,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/贝壳租房/省心租出房/出房业绩-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/贝壳租房/省心租出房/出房业绩",
+          "q_gps": "延伸服务/贝壳租房/省心租出房/出房业绩-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "478": {
+    "完整路径": "第六篇  服务保障 > 第一章  ACN合作规则 > 第三节  成交合作类规则 > （二）为什么要约签排队",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 241,
+        "confidence": 0.78,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.78）",
+          "bge_score": 0.78
+        }
+      },
+      {
+        "question_index": 36,
+        "confidence": 0.777,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.777）",
+          "bge_score": 0.777
+        }
+      },
+      {
+        "question_index": 138,
+        "confidence": 0.777,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.777）",
+          "bge_score": 0.777
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "490": {
+    "完整路径": "第六篇  服务保障 > 第二章  服务标准 > 第二节  房客源维护环节 > 四、【实勘预约/实勘人】",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 38,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/服务标准/房客源维护环节/【实勘预约/实勘人】",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/服务标准/房客源维护环节/【实勘预约/实勘人】",
+          "q_gps": "服务保障/服务标准/房客源维护环节/【实勘预约/实勘人】"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "530": {
+    "完整路径": "第六篇  服务保障 > 第五章  信用管理规则 > 第二节  常见信用分违规行为 > 三、常见的黄线行为",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 278,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/信用管理规则/常见信用分违规行为/常见的黄线行为",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的黄线行为",
+          "q_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的黄线行为"
+        }
+      },
+      {
+        "question_index": 344,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/信用管理规则/常见信用分违规行为/常见的黄线行为",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的黄线行为",
+          "q_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的黄线行为"
+        }
+      },
+      {
+        "question_index": 39,
+        "confidence": 0.79,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.79）",
+          "bge_score": 0.79
+        }
+      },
+      {
+        "question_index": 380,
+        "confidence": 0.75,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.75）",
+          "bge_score": 0.75
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "528": {
+    "完整路径": "第六篇  服务保障 > 第五章  信用管理规则 > 第二节  常见信用分违规行为 > 一、常见的黑线行为",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 292,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/信用管理规则/常见信用分违规行为/常见的黑线行为",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的黑线行为",
+          "q_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的黑线行为"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "41": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第二节  常见住宅分类 > 四、板式住宅、塔式住宅和板塔结合住宅",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 42,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/板式住宅/塔式住宅和板塔结合住宅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/板式住宅/塔式住宅和板塔结合住宅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/板式住宅/塔式住宅和板塔结合住宅"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "44": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第三节  建筑结构与设施 > 一、建筑结构分类",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 43,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/建筑结构与设施/建筑结构分类",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/建筑结构与设施/建筑结构分类",
+          "q_gps": "签前服务/房屋信息/建筑结构与设施/建筑结构分类"
+        }
+      },
+      {
+        "question_index": 146,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/建筑结构与设施/建筑结构分类",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/建筑结构与设施/建筑结构分类",
+          "q_gps": "签前服务/房屋信息/建筑结构与设施/建筑结构分类"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "53": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 六、绿地率与绿化率",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 44,
+        "confidence": 0.809,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.809）",
+          "bge_score": 0.809
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "49": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 二、得房率",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 46,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/得房率",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/得房率",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/得房率"
+        }
+      },
+      {
+        "question_index": 247,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/得房率",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/得房率",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/得房率"
+        }
+      },
+      {
+        "question_index": 351,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/得房率",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/得房率",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/得房率"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "65": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第一节  房源委托 > 三、作业范围内楼盘职责划分",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 47,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源委托/作业范围内楼盘职责划分-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源委托/作业范围内楼盘职责划分",
+          "q_gps": "签前服务/房源管理/房源委托/作业范围内楼盘职责划分-需要核实"
+        }
+      },
+      {
+        "question_index": 147,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源委托/作业范围内楼盘职责划分-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源委托/作业范围内楼盘职责划分",
+          "q_gps": "签前服务/房源管理/房源委托/作业范围内楼盘职责划分-需要核实"
+        }
+      },
+      {
+        "question_index": 250,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源委托/作业范围内楼盘职责划分-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源委托/作业范围内楼盘职责划分",
+          "q_gps": "签前服务/房源管理/房源委托/作业范围内楼盘职责划分-需要内化"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "70": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第一节  房源委托 > 四、房源角色人",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 48,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源委托/房源角色人-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源委托/房源角色人",
+          "q_gps": "签前服务/房源管理/房源委托/房源角色人-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "72": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第二节  房源维护 > 二、重视业主面访",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 50,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源维护/重视业主面访-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源维护/重视业主面访",
+          "q_gps": "签前服务/房源管理/房源维护/重视业主面访-需要核实"
+        }
+      },
+      {
+        "question_index": 177,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源维护/重视业主面访",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源维护/重视业主面访",
+          "q_gps": "签前服务/房源管理/房源维护/重视业主面访"
+        }
+      },
+      {
+        "question_index": 251,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源维护/重视业主面访",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源维护/重视业主面访",
+          "q_gps": "签前服务/房源管理/房源维护/重视业主面访"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "78": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第三节  房源聚焦 > 三、房源聚焦产品",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 51,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源聚焦/房源聚焦产品-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源聚焦/房源聚焦产品",
+          "q_gps": "签前服务/房源管理/房源聚焦/房源聚焦产品-需要核实"
+        }
+      },
+      {
+        "question_index": 252,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源聚焦/房源聚焦产品-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源聚焦/房源聚焦产品",
+          "q_gps": "签前服务/房源管理/房源聚焦/房源聚焦产品-需要核实"
+        }
+      },
+      {
+        "question_index": 354,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房源管理/房源聚焦/房源聚焦产品-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房源管理/房源聚焦/房源聚焦产品",
+          "q_gps": "签前服务/房源管理/房源聚焦/房源聚焦产品-需要核实"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "90": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第四节  房源规则 > （一）录入时效",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 150,
+        "confidence": 0.769,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.769）",
+          "bge_score": 0.769
+        }
+      },
+      {
+        "question_index": 52,
+        "confidence": 0.763,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.763）",
+          "bge_score": 0.763
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "101": {
+    "完整路径": "第二篇  签前服务 > 第三章  客源管理 > 第一节  客源获取 > 三、客源录入规则",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 53,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源获取/客源录入规则-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源获取/客源录入规则",
+          "q_gps": "签前服务/客源管理/客源获取/客源录入规则-需要核实"
+        }
+      },
+      {
+        "question_index": 178,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源获取/客源录入规则",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源获取/客源录入规则",
+          "q_gps": "签前服务/客源管理/客源获取/客源录入规则"
+        }
+      },
+      {
+        "question_index": 253,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源获取/客源录入规则",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源获取/客源录入规则",
+          "q_gps": "签前服务/客源管理/客源获取/客源录入规则"
+        }
+      },
+      {
+        "question_index": 254,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源获取/客源录入规则-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源获取/客源录入规则",
+          "q_gps": "签前服务/客源管理/客源获取/客源录入规则-需要核实"
+        }
+      },
+      {
+        "question_index": 355,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源获取/客源录入规则",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源获取/客源录入规则",
+          "q_gps": "签前服务/客源管理/客源获取/客源录入规则"
+        }
+      }
+    ],
+    "total_matches": 5,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "104": {
+    "完整路径": "第二篇  签前服务 > 第三章  客源管理 > 第二节  客源维护 > 三、识别购房急迫性",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 54,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源维护/识别购房急迫性",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源维护/识别购房急迫性",
+          "q_gps": "签前服务/客源管理/客源维护/识别购房急迫性"
+        }
+      },
+      {
+        "question_index": 212,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源维护/识别购房急迫性",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源维护/识别购房急迫性",
+          "q_gps": "签前服务/客源管理/客源维护/识别购房急迫性"
+        }
+      },
+      {
+        "question_index": 356,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源维护/识别购房急迫性",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源维护/识别购房急迫性",
+          "q_gps": "签前服务/客源管理/客源维护/识别购房急迫性"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "100": {
+    "完整路径": "第二篇  签前服务 > 第三章  客源管理 > 第一节  客源获取 > （二）禁止通过违规渠道获得客户",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 55,
+        "confidence": 0.792,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.792）",
+          "bge_score": 0.792
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "122": {
+    "完整路径": "第二篇  签前服务 > 第四章  带客看房 > 第三节  带看规则 > 一、“真带看”标准",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 56,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/带客看房/带看规则/“真带看”标准",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/带客看房/带看规则/“真带看”标准",
+          "q_gps": "签前服务/带客看房/带看规则/“真带看”标准"
+        }
+      },
+      {
+        "question_index": 151,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/带客看房/带看规则/“真带看”标准",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/带客看房/带看规则/“真带看”标准",
+          "q_gps": "签前服务/带客看房/带看规则/“真带看”标准"
+        }
+      },
+      {
+        "question_index": 214,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/带客看房/带看规则/“真带看”标准",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/带客看房/带看规则/“真带看”标准",
+          "q_gps": "签前服务/带客看房/带看规则/“真带看”标准"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "136": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第二节  常见合同备件 > 三、婚姻关系证明",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 57,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实"
+        }
+      },
+      {
+        "question_index": 216,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实"
+        }
+      },
+      {
+        "question_index": 259,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实"
+        }
+      },
+      {
+        "question_index": 318,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/婚姻关系证明-需要核实"
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "143": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第四节  合同解除 > 一、合同解除的主要类型",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 58,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/合同解除/合同解除的主要类型",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/合同解除/合同解除的主要类型",
+          "q_gps": "签约服务/合同概述/合同解除/合同解除的主要类型"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "153": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第一节  委托代理 > （一）合同中有代理人一行",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 59,
+        "confidence": 0.817,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.817）",
+          "bge_score": 0.817
+        }
+      },
+      {
+        "question_index": 360,
+        "confidence": 0.795,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.795）",
+          "bge_score": 0.795
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "152": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第一节  委托代理 > 三、办理卖方/买方委托代理",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 286,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/委托代理/办理卖方/买方委托代理",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/委托代理/办理卖方/买方委托代理",
+          "q_gps": "签约服务/特殊交易双方/委托代理/办理卖方/买方委托代理"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "154": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第一节  委托代理 > （二）合同中无代理人一行",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 112,
+        "confidence": 0.815,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.815）",
+          "bge_score": 0.815
+        }
+      },
+      {
+        "question_index": 217,
+        "confidence": 0.815,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.815）",
+          "bge_score": 0.815
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "160": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第二节  法定代理 > 四、常见法定代理的情形",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 60,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/法定代理/常见法定代理的情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/法定代理/常见法定代理的情形",
+          "q_gps": "签约服务/特殊交易双方/法定代理/常见法定代理的情形-需要核实"
+        }
+      },
+      {
+        "question_index": 260,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/法定代理/常见法定代理的情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/法定代理/常见法定代理的情形",
+          "q_gps": "签约服务/特殊交易双方/法定代理/常见法定代理的情形-需要核实"
+        }
+      },
+      {
+        "question_index": 362,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/法定代理/常见法定代理的情形",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/法定代理/常见法定代理的情形",
+          "q_gps": "签约服务/特殊交易双方/法定代理/常见法定代理的情形"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "168": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第四节  交易双方若干问题 > 一、夫妻共同财产",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 61,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产",
+          "q_gps": "签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产"
+        }
+      },
+      {
+        "question_index": 153,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产",
+          "q_gps": "签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产"
+        }
+      },
+      {
+        "question_index": 262,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产",
+          "q_gps": "签约服务/特殊交易双方/交易双方若干问题/夫妻共同财产"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "156": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第一节  委托代理 > 六、经纪人不能作为代理人签约",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 62,
+        "confidence": 0.767,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.767）",
+          "bge_score": 0.767
+        }
+      },
+      {
+        "question_index": 363,
+        "confidence": 0.767,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.767）",
+          "bge_score": 0.767
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "250": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第一节  个人住房商业性贷款政策 > 四、商业贷款政策",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 64,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化"
+        }
+      },
+      {
+        "question_index": 93,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化"
+        }
+      },
+      {
+        "question_index": 121,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实"
+        }
+      },
+      {
+        "question_index": 159,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化"
+        }
+      },
+      {
+        "question_index": 193,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要内化"
+        }
+      },
+      {
+        "question_index": 265,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实"
+        }
+      },
+      {
+        "question_index": 328,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实"
+        }
+      },
+      {
+        "question_index": 367,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款政策-需要核实"
+        }
+      }
+    ],
+    "total_matches": 8,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "254": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 二、银行拒贷的情形",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 65,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形-需要内化"
+        }
+      },
+      {
+        "question_index": 184,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形-需要核实"
+        }
+      },
+      {
+        "question_index": 197,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形--需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形--需要内化"
+        }
+      },
+      {
+        "question_index": 267,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/银行拒贷的情形-需要内化"
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "261": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 九、个人住房商业贷款的还款方式",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 66,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式"
+        }
+      },
+      {
+        "question_index": 160,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式"
+        }
+      },
+      {
+        "question_index": 224,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式"
+        }
+      },
+      {
+        "question_index": 398,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/个人住房商业贷款的还款方式"
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "269": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 十三、征信报告查询",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 67,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/征信报告查询",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/征信报告查询",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/征信报告查询"
+        }
+      },
+      {
+        "question_index": 400,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/征信报告查询",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/征信报告查询",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/征信报告查询"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "341": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第五节  交易税费常见问题 > 三、核税审核中，交易房屋满2年/5年的界定标准",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 70,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/交易税费常见问题/核税审核中/交易房屋满2年/5年的界定标准—需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/交易税费常见问题/核税审核中/交易房屋满2年/5年的界定标准",
+          "q_gps": "交易服务/不动产交易税费/交易税费常见问题/核税审核中/交易房屋满2年/5年的界定标准—需要核实"
+        }
+      },
+      {
+        "question_index": 167,
+        "confidence": 0.792,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.792）",
+          "bge_score": 0.792
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "366": {
+    "完整路径": "第四篇  交易服务 > 第五章  不动产登记 > 第三节  不动产抵押登记 > 五、抵押登记注意事项",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 71,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产登记/不动产抵押登记/抵押登记注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产登记/不动产抵押登记/抵押登记注意事项",
+          "q_gps": "交易服务/不动产登记/不动产抵押登记/抵押登记注意事项-需要核实"
+        }
+      },
+      {
+        "question_index": 131,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产登记/不动产抵押登记/抵押登记注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产登记/不动产抵押登记/抵押登记注意事项",
+          "q_gps": "交易服务/不动产登记/不动产抵押登记/抵押登记注意事项-需要核实"
+        }
+      },
+      {
+        "question_index": 335,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产登记/不动产抵押登记/抵押登记注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产登记/不动产抵押登记/抵押登记注意事项",
+          "q_gps": "交易服务/不动产登记/不动产抵押登记/抵押登记注意事项-需要核实"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "413": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第二节  新房报备与带看 > 四、新房带看",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 72,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/新房带看-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/新房带看",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/新房带看-需要核实"
+        }
+      },
+      {
+        "question_index": 169,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/新房带看-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/新房带看",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/新房带看-需要核实"
+        }
+      },
+      {
+        "question_index": 238,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/新房带看-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/新房带看",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/新房带看-需要核实"
+        }
+      },
+      {
+        "question_index": 274,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/新房带看-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/新房带看",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/新房带看-需要核实"
+        }
+      },
+      {
+        "question_index": 339,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/新房带看-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/新房带看",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/新房带看-需要核实"
+        }
+      }
+    ],
+    "total_matches": 5,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "463": {
+    "完整路径": "第六篇  服务保障 > 第一章  ACN合作规则 > 第一节  房源合作类规则 > 二、禁止藏房藏价",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 73,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价",
+          "q_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价-需要核实"
+        }
+      },
+      {
+        "question_index": 172,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价",
+          "q_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价-需要内化"
+        }
+      },
+      {
+        "question_index": 240,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价",
+          "q_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价"
+        }
+      },
+      {
+        "question_index": 379,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价",
+          "q_gps": "服务保障/ACN合作规则/房源合作类规则/禁止藏房藏价-需要内化"
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "520": {
+    "完整路径": "第六篇  服务保障 > 第五章  信用管理规则 > 第一节  信用分规则概述 > 二、违规行为记录规则",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 74,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/信用管理规则/信用分规则概述/违规行为记录规则",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/信用管理规则/信用分规则概述/违规行为记录规则",
+          "q_gps": "服务保障/信用管理规则/信用分规则概述/违规行为记录规则"
+        }
+      },
+      {
+        "question_index": 174,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/信用管理规则/信用分规则概述/违规行为记录规则",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/信用管理规则/信用分规则概述/违规行为记录规则",
+          "q_gps": "服务保障/信用管理规则/信用分规则概述/违规行为记录规则"
+        }
+      },
+      {
+        "question_index": 277,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/信用管理规则/信用分规则概述/违规行为记录规则",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/信用管理规则/信用分规则概述/违规行为记录规则",
+          "q_gps": "服务保障/信用管理规则/信用分规则概述/违规行为记录规则"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "16": {
+    "完整路径": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第三节  贝壳特色 > 一、ACN与合作生态",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 75,
+        "confidence": 0.764,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.764）",
+          "bge_score": 0.764
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "45": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第三节  建筑结构与设施 > 二、承重墙和非承重墙",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 311,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/建筑结构与设施/承重墙和非承重墙",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/建筑结构与设施/承重墙和非承重墙",
+          "q_gps": "签前服务/房屋信息/建筑结构与设施/承重墙和非承重墙"
+        }
+      },
+      {
+        "question_index": 77,
+        "confidence": 0.817,
+        "method": "LLM_Logic",
+        "evidence": {
+          "reason": "LLM专家逻辑重排序",
+          "bge_score": 0.674,
+          "bge_refined": true,
+          "llm_fallback": true
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath",
+      "LLM_Logic"
+    ]
+  },
+  "58": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 十一、嫌恶设施",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 78,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/嫌恶设施",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/嫌恶设施",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/嫌恶设施"
+        }
+      },
+      {
+        "question_index": 282,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/嫌恶设施",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/嫌恶设施",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/嫌恶设施"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "59": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第一节  房源委托 > （一）委托证件",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 79,
+        "confidence": 0.782,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.782）",
+          "bge_score": 0.782
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "95": {
+    "完整路径": "第二篇  签前服务 > 第三章  客源管理 > 第一节  客源获取 > 一、客源获取渠道",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 80,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源获取/客源获取渠道-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源获取/客源获取渠道",
+          "q_gps": "签前服务/客源管理/客源获取/客源获取渠道-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "121": {
+    "完整路径": "第二篇  签前服务 > 第四章  带客看房 > 第二节  实地带看 > 三、带看后回访",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 81,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/带客看房/实地带看/带看后回访",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/带客看房/实地带看/带看后回访",
+          "q_gps": "签前服务/带客看房/实地带看/带看后回访"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "135": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第二节  常见合同备件 > 二、常见的身份证明",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 82,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/常见的身份证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/常见的身份证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/常见的身份证明-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "251": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第一节  个人住房商业性贷款政策 > 五、商业贷款套数认定标准",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 84,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款套数认定标准-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款套数认定标准",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款套数认定标准-需要内化"
+        }
+      },
+      {
+        "question_index": 327,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款套数认定标准—需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款套数认定标准",
+          "q_gps": "交易服务/个人住房商业性贷款/个人住房商业性贷款政策/商业贷款套数认定标准—需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "255": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 三、商业贷款收入证明的要求",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 98,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求-需要内化"
+        }
+      },
+      {
+        "question_index": 195,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求--需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求--需要内化"
+        }
+      },
+      {
+        "question_index": 368,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/商业贷款收入证明的要求-需要核实"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "260": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 八、贷款利率的影响因素",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 100,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/贷款利率的影响因素-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/贷款利率的影响因素",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/贷款利率的影响因素-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "24": {
+    "完整路径": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第三节  贝壳特色 > （一）格林互助 > 2、入会方式",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 103,
+        "confidence": 0.774,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.774）",
+          "bge_score": 0.774
+        }
+      },
+      {
+        "question_index": 307,
+        "confidence": 0.772,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.772）",
+          "bge_score": 0.772
+        }
+      },
+      {
+        "question_index": 205,
+        "confidence": 0.768,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.768）",
+          "bge_score": 0.768
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "57": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 十、车位配比",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 107,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/车位配比",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/车位配比",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/车位配比"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "109": {
+    "完整路径": "第二篇  签前服务 > 第四章  带客看房 > 第一节  VR带看 > 一、VR带看概述",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 284,
+        "confidence": 0.849,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.849）",
+          "bge_score": 0.849
+        }
+      },
+      {
+        "question_index": 109,
+        "confidence": 0.836,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.836）",
+          "bge_score": 0.836
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "123": {
+    "完整路径": "第二篇  签前服务 > 第四章  带客看房 > 第三节  带看规则 > 二、线下带看注意事项",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 110,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/带客看房/带看规则/线下带看注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/带客看房/带看规则/线下带看注意事项",
+          "q_gps": "签前服务/带客看房/带看规则/线下带看注意事项-需要核实"
+        }
+      },
+      {
+        "question_index": 256,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/带客看房/带看规则/线下带看注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/带客看房/带看规则/线下带看注意事项",
+          "q_gps": "签前服务/带客看房/带看规则/线下带看注意事项-需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "139": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第三节  房屋信息查询 > 一、什么是房屋信息查询",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 111,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/房屋信息查询/什么是房屋信息查询-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/房屋信息查询/什么是房屋信息查询",
+          "q_gps": "签约服务/合同概述/房屋信息查询/什么是房屋信息查询-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "228": {
+    "完整路径": "第三篇  签约服务 > 第四章  交易费用 > 第三节  资金存管 > 四、资金存管的资金覆盖类型",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 119,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/资金存管/资金存管的资金覆盖类型",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/资金存管/资金存管的资金覆盖类型",
+          "q_gps": "签约服务/交易费用/资金存管/资金存管的资金覆盖类型"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "315": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第一节  增值税及附加 > 三、增值税及附加免征的常见情形",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 125,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/增值税及附加/增值税及附加免征的常见情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/增值税及附加/增值税及附加免征的常见情形",
+          "q_gps": "交易服务/不动产交易税费/增值税及附加/增值税及附加免征的常见情形-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "333": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第四节  不动产交易其他税费 > 三、什么是土地增值税",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 127,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/不动产交易其他税费/什么是土地增值税-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是土地增值税",
+          "q_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是土地增值税-需要核实"
+        }
+      },
+      {
+        "question_index": 332,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/不动产交易其他税费/什么是土地增值税-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是土地增值税",
+          "q_gps": "交易服务/不动产交易税费/不动产交易其他税费/什么是土地增值税-需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "347": {
+    "完整路径": "第四篇  交易服务 > 第五章  不动产登记 > 第一节  登记的类型 > 四、转移登记",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 128,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产登记/登记的类型/转移登记",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产登记/登记的类型/转移登记",
+          "q_gps": "交易服务/不动产登记/登记的类型/转移登记"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "359": {
+    "完整路径": "第四篇  交易服务 > 第五章  不动产登记 > 第二节  不动产权属转移登记 > 六、无法办理权属转移登记的情形",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 129,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产登记/不动产权属转移登记/无法办理权属转移登记的情形",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产登记/不动产权属转移登记/无法办理权属转移登记的情形",
+          "q_gps": "交易服务/不动产登记/不动产权属转移登记/无法办理权属转移登记的情形"
+        }
+      },
+      {
+        "question_index": 334,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产登记/不动产权属转移登记/无法办理权属转移登记的情形",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产登记/不动产权属转移登记/无法办理权属转移登记的情形",
+          "q_gps": "交易服务/不动产登记/不动产权属转移登记/无法办理权属转移登记的情形"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "355": {
+    "完整路径": "第四篇  交易服务 > 第五章  不动产登记 > 第二节  不动产权属转移登记 > （二）费用标准",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 130,
+        "confidence": 0.796,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.796）",
+          "bge_score": 0.796
+        }
+      },
+      {
+        "question_index": 272,
+        "confidence": 0.762,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.762）",
+          "bge_score": 0.762
+        }
+      },
+      {
+        "question_index": 374,
+        "confidence": 0.762,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.762）",
+          "bge_score": 0.762
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "399": {
+    "完整路径": "第四篇  交易服务 > 第六章  物业交割 > （二）线上物业交割流程",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 132,
+        "confidence": 0.757,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.757）",
+          "bge_score": 0.757
+        }
+      },
+      {
+        "question_index": 236,
+        "confidence": 0.757,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.757）",
+          "bge_score": 0.757
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "410": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第二节  新房报备与带看 > 一、报备",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 134,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项"
+        }
+      },
+      {
+        "question_index": 290,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项"
+        }
+      },
+      {
+        "question_index": 375,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项-需要核实"
+        }
+      },
+      {
+        "question_index": 392,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项"
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "412": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第二节  新房报备与带看 > 三、报备注意事项",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 134,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项"
+        }
+      },
+      {
+        "question_index": 290,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项"
+        }
+      },
+      {
+        "question_index": 375,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项-需要核实"
+        }
+      },
+      {
+        "question_index": 392,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项",
+          "q_gps": "延伸服务/新房买卖/新房报备与带看/报备注意事项"
+        }
+      }
+    ],
+    "total_matches": 4,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "424": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第四节  新房交付 > 一、新建商品房的交付条件",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 135,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房交付/新建商品房的交付条件",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房交付/新建商品房的交付条件",
+          "q_gps": "延伸服务/新房买卖/新房交付/新建商品房的交付条件"
+        }
+      },
+      {
+        "question_index": 393,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/新房交付/新建商品房的交付条件",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/新房交付/新建商品房的交付条件",
+          "q_gps": "延伸服务/新房买卖/新房交付/新建商品房的交付条件"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "453": {
+    "完整路径": "第五篇  延伸服务 > 第三章  整装家居 > 第一节  整装概述 > 三、圣都十怕十诺",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 137,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/整装家居/整装概述/圣都十怕十诺",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/整装家居/整装概述/圣都十怕十诺",
+          "q_gps": "延伸服务/整装家居/整装概述/圣都十怕十诺"
+        }
+      },
+      {
+        "question_index": 239,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/整装家居/整装概述/圣都十怕十诺",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/整装家居/整装概述/圣都十怕十诺",
+          "q_gps": "延伸服务/整装家居/整装概述/圣都十怕十诺"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "475": {
+    "完整路径": "第六篇  服务保障 > 第一章  ACN合作规则 > 第二节  客源合作类规则 > （一）什么是荐客、客源合作规则",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 139,
+        "confidence": 0.776,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.776）",
+          "bge_score": 0.776
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "502": {
+    "完整路径": "第六篇  服务保障 > 第二章  服务标准 > 第四节  交易办理环节 > 二、【房源维护人】 > 2、禁止项",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 140,
+        "confidence": 0.756,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.756）",
+          "bge_score": 0.756
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "34": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第一节  房源信息概述 > 三、房源区位信息",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 145,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/房源信息概述/房源区位信息",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/房源信息概述/房源区位信息",
+          "q_gps": "签前服务/房屋信息/房源信息概述/房源区位信息"
+        }
+      },
+      {
+        "question_index": 382,
+        "confidence": 0.765,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.765）",
+          "bge_score": 0.765
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "91": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第四节  房源规则 > （二）房源验真时效",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 352,
+        "confidence": 0.786,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.786）",
+          "bge_score": 0.786
+        }
+      },
+      {
+        "question_index": 148,
+        "confidence": 0.779,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.779）",
+          "bge_score": 0.779
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "84": {
+    "完整路径": "第二篇  签前服务 > 第二章  房源管理 > 第四节  房源规则 > （四）真实电话 > 1、正确行为",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 315,
+        "confidence": 0.756,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.756）",
+          "bge_score": 0.756
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "183": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第五节  房地产公证 > （二）委托公证备件及到场人",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 154,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/房地产公证/委托公证",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/房地产公证/委托公证备件及到场人",
+          "q_gps": "签约服务/特殊交易双方/房地产公证/委托公证"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "231": {
+    "完整路径": "第三篇  签约服务 > 第四章  交易费用 > 第三节  资金存管 > 七、线上银行资金存管支付注意事项",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 157,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/资金存管/线上银行资金存管支付注意事项-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/资金存管/线上银行资金存管支付注意事项",
+          "q_gps": "签约服务/交易费用/资金存管/线上银行资金存管支付注意事项-需要核实"
+        }
+      },
+      {
+        "question_index": 158,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/资金存管/线上银行资金存管支付注意事项",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/资金存管/线上银行资金存管支付注意事项",
+          "q_gps": "签约服务/交易费用/资金存管/线上银行资金存管支付注意事项"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "286": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > （二）申请公积金贷款，办理银行面签，客户需要提供的备件清单",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 161,
+        "confidence": 0.806,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.806）",
+          "bge_score": 0.806
+        }
+      },
+      {
+        "question_index": 405,
+        "confidence": 0.788,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.788）",
+          "bge_score": 0.788
+        }
+      },
+      {
+        "question_index": 288,
+        "confidence": 0.767,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.767）",
+          "bge_score": 0.767
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "309": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第一节  增值税及附加 > 一、什么是增值税及附加",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 163,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/增值税及附加/什么是增值税及附加-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/增值税及附加/什么是增值税及附加",
+          "q_gps": "交易服务/不动产交易税费/增值税及附加/什么是增值税及附加-需要内化"
+        }
+      },
+      {
+        "question_index": 270,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/增值税及附加/什么是增值税及附加-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/增值税及附加/什么是增值税及附加",
+          "q_gps": "交易服务/不动产交易税费/增值税及附加/什么是增值税及附加-需要内化"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "329": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第三节  契税 > 三、多人共同购买一套房屋时的契税缴纳",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 401,
+        "confidence": 0.819,
+        "method": "LLM_Logic",
+        "evidence": {
+          "reason": "LLM专家逻辑重排序",
+          "bge_score": 0.689,
+          "bge_refined": true
+        }
+      },
+      {
+        "question_index": 165,
+        "confidence": 0.765,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.765）",
+          "bge_score": 0.765
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "LLM_Logic",
+      "BGE_Vector"
+    ]
+  },
+  "335": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第四节  不动产交易其他税费 > 五、经济适用住房缴纳土地出让金",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 166,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/不动产交易其他税费/经济适用住房缴纳土地出让金-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/不动产交易其他税费/经济适用住房缴纳土地出让金",
+          "q_gps": "交易服务/不动产交易税费/不动产交易其他税费/经济适用住房缴纳土地出让金-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "417": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第三节  认购签约 > 一、认购",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 170,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/认购签约/认购",
+          "q_gps": "延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实"
+        }
+      },
+      {
+        "question_index": 340,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/认购签约/认购",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/认购签约/认购",
+          "q_gps": "延伸服务/新房买卖/认购签约/认购"
+        }
+      },
+      {
+        "question_index": 376,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/认购签约/认购",
+          "q_gps": "延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "418": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第三节  认购签约 > 二、认购录入、成销与业绩",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 170,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/认购签约/认购录入/成销与业绩",
+          "q_gps": "延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实"
+        }
+      },
+      {
+        "question_index": 340,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/认购签约/认购",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/认购签约/认购录入/成销与业绩",
+          "q_gps": "延伸服务/新房买卖/认购签约/认购"
+        }
+      },
+      {
+        "question_index": 376,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/认购签约/认购录入/成销与业绩",
+          "q_gps": "延伸服务/新房买卖/认购签约/认购录入/成销与业绩-需要核实"
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "437": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第六节  一二手联动 > （二）找到一二手联动客 > 3、关注6分以上好客",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 171,
+        "confidence": 0.809,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.809）",
+          "bge_score": 0.809
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "529": {
+    "完整路径": "第六篇  服务保障 > 第五章  信用管理规则 > 第二节  常见信用分违规行为 > 二、常见的红线行为",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 175,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：服务保障/信用管理规则/常见信用分违规行为/常见的红线行为-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的红线行为",
+          "q_gps": "服务保障/信用管理规则/常见信用分违规行为/常见的红线行为-需要核实"
+        }
+      },
+      {
+        "question_index": 243,
+        "confidence": 0.772,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.772）",
+          "bge_score": 0.772
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "105": {
+    "完整路径": "第二篇  签前服务 > 第三章  客源管理 > 第二节  客源维护 > 四、有效的房客匹配",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 179,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源维护/有效的房客匹配",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源维护/有效的房客匹配",
+          "q_gps": "签前服务/客源管理/客源维护/有效的房客匹配"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "284": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > 九、市属公积金贷款年限确定",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 185,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款年限确定-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款年限确定",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款年限确定-需要内化"
+        }
+      },
+      {
+        "question_index": 226,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款年限确定-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款年限确定",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款年限确定-需要内化"
+        }
+      },
+      {
+        "question_index": 330,
+        "confidence": 0.758,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.758）",
+          "bge_score": 0.758
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "343": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第五节  交易税费常见问题 > 五、不动产交易税的办理流程",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 187,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/交易税费常见问题/不动产交易税的办理流程-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/交易税费常见问题/不动产交易税的办理流程",
+          "q_gps": "交易服务/不动产交易税费/交易税费常见问题/不动产交易税的办理流程-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "461": {
+    "完整路径": "第六篇  服务保障 > 第一章  ACN合作规则 > 第一节  房源合作类规则 > （一）什么是促进维护人尽职",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 190,
+        "confidence": 0.793,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.793）",
+          "bge_score": 0.793
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "257": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 五、贷款年限确定",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 399,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/贷款年限确定-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/贷款年限确定",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/贷款年限确定-需要内化"
+        }
+      },
+      {
+        "question_index": 196,
+        "confidence": 0.751,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.751）",
+          "bge_score": 0.751
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath",
+      "BGE_Vector"
+    ]
+  },
+  "314": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第一节  增值税及附加 > （三）增值税及附加计算总结 > （2）北京普通住宅认定标准",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 202,
+        "confidence": 0.775,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.775）",
+          "bge_score": 0.775
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "43": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第二节  常见住宅分类 > 六、独栋别墅、双拼别墅、联排别墅和叠拼别墅",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 208,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/独栋别墅/双拼别墅/联排别墅和叠拼别墅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/独栋别墅/双拼别墅/联排别墅和叠拼别墅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/独栋别墅/双拼别墅/联排别墅和叠拼别墅"
+        }
+      },
+      {
+        "question_index": 349,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见住宅分类/独栋别墅/双拼别墅/联排别墅和叠拼别墅",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见住宅分类/独栋别墅/双拼别墅/联排别墅和叠拼别墅",
+          "q_gps": "签前服务/房屋信息/常见住宅分类/独栋别墅/双拼别墅/联排别墅和叠拼别墅"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "120": {
+    "完整路径": "第二篇  签前服务 > 第四章  带客看房 > 第二节  实地带看 > 二、带看中流程 > 2、带客回店+筛选总结",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 213,
+        "confidence": 0.755,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.755）",
+          "bge_score": 0.755
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "133": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第一节  合同签署 > 六、合同条款变更的处理",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 215,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/合同签署/合同条款变更的处理",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/合同签署/合同条款变更的处理",
+          "q_gps": "签约服务/合同概述/合同签署/合同条款变更的处理"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "172": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第四节  交易双方若干问题 > （三）父母出资-婚前买房（各类情况详见下表）",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 219,
+        "confidence": 0.753,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.753）",
+          "bge_score": 0.753
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "207": {
+    "完整路径": "第三篇  签约服务 > 第三章  特殊交易房屋 > 第二节  交易房屋若干问题 > 七、户口未迁出可否起诉",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 220,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易房屋/交易房屋若干问题/户口未迁出可否起诉-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易房屋/交易房屋若干问题/户口未迁出可否起诉",
+          "q_gps": "签约服务/特殊交易房屋/交易房屋若干问题/户口未迁出可否起诉-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "304": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第四节  公积金贷款相关问题 > 三、异地公积金贷款申请条件",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 228,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/异地公积金贷款申请条件-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/异地公积金贷款申请条件",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/异地公积金贷款申请条件-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "319": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第二节  个人所得税 > 三、个人所得税免征的情形",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 231,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/个税/个税免征的情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/个税/个税免征的情形",
+          "q_gps": "交易服务/不动产交易税费/个税/个税免征的情形-需要核实"
+        }
+      },
+      {
+        "question_index": 372,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/个税/个税免征的情形-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/个税/个税免征的情形",
+          "q_gps": "交易服务/不动产交易税费/个税/个税免征的情形-需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "485": {
+    "完整路径": "第六篇  服务保障 > 第二章  服务标准 > 第二节  房客源维护环节 > 一、【房源录入人】 > 2、禁止项",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 342,
+        "confidence": 0.779,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.779）",
+          "bge_score": 0.779
+        }
+      },
+      {
+        "question_index": 343,
+        "confidence": 0.774,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.774）",
+          "bge_score": 0.774
+        }
+      },
+      {
+        "question_index": 242,
+        "confidence": 0.766,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.766）",
+          "bge_score": 0.766
+        }
+      }
+    ],
+    "total_matches": 3,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "56": {
+    "完整路径": "第二篇  签前服务 > 第一章  房屋信息 > 第四节  常见房屋评价维度 > 九、梯户比",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 248,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/房屋信息/常见房屋评价维度/梯户比",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/房屋信息/常见房屋评价维度/梯户比",
+          "q_gps": "签前服务/房屋信息/常见房屋评价维度/梯户比"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "117": {
+    "完整路径": "第二篇  签前服务 > 第四章  带客看房 > 第二节  实地带看 > （三）房的准备 > 2、小区物业信息",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 255,
+        "confidence": 0.791,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.791）",
+          "bge_score": 0.791
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "138": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第二节  常见合同备件 > 五、亲属关系证明",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 257,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/亲属关系证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/亲属关系证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/亲属关系证明-需要核实"
+        }
+      },
+      {
+        "question_index": 359,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/亲属关系证明-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/亲属关系证明",
+          "q_gps": "签约服务/合同概述/常见合同备件/亲属关系证明-需要核实"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "134": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第二节  常见合同备件 > 一、房屋买卖合同签约备件",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 258,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/常见合同备件/房屋买卖合同签约备件-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/常见合同备件/房屋买卖合同签约备件",
+          "q_gps": "签约服务/合同概述/常见合同备件/房屋买卖合同签约备件-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "165": {
+    "完整路径": "第三篇  签约服务 > 第二章  特殊交易双方 > 第三节  共有 > 五、不同婚姻状况的卖方售房情形",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 261,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/共有/不同婚姻状况的卖方售房情形",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/共有/不同婚姻状况的卖方售房情形",
+          "q_gps": "签约服务/特殊交易双方/共有/不同婚姻状况的卖方售房情形"
+        }
+      },
+      {
+        "question_index": 321,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易双方/共有/不同婚姻状况的卖方售房情形-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易双方/共有/不同婚姻状况的卖方售房情形",
+          "q_gps": "签约服务/特殊交易双方/共有/不同婚姻状况的卖方售房情形-需要内化"
+        }
+      }
+    ],
+    "total_matches": 2,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "306": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第四节  公积金贷款相关问题 > 五、公积金提取",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 269,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/公积金提取-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/公积金提取",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款相关问题/公积金提取-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "360": {
+    "完整路径": "第四篇  交易服务 > 第五章  不动产登记 > 第三节  不动产抵押登记 > 一、什么是不动产抵押登记",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 273,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产登记/不动产抵押登记/什么是不动产抵押登记",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产登记/不动产抵押登记/什么是不动产抵押登记",
+          "q_gps": "交易服务/不动产登记/不动产抵押登记/什么是不动产抵押登记"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "190": {
+    "完整路径": "第三篇  签约服务 > 第三章  特殊交易房屋 > 第一节  特殊房屋交易条件 > （二）明确还款、解抵押时间或带押过户细节",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 287,
+        "confidence": 0.769,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.769）",
+          "bge_score": 0.769
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "290": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第二节  组合贷款 > 四、组合贷款年限确定",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 298,
+        "confidence": 0.789,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.789）",
+          "bge_score": 0.789
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "259": {
+    "完整路径": "第四篇  交易服务 > 第二章  个人住房商业性贷款 > 第二节  商业贷款常见问题 > 七、贷款金额确定",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 305,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/个人住房商业性贷款/商业贷款常见问题/贷款金额确定-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/贷款金额确定",
+          "q_gps": "交易服务/个人住房商业性贷款/商业贷款常见问题/贷款金额确定-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "103": {
+    "完整路径": "第二篇  签前服务 > 第三章  客源管理 > 第二节  客源维护 > 二、挖掘核心需求",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 316,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/客源管理/客源维护/挖掘核心需求",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/客源管理/客源维护/挖掘核心需求",
+          "q_gps": "签前服务/客源管理/客源维护/挖掘核心需求"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "145": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第四节  合同解除 > 三、违约责任的承担方式",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 320,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/合同概述/合同解除/违约责任的承担方式",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/合同概述/合同解除/违约责任的承担方式",
+          "q_gps": "签约服务/合同概述/合同解除/违约责任的承担方式"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "210": {
+    "完整路径": "第三篇  签约服务 > 第三章  特殊交易房屋 > 第二节  交易房屋若干问题 > 十、全款公证买房有什么风险",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 322,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/特殊交易房屋/交易房屋若干问题/全款公证买房有什么风险-需要核实",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/特殊交易房屋/交易房屋若干问题/全款公证买房有什么风险",
+          "q_gps": "签约服务/特殊交易房屋/交易房屋若干问题/全款公证买房有什么风险-需要核实"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "232": {
+    "完整路径": "第三篇  签约服务 > 第四章  交易费用 > 第四节  交易费用若干问题 > 一、合同约定的违约金能否得到法院认可",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 325,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签约服务/交易费用/交易费用若干问题/合同约定的违约金能否得到法院认可",
+          "match_type": "full_path",
+          "kb_gps": "签约服务/交易费用/交易费用若干问题/合同约定的违约金能否得到法院认可",
+          "q_gps": "签约服务/交易费用/交易费用若干问题/合同约定的违约金能否得到法院认可"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "339": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第五节  交易税费常见问题 > 一、“家庭”的范围和单身的范围",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 333,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/交易税费常见问题/“家庭”的范围和单身的范围-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/交易税费常见问题/“家庭”的范围和单身的范围",
+          "q_gps": "交易服务/不动产交易税费/交易税费常见问题/“家庭”的范围和单身的范围-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "388": {
+    "完整路径": "第四篇  交易服务 > 第六章  物业交割 > （二）物业交割中的服务事项 > 2、房况物品确认",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 336,
+        "confidence": 0.775,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.775）",
+          "bge_score": 0.775
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "432": {
+    "完整路径": "第五篇  延伸服务 > 第一章  新房买卖 > 第六节  一二手联动 > 一、为什么要做一二手联动",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 341,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：延伸服务/新房买卖/一二手联动/为什么要做一二手联动—",
+          "match_type": "full_path",
+          "kb_gps": "延伸服务/新房买卖/一二手联动/为什么要做一二手联动",
+          "q_gps": "延伸服务/新房买卖/一二手联动/为什么要做一二手联动—"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "118": {
+    "完整路径": "第二篇  签前服务 > 第四章  带客看房 > 第二节  实地带看 > 二、带看中流程",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 357,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：签前服务/带客看房/实地带看/带看中流程",
+          "match_type": "full_path",
+          "kb_gps": "签前服务/带客看房/实地带看/带看中流程",
+          "q_gps": "签前服务/带客看房/实地带看/带看中流程"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "274": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第一节  公积金贷款 > 三、市属公积金贷款政策",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 369,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款政策-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款政策",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/公积金贷款/市属公积金贷款政策-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "293": {
+    "完整路径": "第四篇  交易服务 > 第三章  住房公积金贷款和组合贷款 > 第二节  组合贷款 > 五、组合贷款额度确定",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 370,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款额度确定-需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款额度确定",
+          "q_gps": "交易服务/住房公积金贷款和组合贷款/组合贷款/组合贷款额度确定-需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "326": {
+    "完整路径": "第四篇  交易服务 > 第四章  不动产交易税费 > 第三节  契税 > （一）影响契税税率的因素",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 373,
+        "confidence": 0.95,
+        "method": "GPS_FullPath",
+        "evidence": {
+          "reason": "全路径包含匹配：交易服务/不动产交易税费/契税/影响契税税率的因素—需要内化",
+          "match_type": "full_path",
+          "kb_gps": "交易服务/不动产交易税费/契税/影响契税税率的因素",
+          "q_gps": "交易服务/不动产交易税费/契税/影响契税税率的因素—需要内化"
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "GPS_FullPath"
+    ]
+  },
+  "129": {
+    "完整路径": "第三篇  签约服务 > 第一章  合同概述 > 第一节  合同签署 > （三）线上签约安全性 > 1、法律条款支持",
+    "掌握程度": "掌握",
+    "matched_questions": [
+      {
+        "question_index": 385,
+        "confidence": 0.898,
+        "method": "Statute_Collision",
+        "evidence": {
+          "reason": "法条硬碰撞：《电子签名法》第13条",
+          "bge_score": 0.75,
+          "bge_refined": true
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "Statute_Collision"
+    ]
+  },
+  "203": {
+    "完整路径": "第三篇  签约服务 > 第三章  特殊交易房屋 > 第二节  交易房屋若干问题 > 三、经纪人能否承诺交易房屋的具体税费",
+    "掌握程度": "熟悉",
+    "matched_questions": [
+      {
+        "question_index": 387,
+        "confidence": 0.785,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.785）",
+          "bge_score": 0.785
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  },
+  "224": {
+    "完整路径": "第三篇  签约服务 > 第四章  交易费用 > 第二节  服务佣金 > （二）不得承诺客户/业主退费",
+    "掌握程度": "了解",
+    "matched_questions": [
+      {
+        "question_index": 394,
+        "confidence": 0.776,
+        "method": "BGE_Vector",
+        "evidence": {
+          "reason": "BGE语义向量检索自动通过（Score=0.776）",
+          "bge_score": 0.776
+        }
+      }
+    ],
+    "total_matches": 1,
+    "methods_used": [
+      "BGE_Vector"
+    ]
+  }
+}

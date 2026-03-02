@@ -1,0 +1,31 @@
+import React from 'react';
+import { Navigate, Route, Routes } from 'react-router-dom';
+import AdminLayout from './layouts/AdminLayout';
+import DashboardPage from './pages/DashboardPage';
+import MaterialUploadPage from './pages/MaterialUploadPage';
+import SliceReviewPage from './pages/SliceReviewPage';
+import MappingReviewPage from './pages/MappingReviewPage';
+import AIGeneratePage from './pages/AIGeneratePage';
+import AIGenerateTaskDetailPage from './pages/AIGenerateTaskDetailPage';
+import QuestionBankPage from './pages/QuestionBankPage';
+import CityAdminPage from './pages/CityAdminPage';
+import QualityEvaluationPage from './pages/QualityEvaluationPage';
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<AdminLayout />}>
+        <Route index element={<DashboardPage />} />
+        <Route path="materials" element={<MaterialUploadPage />} />
+        <Route path="slice-review" element={<SliceReviewPage />} />
+        <Route path="mapping-review" element={<MappingReviewPage />} />
+        <Route path="ai-generate" element={<AIGeneratePage />} />
+        <Route path="ai-generate/tasks/:taskId" element={<AIGenerateTaskDetailPage />} />
+        <Route path="qa-evaluation" element={<QualityEvaluationPage />} />
+        <Route path="question-bank" element={<QuestionBankPage />} />
+        <Route path="city-admin" element={<CityAdminPage />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}

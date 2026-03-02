@@ -4,7 +4,7 @@
 测试配置加载是否正确
 """
 import os
-from exam_factory import API_KEY, GEMINI_KEY, BASE_URL, MODEL_NAME
+from exam_factory import API_KEY, BASE_URL, MODEL_NAME
 
 def test_config_loading():
     print("=" * 60)

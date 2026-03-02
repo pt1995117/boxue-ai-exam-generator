@@ -1,0 +1,10 @@
+{
+  "graphs": {
+    "app": "exam_graph:app"
+  },
+  "dependencies": [
+    "exam_graph.py",
+    "exam_factory.py",
+    "calculation_logic.py"
+  ]
+}

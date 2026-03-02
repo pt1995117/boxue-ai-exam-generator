@@ -1,0 +1,22 @@
+{
+  "admin": {
+    "role": "platform_admin",
+    "tenants": [
+      "hz",
+      "bj",
+      "sh"
+    ]
+  },
+  "teacher_hz": {
+    "role": "city_teacher",
+    "tenants": [
+      "hz"
+    ]
+  },
+  "viewer_hz": {
+    "role": "city_viewer",
+    "tenants": [
+      "hz"
+    ]
+  }
+}

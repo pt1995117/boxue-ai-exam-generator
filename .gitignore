@@ -55,6 +55,9 @@ test_output/
 generated_samples.xlsx
 missing_lines_report.txt
 
+# LLM Rerank debug (TP12.13: parse failure raw dumps)
+llm_rerank_debug_*.txt
+
 # Temporary files
 *.tmp
 *.bak

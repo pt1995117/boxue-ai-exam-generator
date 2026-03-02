@@ -7,8 +7,14 @@ from pydantic import BaseModel, Field, ValidationError
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
-from google import genai
-from dotenv import load_dotenv
+from volcenginesdkarkruntime import Ark
+from tenants_config import (
+    resolve_tenant_kb_path,
+    resolve_tenant_history_path,
+    tenant_mapping_path,
+    tenant_mapping_review_path,
+    resolve_tenant_from_env,
+)
 
 # Load environment variables
 config_path = "填写您的Key.txt"
@@ -22,14 +28,48 @@ if os.path.exists(config_path):
                 config[key.strip()] = value.strip()
 
 # Fallback to .env or system env
-API_KEY = config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-GEMINI_KEY = config.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-BASE_URL = config.get("OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
-MODEL_NAME = config.get("OPENAI_MODEL") or os.getenv("OPENAI_MODEL", "deepseek-reasoner")
+DEEPSEEK_API_KEY = config.get("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+DEEPSEEK_BASE_URL = config.get("DEEPSEEK_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_MODEL = config.get("DEEPSEEK_MODEL") or os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
 
-# Paths
+API_KEY = DEEPSEEK_API_KEY or config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+BASE_URL = DEEPSEEK_BASE_URL or config.get("OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+MODEL_NAME = DEEPSEEK_MODEL or config.get("OPENAI_MODEL") or os.getenv("OPENAI_MODEL", "deepseek-reasoner")
+
+# Critic-specific configuration for finance question validation
+CRITIC_API_KEY = config.get("CRITIC_API_KEY") or os.getenv("CRITIC_API_KEY") or API_KEY
+CRITIC_BASE_URL = config.get("CRITIC_BASE_URL") or os.getenv("CRITIC_BASE_URL") or BASE_URL
+CRITIC_MODEL = config.get("CRITIC_MODEL") or os.getenv("CRITIC_MODEL") or MODEL_NAME
+CRITIC_PROVIDER = config.get("CRITIC_PROVIDER", "").lower() or os.getenv("CRITIC_PROVIDER", "").lower()
+
+# Code generation model configuration (for dynamic code generation)
+CODE_GEN_MODEL = config.get("CODE_GEN_MODEL") or os.getenv("CODE_GEN_MODEL", "doubao-seed-1.8")
+CODE_GEN_API_KEY = config.get("CODE_GEN_API_KEY") or os.getenv("CODE_GEN_API_KEY") or API_KEY
+CODE_GEN_BASE_URL = config.get("CODE_GEN_BASE_URL") or os.getenv("CODE_GEN_BASE_URL") or BASE_URL
+CODE_GEN_PROVIDER = config.get("CODE_GEN_PROVIDER", "").lower() or os.getenv("CODE_GEN_PROVIDER", "").lower()
+IMAGE_PROVIDER = config.get("IMAGE_PROVIDER", "").lower() or os.getenv("IMAGE_PROVIDER", "").lower()
+
+# Volcano Ark config (API Key preferred; AK/SK fallback)
+ARK_API_KEY = config.get("ARK_API_KEY") or os.getenv("ARK_API_KEY", "")
+VOLC_ACCESS_KEY_ID = config.get("VOLC_ACCESS_KEY_ID") or os.getenv("VOLC_ACCESS_KEY_ID", "")
+VOLC_SECRET_ACCESS_KEY = config.get("VOLC_SECRET_ACCESS_KEY") or os.getenv("VOLC_SECRET_ACCESS_KEY", "")
+ARK_BASE_URL = config.get("ARK_BASE_URL") or os.getenv("ARK_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
+ARK_PROJECT_NAME = config.get("ARK_PROJECT_NAME") or os.getenv("ARK_PROJECT_NAME", "")
+
+# Paths (tenant-aware; fallback to existing single-city files)
+def set_active_tenant(tenant_id: str) -> None:
+    global TENANT_ID, KB_PATH, HISTORY_PATH, MAPPING_PATH
+    TENANT_ID = tenant_id
+    KB_PATH = str(resolve_tenant_kb_path(tenant_id))
+    HISTORY_PATH = str(resolve_tenant_history_path(tenant_id))
+    MAPPING_PATH = str(tenant_mapping_path(tenant_id))
+
+
+TENANT_ID = resolve_tenant_from_env()
 KB_PATH = "bot_knowledge_base.jsonl"
 HISTORY_PATH = "存量房买卖母卷ABCD.xls"
+MAPPING_PATH = "knowledge_question_mapping.json"
+set_active_tenant(TENANT_ID)
 OUTPUT_PATH = "generated_exam_questions.xlsx"
 
 # --- Pydantic Models ---
@@ -37,21 +77,53 @@ class ExamQuestion(BaseModel):
     题干: str = Field(..., description="The question stem")
     选项1: str = Field(..., description="Option A")
     选项2: str = Field(..., description="Option B")
-    选项3: str = Field(..., description="Option C")
-    选项4: str = Field(..., description="Option D")
-    正确答案: str = Field(..., pattern="^[ABCD]$", description="Correct answer (A/B/C/D)")
+    选项3: str = Field("", description="Option C")
+    选项4: str = Field("", description="Option D")
+    选项5: str = Field("", description="Option E")
+    选项6: str = Field("", description="Option F")
+    选项7: str = Field("", description="Option G")
+    选项8: str = Field("", description="Option H")
+    正确答案: str = Field(..., pattern="^[ABCDEFGH]+$", description="Correct answer (A-H or combination for multi-choice)")
     解析: str = Field(..., description="Structured explanation: 1. Source 2. Analysis 3. Conclusion")
     难度值: float = Field(..., ge=0, le=1, description="Difficulty 0.0-1.0")
-    考点: str = Field(..., description="The specific knowledge point tested")
 
 # --- Knowledge Retriever (Unchanged) ---
 class KnowledgeRetriever:
-    def __init__(self, kb_path, history_path):
+    def __init__(self, kb_path, history_path, mapping_path: Optional[str] = None):
         print("Loading Knowledge Base...")
         self.kb_data = []
+        self.mapping_path = mapping_path or MAPPING_PATH
+        self.mapping_review = {}
+        review_path = tenant_mapping_review_path(TENANT_ID)
+        if os.path.exists(review_path):
+            try:
+                with open(review_path, "r", encoding="utf-8") as rf:
+                    raw_review = json.load(rf)
+                if isinstance(raw_review, dict):
+                    self.mapping_review = raw_review
+            except Exception:
+                self.mapping_review = {}
         with open(kb_path, 'r', encoding='utf-8') as f:
             for line in f:
-                self.kb_data.append(json.loads(line))
+                item = json.loads(line)
+                # Adapter for new slice format: Construct '核心内容' if missing
+                if '核心内容' not in item and '结构化内容' in item:
+                    struct = item['结构化内容']
+                    parts = []
+                    if struct.get('context_before'):
+                        parts.append(struct['context_before'])
+                    if struct.get('tables'):
+                        parts.extend([str(t) for t in struct['tables']])
+                    if struct.get('context_after'):
+                        parts.append(struct['context_after'])
+                    if struct.get('formulas'):
+                        parts.extend(struct['formulas'])
+                    if struct.get('examples'):
+                        parts.extend(struct['examples'])
+                    
+                    item['核心内容'] = "\n".join(parts)
+                
+                self.kb_data.append(item)
         
         print("Loading Historical Questions...")
         self.history_df = pd.read_excel(history_path)
@@ -60,28 +132,69 @@ class KnowledgeRetriever:
         self.vectorizer = TfidfVectorizer()
         self.history_corpus = (self.history_df['题干'].astype(str) + " " + self.history_df['考点'].astype(str)).tolist()
         self.tfidf_matrix = self.vectorizer.fit_transform(self.history_corpus)
+
+        # Index KB slices for related-slice retrieval
+        self.kb_vectorizer = TfidfVectorizer()
+        self.kb_corpus = [
+            f"{item.get('完整路径','')} {item.get('核心内容','')}"
+            for item in self.kb_data
+        ]
+        self.kb_tfidf_matrix = self.kb_vectorizer.fit_transform(self.kb_corpus)
         
-        # Load question-knowledge mapping
+        # Load knowledge-question mapping
         print("Loading Question-Knowledge Mapping...")
-        self.kb_to_questions = {}  # Reverse index: kb_path -> [question_indices]
-        try:
-            with open('question_knowledge_mapping.json', 'r', encoding='utf-8') as f:
+        self.kb_to_questions = {}  # Reverse index: kb_path -> list of mapping entries
+        self.mapping = {}
+        kb_path_by_id = {i: item.get("完整路径") for i, item in enumerate(self.kb_data)}
+        mapping_loaded = False
+
+        mapping_candidates = [self.mapping_path, "knowledge_question_mapping.json"]
+        mapping_candidates = [p for i, p in enumerate(mapping_candidates) if p and p not in mapping_candidates[:i]]
+
+        selected_mapping_path = next((p for p in mapping_candidates if os.path.exists(p)), None)
+        if selected_mapping_path:
+            with open(selected_mapping_path, "r", encoding="utf-8") as f:
                 self.mapping = json.load(f)
-                # Build reverse index
-                for q_idx_str, mapping_info in self.mapping.items():
-                    q_idx = int(q_idx_str)
-                    kb_path = mapping_info['matched_kb_path']
-                    if kb_path not in self.kb_to_questions:
-                        self.kb_to_questions[kb_path] = []
-                    self.kb_to_questions[kb_path].append(q_idx)
-                print(f"Mapped {len(self.mapping)} questions to {len(self.kb_to_questions)} KB paths")
-        except FileNotFoundError:
-            print("Warning: question_knowledge_mapping.json not found. Using TF-IDF fallback only.")
+            total_candidates = 0
+            kept_candidates = 0
+            for slice_id, entry in self.mapping.items():
+                try:
+                    slice_idx = int(slice_id)
+                except Exception:
+                    slice_idx = None
+                kb_path = entry.get("完整路径") or (kb_path_by_id.get(slice_idx) if slice_idx is not None else None)
+                if not kb_path:
+                    continue
+                for m in entry.get("matched_questions", []):
+                    total_candidates += 1
+                    q_idx = m.get("question_index")
+                    if q_idx is None:
+                        continue
+                    map_key = f"{slice_id}:{q_idx}"
+                    review = self.mapping_review.get(map_key, {})
+                    # Enforce: only confirmed mapping can be used for generation examples
+                    if review.get("confirm_status") != "confirmed":
+                        continue
+                    self.kb_to_questions.setdefault(kb_path, []).append({
+                        "q_idx": int(q_idx),
+                        "confidence": float(m.get("confidence", 0.0)),
+                        "method": m.get("method", "")
+                    })
+                    kept_candidates += 1
+            print(f"Mapped {len(self.mapping)} slices to {len(self.kb_to_questions)} KB paths ({selected_mapping_path})")
+            print(f"Confirmed mapping usage: kept {kept_candidates}/{total_candidates} entries")
+            mapping_loaded = True
+
+        if not mapping_loaded:
+            print("Warning: confirmed mapping file not found. No mapped examples will be used.")
             self.mapping = {}
             self.kb_to_questions = {}
 
     def get_random_kb_chunk(self):
-        valid_chunks = [c for c in self.kb_data if c['核心内容'] and "（章节标题" not in c['Bot专用切片']]
+        # New format is already filtered for empty headers, so just check for content.
+        valid_chunks = [c for c in self.kb_data if c.get('核心内容')]
+        if not valid_chunks:
+            return random.choice(self.kb_data) # Fallback
         return random.choice(valid_chunks)
     
     def _is_valid_example(self, row):
@@ -137,23 +250,49 @@ class KnowledgeRetriever:
                 "难度": row['难度值']
             })
         return examples
+
+    def is_similar_to_history(self, text: str, threshold: float = 0.9, top_k: int = 3):
+        """Check if text is highly similar to existing history questions."""
+        if not text:
+            return False, None, None
+        try:
+            query_vec = self.vectorizer.transform([text])
+            similarities = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
+            top_idx = similarities.argsort()[::-1]
+            if not len(top_idx):
+                return False, None, None
+            best_idx = top_idx[0]
+            best_score = similarities[best_idx]
+            if best_score >= threshold:
+                row = self.history_df.iloc[best_idx]
+                return True, best_score, str(row.get('题干', ''))
+            return False, best_score, None
+        except Exception:
+            return False, None, None
     
     def get_examples_by_knowledge_point(self, kb_chunk, k=3, question_type=None):
         """Get examples that match this knowledge point."""
         path = kb_chunk['完整路径']
-        
+
         # Find questions mapped to this KB path
         if path in self.kb_to_questions:
-            indices = self.kb_to_questions[path]
+            entries = self.kb_to_questions[path]
+            strong_methods = {"exact_path_match", "fuzzy_path_match"}
+            filtered = [
+                e for e in entries
+                if e.get("method") in strong_methods or e.get("confidence", 0.0) >= 0.3
+            ]
+            if not filtered:
+                return []
             # Try to get more candidates to account for filtering
-            max_tries = min(len(indices), k * 5)  # Increased from k*3 to k*5 for type filtering
-            candidates = random.sample(indices, max_tries)
+            max_tries = min(len(filtered), k * 5)  # Increased from k*3 to k*5 for type filtering
+            candidates = random.sample(filtered, max_tries)
             
             examples = []
-            for idx in candidates:
+            for entry in candidates:
                 if len(examples) >= k:
                     break
-                row = self.history_df.iloc[idx]
+                row = self.history_df.iloc[entry["q_idx"]]
                 # Skip invalid examples
                 if not self._is_valid_example(row):
                     continue
@@ -171,47 +310,89 @@ class KnowledgeRetriever:
                 })
             return examples
         else:
-            # Fallback to TF-IDF if no mapping found
-            return self.get_similar_examples(kb_chunk['核心内容'], k, question_type)
+            # No mapping -> no examples
+            return []
+
+    def get_parent_slices(self, kb_chunk):
+        path = kb_chunk.get("完整路径", "")
+        if not path or " > " not in path:
+            return []
+        parent_path = " > ".join(path.split(" > ")[:-1]).strip()
+        if not parent_path:
+            return []
+        prefix = parent_path + " > "
+        return [
+            c for c in self.kb_data
+            if isinstance(c, dict) and str(c.get("完整路径", "")).startswith(prefix)
+        ]
+
+    def get_related_kb_chunks(self, query_text: str, k: int = 5, exclude_paths=None):
+        if not query_text:
+            return []
+        if exclude_paths is None:
+            exclude_paths = set()
+        else:
+            exclude_paths = set(exclude_paths)
+        try:
+            query_vec = self.kb_vectorizer.transform([query_text])
+            sims = cosine_similarity(query_vec, self.kb_tfidf_matrix).flatten()
+            top_idx = sims.argsort()[::-1]
+            results = []
+            for idx in top_idx:
+                if len(results) >= k:
+                    break
+                chunk = self.kb_data[idx]
+                path = chunk.get("完整路径", "")
+                if path in exclude_paths:
+                    continue
+                results.append(chunk)
+            return results
+        except Exception:
+            return []
 
 # --- Multi-Agent System ---
 
 class BaseAgent:
     def __init__(self, api_key: str, base_url: str, model: str):
         self.model_name = model
-        self.is_gemini = "gemini" in model.lower() or "flash" in model.lower()
-        
-        if self.is_gemini:
-            key_to_use = api_key or GEMINI_KEY
-            if not key_to_use:
-                 raise ValueError("Gemini API Key is missing.")
-            self.client = genai.Client(api_key=key_to_use)
-        else:
+        self.ark_project_name = ARK_PROJECT_NAME
+
+        base_url_lower = str(base_url or "").lower()
+        use_ark = ("volces.com" in base_url_lower) or ("ark.cn" in base_url_lower)
+        is_deepseek = "deepseek" in (self.model_name or "").lower()
+        if is_deepseek and not use_ark:
             if not api_key:
-                raise ValueError("OpenAI API Key is missing.")
+                raise ValueError("DeepSeek API Key is missing.")
             self.client = OpenAI(api_key=api_key, base_url=base_url)
+        else:
+            ark_key = ARK_API_KEY or api_key
+            if ark_key:
+                self.client = Ark(
+                    api_key=ark_key,
+                    base_url=ARK_BASE_URL,
+                )
+            else:
+                if not (VOLC_ACCESS_KEY_ID and VOLC_SECRET_ACCESS_KEY):
+                    raise ValueError("ARK_API_KEY is missing, and VOLC_ACCESS_KEY_ID / VOLC_SECRET_ACCESS_KEY is also missing.")
+                self.client = Ark(
+                    ak=VOLC_ACCESS_KEY_ID,
+                    sk=VOLC_SECRET_ACCESS_KEY,
+                    base_url=ARK_BASE_URL,
+                )
 
     def call_llm(self, prompt: str, json_mode: bool = False) -> str:
         try:
-            if self.is_gemini:
-                config = {"response_mime_type": "application/json"} if json_mode else None
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=config
-                )
-                return response.text
-            else:
-                response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    response_format={"type": "json_object"} if json_mode else None,
-                    temperature=0.3
-                )
-                return response.choices[0].message.content
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"} if json_mode else None,
+                temperature=0.3,
+                extra_headers=({"X-Project-Name": self.ark_project_name} if self.ark_project_name else None),
+            )
+            return response.choices[0].message.content
         except Exception as e:
             raise e
 
@@ -328,14 +509,27 @@ class QuestionGenerator:
         result = None
         error = None
         for event in self.generate_events(kb_chunk, examples):
-            if 'final_json' in event:
-                result = event['final_json']
-            if 'error' in event: # Custom error handling if needed
-                pass
+            # event is like {"writer": {"final_json": ...}}
+            for node_name, state_update in event.items():
+                if isinstance(state_update, dict):
+                    if 'final_json' in state_update and state_update['final_json']:
+                        result = state_update['final_json']
+                    if 'type' in state_update and state_update['type'] == 'error':
+                        error = state_update.get('message', 'Unknown error')
+            
+            # Support result event type
+            if event.get('type') == 'result':
+                result = event.get('data')
+            if event.get('type') == 'error':
+                error = event.get('message')
+
         return result, error
 
     def generate_events(self, kb_chunk, examples):
         """Yields state updates from LangGraph"""
+        # Local import to avoid circular dependency
+        from exam_graph import app as graph_app
+        
         inputs = {
             "kb_chunk": kb_chunk,
             "examples": examples,
@@ -349,6 +543,9 @@ class QuestionGenerator:
             for output in graph_app.stream(inputs, config=config):
                 # output is a dict where key is node name, value is state update
                 for node_name, state_update in output.items():
+                    print(f"DEBUG EVENT: {node_name} -> {state_update.keys()}")
+                    if 'logs' in state_update:
+                        print(f"LOGS: {state_update['logs']}")
                     # Yield the node name and the update for the UI
                     yield {node_name: state_update}
                     
@@ -395,7 +592,7 @@ def main():
     print("=== Exam Factory (Multi-Agent) Starting ===")
     
     # Check API Key
-    if (not API_KEY or "请将您的Key粘贴在这里" in API_KEY) and (not GEMINI_KEY or "请将您的Key粘贴在这里" in GEMINI_KEY):
+    if not API_KEY or "请将您的Key粘贴在这里" in API_KEY:
         print("ERROR: API Key not found.")
         return
 

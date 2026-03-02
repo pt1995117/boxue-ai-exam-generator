@@ -1,28 +1,34 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Print configured model endpoints from local key file."""
+
 import os
-from google import genai
 
-# 1. Load Key
-config_path = "填写您的Key.txt"
-gemini_key = ""
-if os.path.exists(config_path):
-    with open(config_path, 'r', encoding='utf-8') as f:
+
+def load_config(path: str = "填写您的Key.txt") -> dict[str, str]:
+    cfg: dict[str, str] = {}
+    if not os.path.exists(path):
+        return cfg
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
-            if "GEMINI_API_KEY=" in line and "请将您的Key粘贴在这里" not in line:
-                gemini_key = line.split("=", 1)[1].strip()
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                cfg[k.strip()] = v.strip()
+    return cfg
 
-if not gemini_key:
-    print("❌ 未找到 Gemini Key")
-    exit(1)
 
-print(f"✅ Key: {gemini_key[:5]}******")
+def main() -> None:
+    cfg = load_config()
+    print("当前配置：")
+    print(f"- OPENAI_BASE_URL: {cfg.get('OPENAI_BASE_URL', 'https://api.deepseek.com')}")
+    print(f"- OPENAI_MODEL: {cfg.get('OPENAI_MODEL', 'deepseek-reasoner')}")
+    print(f"- DEEPSEEK_BASE_URL: {cfg.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')}")
+    print(f"- DEEPSEEK_MODEL: {cfg.get('DEEPSEEK_MODEL', 'deepseek-reasoner')}")
+    print(f"- ARK_BASE_URL: {cfg.get('ARK_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3')}")
+    print(f"- CRITIC_MODEL: {cfg.get('CRITIC_MODEL', cfg.get('OPENAI_MODEL', 'deepseek-reasoner'))}")
+    print(f"- CODE_GEN_MODEL: {cfg.get('CODE_GEN_MODEL', 'doubao-seed-1.8')}")
 
-# 2. List Models
-try:
-    client = genai.Client(api_key=gemini_key)
-    print("正在获取可用模型列表...")
-    # Pager object, iterate to get models
-    for m in client.models.list():
-        print(f"- {m.name} (Display: {m.display_name})")
 
-except Exception as e:
-    print(f"❌ 获取模型列表失败: {e}")
+if __name__ == "__main__":
+    main()

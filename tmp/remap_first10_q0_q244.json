@@ -1,0 +1,136 @@
+{
+  "scope": {
+    "slice_count": 10,
+    "slice_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "question_ids": [
+      0,
+      244
+    ]
+  },
+  "results": {
+    "0": {
+      "meta_conflict": {
+        "meta_conflict": true,
+        "matched_count": 1,
+        "total_count": 4,
+        "matched_tokens": [
+          "贝壳战略"
+        ],
+        "missing_tokens": [
+          "行业与贝壳篇",
+          "认识贝壳",
+          "贝壳发展历程"
+        ],
+        "detail": "路径字段与题干/解析可能不一致：matched=1/4"
+      },
+      "matches": [
+        {
+          "slice_id": 7,
+          "path": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第一节  贝壳发展历程 > 二、贝壳战略",
+          "confidence": 0.842,
+          "method": "LLM_Logic",
+          "evidence": {
+            "reason": "LLM专家逻辑重排序（含元数据一致性门禁）",
+            "bge_score": 0.917,
+            "bge_refined": true,
+            "meta_conflict": true,
+            "meta_conflict_detail": "路径字段与题干/解析可能不一致：matched=1/4"
+          }
+        },
+        {
+          "slice_id": 9,
+          "path": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第一节  贝壳发展历程 > 二、贝壳战略 > （二）第二翼：惠居",
+          "confidence": 0.831,
+          "method": "LLM_Logic",
+          "evidence": {
+            "reason": "LLM专家逻辑重排序（含元数据一致性门禁）",
+            "bge_score": 0.812,
+            "bge_refined": true,
+            "meta_conflict": true,
+            "meta_conflict_detail": "路径字段与题干/解析可能不一致：matched=1/4"
+          }
+        },
+        {
+          "slice_id": 8,
+          "path": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第一节  贝壳发展历程 > 二、贝壳战略 > （一）第一翼：整装",
+          "confidence": 0.83,
+          "method": "LLM_Logic",
+          "evidence": {
+            "reason": "LLM专家逻辑重排序（含元数据一致性门禁）",
+            "bge_score": 0.803,
+            "bge_refined": true,
+            "meta_conflict": true,
+            "meta_conflict_detail": "路径字段与题干/解析可能不一致：matched=1/4"
+          }
+        }
+      ]
+    },
+    "244": {
+      "meta_conflict": {
+        "meta_conflict": true,
+        "matched_count": 0,
+        "total_count": 4,
+        "matched_tokens": [],
+        "missing_tokens": [
+          "行业与贝壳篇",
+          "认识行业",
+          "房地产行业",
+          "贝壳战略"
+        ],
+        "detail": "路径字段与题干/解析可能不一致：matched=0/4"
+      },
+      "matches": [
+        {
+          "slice_id": 7,
+          "path": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第一节  贝壳发展历程 > 二、贝壳战略",
+          "confidence": 0.84,
+          "method": "LLM_Logic",
+          "evidence": {
+            "reason": "LLM专家逻辑重排序（含元数据一致性门禁）",
+            "bge_score": 0.901,
+            "bge_refined": true,
+            "meta_conflict": true,
+            "meta_conflict_detail": "路径字段与题干/解析可能不一致：matched=0/4"
+          }
+        },
+        {
+          "slice_id": 9,
+          "path": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第一节  贝壳发展历程 > 二、贝壳战略 > （二）第二翼：惠居",
+          "confidence": 0.827,
+          "method": "LLM_Logic",
+          "evidence": {
+            "reason": "LLM专家逻辑重排序（含元数据一致性门禁）",
+            "bge_score": 0.771,
+            "bge_refined": true,
+            "meta_conflict": true,
+            "meta_conflict_detail": "路径字段与题干/解析可能不一致：matched=0/4"
+          }
+        },
+        {
+          "slice_id": 8,
+          "path": "第一篇  行业与贝壳 > 第二章  认识贝壳 > 第一节  贝壳发展历程 > 二、贝壳战略 > （一）第一翼：整装",
+          "confidence": 0.826,
+          "method": "LLM_Logic",
+          "evidence": {
+            "reason": "LLM专家逻辑重排序（含元数据一致性门禁）",
+            "bge_score": 0.756,
+            "bge_refined": true,
+            "meta_conflict": true,
+            "meta_conflict_detail": "路径字段与题干/解析可能不一致：matched=0/4"
+          }
+        }
+      ]
+    }
+  }
+}

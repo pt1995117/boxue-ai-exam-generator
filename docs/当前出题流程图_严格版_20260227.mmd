@@ -1,0 +1,79 @@
+flowchart TD
+    A[开始: 选择城市与教材版本] --> B{入口}
+    B -->|同步| B1[POST /generate]
+    B -->|流式| B2[POST /generate/stream]
+    B -->|异步任务| B3[POST /generate/tasks]
+    B3 --> B4[后台worker调用 /generate/stream]
+
+    B1 --> C
+    B2 --> C
+    B4 --> C
+
+    C{前置校验} -->|失败| Cx[返回错误并终止]
+    C --> C1[校验 gen_scope/question_type/generation_mode]
+    C1 --> C2[解析 material_version]
+    C2 --> C3[加载切片文件]
+    C3 --> C4[仅保留 approved 切片]
+    C4 --> C5[与用户选择 slice_ids 求交集]
+    C5 --> C6[构建 KnowledgeRetriever\n加载切片 母题 映射示例]
+    C6 --> C7[读取 Key 配置\nOPENAI 然后 DEEPSEEK 然后 CRITIC]
+
+    C7 --> D[按题量循环]
+    D --> D1[选择切片 sid\n随机或轮询]
+    D1 --> E[Router]
+    E --> E1{路由结果}
+    E1 -->|CalculatorAgent/FinanceAgent| F[Calculator]
+    E1 -->|LegalAgent/GeneralAgent| G[Specialist]
+    F --> H[Writer]
+    G --> H
+
+    H --> I[Critic]
+    I --> I0{是否通过}
+    I0 -->|是| S[标记 critic_passed]
+    I0 -->|否| I1{critical_decision}
+
+    I1 -->|fix_required_unmet 为 true| R1[Reroute 回到 Router]
+    R1 --> E
+    I1 -->|retry_count 大于等于 3| R2[Self-heal 结束图流程]
+    I1 -->|was_fixed 为 false| J[Fixer]
+    I1 -->|was_fixed 为 true 且 issue 为 major| R1
+    I1 -->|was_fixed 为 true 且 issue 为 minor| J
+    J --> I
+
+    I --> K{重复题拦截\n历史相似度是否达到 0.9}
+    K -->|是| K1[置为 major fail\nfinal_json 置空]
+    K -->|否| K2[继续]
+
+    S --> L{是否可保存当前题}
+    K1 --> L
+    K2 --> L
+    L -->|q_json存在 且 critic_passed 为 true| M[加入 generated]
+    L -->|q_json存在 但 critic未过/未见| N[记 errors]
+    L -->|q_json不存在| N
+
+    M --> O[写 question_trace/llm_summary/unstable_flags]
+    N --> O
+    O --> P{还有下一题?}
+    P -->|是| D
+    P -->|否| Q{save_to_bank?}
+
+    Q -->|是 且 generated>0| Q1[写入 local_question_bank.jsonl]
+    Q -->|否| Q2[不入库]
+    Q1 --> T[持久化 QA run + 审计日志]
+    Q2 --> T
+
+    T --> U{同步接口且 generated 为 0 且 errors 大于 0}
+    U -->|是| U1[返回 502 GENERATION_FAILED]
+    U -->|否| U2[返回 run_id/items/generated/saved/errors]
+
+    classDef api fill:#E8F3FF,stroke:#2B6CB0,color:#1A365D;
+    classDef ai fill:#F3E8FF,stroke:#6B46C1,color:#44337A;
+    classDef gate fill:#FFF7E6,stroke:#B7791F,color:#744210;
+    classDef store fill:#E6FFFA,stroke:#2C7A7B,color:#234E52;
+    classDef risk fill:#FFF1F0,stroke:#C53030,color:#742A2A;
+
+    class B,B1,B2,B3,B4 api;
+    class E,F,G,H,I,J ai;
+    class C,Cx,C1,C2,C3,C4,C5,C6,C7,E1,I0,I1,K,L,P,Q,U gate;
+    class M,O,Q1,T,U2 store;
+    class K1,N,R2,U1 risk;

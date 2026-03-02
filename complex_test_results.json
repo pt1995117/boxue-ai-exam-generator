@@ -1,0 +1,47 @@
+[
+  {
+    "name": "难题1：增值税 - 满2年非普通住宅（差额计算）",
+    "hardcoded": 10.6,
+    "generated": 10.6,
+    "match": true,
+    "trap": "模型容易忘记 /1.05 这个除法，或者搞混差额/全额条件",
+    "reasoning": "根据教材规则，增值税计算需先判断是否为住宅。本题中'是否住宅'为true，进入住宅判断逻辑。持有年限3年满足'满2年'条件，但'是否普通住宅'为false，属于'满2年+非普通住宅'情况，适用差额征收公式：(网签价-原值)/1.05 × 5.3%。",
+    "code": "网签价 = 630\n原值 = 420\n持有年限 = 3\n是否普通住宅 = False\n是否住宅 = True\nif 是否住宅:\n    if 持有年限 >= 2:\n        if 是否普通住宅:\n            result = 0\n        else:\n            result = (网签价 - 原值) / 1.05 * 0.053\n    else:\n        result = 网签价 / 1.05 * 0.053\nelse:\n    result = (网签价 - 原值) / 1.05 * 0.053"
+  },
+  {
+    "name": "难题2：公积金贷款 - 多步骤计算+取最小值",
+    "hardcoded": 120,
+    "generated": 10,
+    "match": false,
+    "trap": "模型可能只算公式，忘记取 min()；或者单位转换出错（万元 vs 元）",
+    "reasoning": "根据教材规则，首先计算公式额度 = (借款人余额 + 共同申请人余额) × 倍数 × 年限系数。然后取公式额度、最高额度、保底额度（10万）三者中的最小值作为最终结果。测试场景中无共同申请人，年限系数1.5，计算得225万，但最高额度120万，保底10万，因此最小值为120万。",
+    "code": "borrower_balance = 7.5\nco_borrower_balance = 0\nmultiplier = 20\nyear_factor = 1.5\nmax_limit = 120\nbase_limit = 10\nformula_amount = (borrower_balance + co_borrower_balance) * multiplier * year_factor\nif formula_amount <= max_limit and formula_amount <= base_limit:\n    result = formula_amount\nelif max_limit <= formula_amount and max_limit <= base_limit:\n    result = max_limit\nelse:\n    result = base_limit"
+  },
+  {
+    "name": "难题3：经济适用房土地出让金 - 时间节点判断",
+    "hardcoded": 35.0,
+    "generated": 35.0,
+    "match": true,
+    "trap": "时间判断容易出错；2008年之前/之后公式完全不同",
+    "reasoning": "根据教材规则，经济适用房土地出让金计算以2008年4月11日为时间节点。购买年份2010年在2008年4月11日之后，适用规则2：土地出让金 = (网签价 - 原购房价) × 70%。网签价100万，原购房价50万，计算得(100-50)×70% = 35万。",
+    "code": "wangqian = 100\nyuangou = 50\ngoumai_year = 2010\nif goumai_year < 2008:\n    result = wangqian * 0.1\nelse:\n    result = (wangqian - yuangou) * 0.7"
+  },
+  {
+    "name": "难题4：房龄+贷款年限 - 多步骤中间计算",
+    "hardcoded": 25,
+    "generated": 25,
+    "match": true,
+    "trap": "多步骤计算，房龄是中间结果；容易漏掉借款人年龄约束",
+    "reasoning": "根据教材规则，先计算房龄：房龄 = 50 - (当前年份 - 建成年代)。然后计算按房龄的最长贷款年限：最长贷款年限 = 50 - 房龄。接着计算按年龄的贷款年限：年龄贷款年限 = 65 - 借款人年龄。最后取两者的最小值作为最终贷款年限。",
+    "code": "current_year = 2025\nbuilt_year = 1993\nborrower_age = 40\nhouse_age = 50 - (current_year - built_year)\nmax_loan_years_by_house = 50 - house_age\nmax_loan_years_by_age = 65 - borrower_age\nif max_loan_years_by_house < max_loan_years_by_age:\n    result = max_loan_years_by_house\nelse:\n    result = max_loan_years_by_age"
+  },
+  {
+    "name": "难题5：已购公房土地出让金 - 简单但易错的单位问题",
+    "hardcoded": 1248.0,
+    "generated": 1248.0,
+    "match": true,
+    "trap": "单位问题：结果是【元】不是万元；模型可能混淆单位",
+    "reasoning": "根据教材规则，已购公房土地出让金计算公式为：建筑面积 × 当年成本价 × 1%。注意结果单位是元，不是万元，因此直接计算即可，无需单位转换。测试场景中建筑面积80平方米，成本价1560元/平方米，计算过程为80 × 1560 × 0.01 = 1248元。",
+    "code": "建筑面积 = 80\n成本价 = 1560\nresult = 建筑面积 * 成本价 * 0.01"
+  }
+]

@@ -1,0 +1,53 @@
+flowchart TD
+    A[开始: 管理端选择城市与教材版本] --> B[教材上传\nAPI /materials/upload]
+    B --> C[生成切片 knowledge_slices_material.jsonl]
+    C --> D[切片审核\npending -> approved]
+
+    D --> E[上传母题并映射\nAPI /materials/material/reference/upload]
+    E --> F[map_knowledge_to_questions.py\n生成 knowledge_question_mapping_material.json]
+    F --> G[映射审核\npending -> approved]
+
+    G --> H[发起出题\nAPI /generate 或 /generate/stream]
+    H --> I{前置校验}
+    I -->|无切片/无approved切片| I1[返回错误并终止]
+    I -->|通过| J[构建 Retriever\n加载切片+已确认映射+母题示例]
+
+    J --> K[按题量循环选 slice]
+    K --> L[Router 路由\nCalculator/Legal/General]
+    L --> M[Specialist 初稿]
+    M --> N[Writer 定稿\n统一题型与格式]
+    N --> O[Critic 审核\n规则校验+反向解题+必要时代码验证]
+
+    O --> P{Critic 是否通过}
+    P -->|是| S[题目通过]
+    P -->|否| D1{决策函数 critical_decision}
+
+    D1 -->|fix_required_unmet = true| RR[ReRouter: 回到 Router 重新路由]
+    RR --> L
+    D1 -->|retry_count >= 3| R[超限自愈: 该题丢弃并记录 errors]
+    D1 -->|未修复过 was_fixed = false| Q[Fixer 修复]
+    Q --> O
+    D1 -->|已修复且 issue_type = major| RR
+    D1 -->|已修复且 issue_type = minor| Q
+
+    S --> T{是否保存题库}
+    T -->|是| U[写入 local_question_bank.jsonl]
+    T -->|否| V[仅返回结果]
+    U --> W[写审计日志与 QA run trace]
+    V --> W
+
+    R --> X[继续下一题]
+    W --> X
+    X --> Y{是否完成全部题数}
+    Y -->|否| K
+    Y -->|是| Z[返回汇总\ngenerated/saved/errors]
+
+    classDef api fill:#E8F3FF,stroke:#2B6CB0,color:#1A365D;
+    classDef ai fill:#F3E8FF,stroke:#6B46C1,color:#44337A;
+    classDef gate fill:#FFF7E6,stroke:#B7791F,color:#744210;
+    classDef store fill:#E6FFFA,stroke:#2C7A7B,color:#234E52;
+
+    class B,E,H api;
+    class L,M,N,O,Q ai;
+    class I,P,Y gate;
+    class C,D,F,G,U,W,Z store;

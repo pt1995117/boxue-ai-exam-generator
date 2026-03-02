@@ -9,7 +9,7 @@
 - 🧮 **智能计算验证**：Finance节点支持17种计算器工具，Critic节点自动验证计算准确性
 - 📚 **知识库驱动**：基于MECE知识点体系，支持章节筛选和难度控制
 - 🎯 **照猫画虎**：参考历史母题范例，确保题目质量稳定
-- 🌐 **多模型支持**：支持 DeepSeek、OpenAI GPT、Google Gemini 等多种大模型
+- 🌐 **多模型支持**：支持 DeepSeek、OpenAI GPT、Ark（Doubao/GPT）等模型
 
 ## 🎬 系统架构
 
@@ -69,8 +69,6 @@ pip install -r requirements.txt
 
 ```
 OPENAI_API_KEY=你的密钥
-# 或使用 Gemini
-GEMINI_API_KEY=你的密钥
 
 # DeepSeek 配置（推荐，国内可直连）
 OPENAI_BASE_URL=https://api.deepseek.com
