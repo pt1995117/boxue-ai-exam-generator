@@ -71,7 +71,7 @@ pip install -r requirements.txt
 OPENAI_API_KEY=你的密钥
 
 # DeepSeek 配置（推荐，国内可直连）
-OPENAI_BASE_URL=https://api.deepseek.com
+OPENAI_BASE_URL=https://openapi-ait.ke.com
 OPENAI_MODEL=deepseek-chat
 ```
 

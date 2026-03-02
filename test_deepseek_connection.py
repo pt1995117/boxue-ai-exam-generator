@@ -4,7 +4,7 @@ from openai import OpenAI
 # 1. Load Config
 config_path = "填写您的Key.txt"
 api_key = ""
-base_url = "https://api.deepseek.com"
+base_url = "https://openapi-ait.ke.com"
 model = "deepseek-reasoner"
 
 if os.path.exists(config_path):
@@ -57,6 +57,6 @@ except Exception as e:
     print("\n请检查：")
     print("1. API Key 是否正确")
     print("2. 网络连接是否正常")
-    print("3. Base URL 是否正确 (应为 https://api.deepseek.com)")
+    print("3. Base URL 是否正确 (应为 https://openapi-ait.ke.com)")
     exit(1)
 

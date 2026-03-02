@@ -42,7 +42,7 @@ from exam_graph import generate_content, CRITIC_API_KEY, CRITIC_BASE_URL, CRITIC
 
 model = CRITIC_MODEL or config.get("OPENAI_MODEL", "deepseek-reasoner")
 api_key = CRITIC_API_KEY or config.get("OPENAI_API_KEY", "")
-base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 provider = CRITIC_PROVIDER or None
 
 kb_content = """房源实物信息是指房地产可见、可触摸的部分，包括房屋面积、户型、朝向、楼层高度、装修状况等具体物理特征。

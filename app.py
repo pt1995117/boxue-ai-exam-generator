@@ -216,7 +216,7 @@ with st.sidebar:
         
         gpt_api_key = st.text_input("GPT API Key", value=default_openai_key, type="password")
         deepseek_api_key = st.text_input("DeepSeek API Key", value=default_deepseek_key, type="password")
-        base_url = st.text_input("Base URL", value="https://api.deepseek.com")
+        base_url = st.text_input("Base URL", value="https://openapi-ait.ke.com")
         model_name = st.text_input("模型名称", value="doubao-seed-1.8", help="所有节点统一使用此模型，当前默认 doubao-seed-1.8")
         # Select key based on model family
         if "deepseek" in model_name.lower():

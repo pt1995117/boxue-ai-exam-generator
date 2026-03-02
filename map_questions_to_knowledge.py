@@ -199,7 +199,7 @@ def create_mapping():
     kb_data, history_df = load_data()
     config = load_config()
     api_key = config.get('DEEPSEEK_API_KEY') or config.get('OPENAI_API_KEY')
-    base_url = config.get('DEEPSEEK_BASE_URL') or config.get('OPENAI_BASE_URL', 'https://api.deepseek.com')
+    base_url = config.get('DEEPSEEK_BASE_URL') or config.get('OPENAI_BASE_URL', 'https://openapi-ait.ke.com')
     model_name = config.get('DEEPSEEK_MODEL') or MODEL_NAME
     
     # Build TF-IDF index for KB

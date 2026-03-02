@@ -41,7 +41,7 @@ from exam_graph import generate_content, parse_json_from_response, CRITIC_API_KE
 
 critic_model = CRITIC_MODEL or config.get("OPENAI_MODEL", "deepseek-reasoner")
 critic_api_key = CRITIC_API_KEY or config.get("OPENAI_API_KEY", "")
-critic_base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+critic_base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 critic_provider = CRITIC_PROVIDER or None
 
 print(f"\n使用模型: {critic_model}")
@@ -86,7 +86,7 @@ if not response or not response.strip():
     print("(首次调用未返回内容，改用主模型 DeepSeek 进行 Critic 测试)")
     main_model = config.get("OPENAI_MODEL", "deepseek-reasoner")
     main_key = config.get("OPENAI_API_KEY", "")
-    main_url = config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+    main_url = config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
     response = generate_content(main_model, prompt, main_key, main_url, None)
 
 print("\n" + "="*60)

@@ -55,7 +55,7 @@ from exam_graph import CRITIC_API_KEY, CRITIC_BASE_URL, CRITIC_MODEL, CRITIC_PRO
 
 model = CRITIC_MODEL or config.get("OPENAI_MODEL", "deepseek-reasoner")
 api_key = CRITIC_API_KEY or config.get("OPENAI_API_KEY", "")
-base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 provider = CRITIC_PROVIDER or None
 
 def run_critic(q, kb):

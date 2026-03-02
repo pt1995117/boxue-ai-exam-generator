@@ -971,7 +971,7 @@ Critic (答案错误) → Router (重新路由) → 新Agent (重新生成) → 
 **支持的模型提供商**:
 1. **OpenAI / DeepSeek**:
    - 使用 `langchain_openai.ChatOpenAI`
-   - Base URL: `https://api.deepseek.com`
+   - Base URL: `https://openapi-ait.ke.com`
    - 模型：`deepseek-reasoner-v3.2`（推荐）
 
 2. **Ark（Doubao/GPT）**:

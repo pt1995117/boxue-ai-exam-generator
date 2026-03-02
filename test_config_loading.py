@@ -18,7 +18,7 @@ def test_config_loading():
     
     # 验证配置
     expected_api_key = "sk-7a55cd2a6f9d4f6ab5a7badff99e979f"
-    expected_base_url = "https://api.deepseek.com"
+    expected_base_url = "https://openapi-ait.ke.com"
     expected_model = "deepseek-reasoner"
     
     print(f"\n🔍 验证配置：")

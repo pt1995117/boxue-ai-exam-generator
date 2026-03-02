@@ -40,7 +40,7 @@ from exam_graph import generate_content, CRITIC_API_KEY, CRITIC_BASE_URL, CRITIC
 
 model = CRITIC_MODEL or config.get("OPENAI_MODEL", "deepseek-reasoner")
 api_key = CRITIC_API_KEY or config.get("OPENAI_API_KEY", "")
-base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 provider = CRITIC_PROVIDER or None
 
 print(f"\n模型: {model}", flush=True)

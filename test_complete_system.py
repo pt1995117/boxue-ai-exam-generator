@@ -17,7 +17,7 @@ def test_complete_system():
     print("\n[步骤 1/7] 📋 加载配置...")
     config_path = "填写您的Key.txt"
     api_key = ""
-    base_url = "https://api.deepseek.com"
+    base_url = "https://openapi-ait.ke.com"
     model = "deepseek-chat"
     
     if os.path.exists(config_path):

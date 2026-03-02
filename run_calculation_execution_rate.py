@@ -53,7 +53,7 @@ def main():
 
     model = config.get('OPENAI_MODEL', 'deepseek-reasoner')
     api_key = config.get('OPENAI_API_KEY', '')
-    base_url = config.get('OPENAI_BASE_URL', 'https://api.deepseek.com')
+    base_url = config.get('OPENAI_BASE_URL', 'https://openapi-ait.ke.com')
 
     retriever = KnowledgeRetriever(KB_PATH, HISTORY_PATH)
     limit = 20

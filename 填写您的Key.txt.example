@@ -1,6 +1,10 @@
+AIT_API_KEY=
+AIT_BASE_URL=https://openapi-ait.ke.com
+AIT_MODEL=
+
 # DeepSeek 直连（保留）
 DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_BASE_URL=https://openapi-ait.ke.com
 DEEPSEEK_MODEL=deepseek-reasoner
 
 # Ark 链路（GPT / Doubao）
@@ -11,11 +15,15 @@ VOLC_SECRET_ACCESS_KEY=
 ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
 ARK_PROJECT_NAME=
 
-CRITIC_PROVIDER=ark
+CRITIC_PROVIDER=ait
 CRITIC_MODEL=doubao-seed-1.8
 
-CODE_GEN_PROVIDER=ark
+CODE_GEN_PROVIDER=ait
 CODE_GEN_MODEL=doubao-seed-1.8
 
-IMAGE_PROVIDER=ark
+IMAGE_PROVIDER=ait
 IMAGE_MODEL=doubao-seed-1.8
+ROUTER_MODEL=
+SPECIALIST_MODEL=
+WRITER_MODEL=
+CALC_MODEL=

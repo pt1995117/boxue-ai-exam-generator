@@ -76,7 +76,7 @@ full_rules_text = f"# 当前知识点规则\n{test_kb_chunk['核心内容']}\n"
 # 确定使用的模型
 critic_model = CRITIC_MODEL or config.get("OPENAI_MODEL", "deepseek-reasoner")
 critic_api_key = CRITIC_API_KEY or config.get("OPENAI_API_KEY", "")
-critic_base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+critic_base_url = CRITIC_BASE_URL or config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 critic_provider = CRITIC_PROVIDER or None
 
 print(f"\n使用 Critic 模型: {critic_model}")

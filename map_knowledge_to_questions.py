@@ -1557,7 +1557,7 @@ def create_mapping():
 
     config = load_config()
     api_key = config.get('DEEPSEEK_API_KEY') or config.get('OPENAI_API_KEY')
-    base_url = config.get('DEEPSEEK_BASE_URL') or config.get('OPENAI_BASE_URL', 'https://api.deepseek.com')
+    base_url = config.get('DEEPSEEK_BASE_URL') or config.get('OPENAI_BASE_URL', 'https://openapi-ait.ke.com')
     model_name = config.get('DEEPSEEK_MODEL', 'deepseek-chat')
 
     mapping = {}

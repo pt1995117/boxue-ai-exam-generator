@@ -23,7 +23,7 @@ pip install pandas scikit-learn openpyxl openai
 编辑 `填写您的Key.txt`：
 ```
 DEEPSEEK_API_KEY=your_key_here
-DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_BASE_URL=https://openapi-ait.ke.com
 DEEPSEEK_MODEL=deepseek-reasoner
 ```
 

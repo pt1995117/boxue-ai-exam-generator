@@ -13,7 +13,7 @@ from pydantic import BaseModel
 # Load API config
 config_path = "填写您的Key.txt"
 API_KEY = ""
-BASE_URL = "https://api.deepseek.com"
+BASE_URL = "https://openapi-ait.ke.com"
 
 if os.path.exists(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:

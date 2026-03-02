@@ -302,7 +302,7 @@ def main():
     cfg = load_config()
     model = cfg.get('OPENAI_MODEL') or 'deepseek-reasoner'
     api_key = cfg.get('OPENAI_API_KEY') or ''
-    base_url = cfg.get('OPENAI_BASE_URL') or 'https://api.deepseek.com'
+    base_url = cfg.get('OPENAI_BASE_URL') or 'https://openapi-ait.ke.com'
 
     top_n = 50
     dry_run = '--dry-run' in sys.argv

@@ -29,25 +29,33 @@ if os.path.exists(config_path):
 
 # Fallback to .env or system env
 DEEPSEEK_API_KEY = config.get("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
-DEEPSEEK_BASE_URL = config.get("DEEPSEEK_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_BASE_URL = config.get("DEEPSEEK_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL", "https://openapi-ait.ke.com")
 DEEPSEEK_MODEL = config.get("DEEPSEEK_MODEL") or os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner")
 
-API_KEY = DEEPSEEK_API_KEY or config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-BASE_URL = DEEPSEEK_BASE_URL or config.get("OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
-MODEL_NAME = DEEPSEEK_MODEL or config.get("OPENAI_MODEL") or os.getenv("OPENAI_MODEL", "deepseek-reasoner")
+AIT_API_KEY = config.get("AIT_API_KEY") or os.getenv("AIT_API_KEY")
+AIT_BASE_URL = config.get("AIT_BASE_URL") or os.getenv("AIT_BASE_URL")
+AIT_MODEL = config.get("AIT_MODEL") or os.getenv("AIT_MODEL")
+
+API_KEY = AIT_API_KEY or DEEPSEEK_API_KEY or config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+BASE_URL = AIT_BASE_URL or DEEPSEEK_BASE_URL or config.get("OPENAI_BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
+MODEL_NAME = AIT_MODEL or DEEPSEEK_MODEL or config.get("OPENAI_MODEL") or os.getenv("OPENAI_MODEL", "deepseek-reasoner")
+ROUTER_MODEL = config.get("ROUTER_MODEL") or os.getenv("ROUTER_MODEL") or MODEL_NAME
+SPECIALIST_MODEL = config.get("SPECIALIST_MODEL") or os.getenv("SPECIALIST_MODEL") or MODEL_NAME
+WRITER_MODEL = config.get("WRITER_MODEL") or os.getenv("WRITER_MODEL") or MODEL_NAME
+CALC_MODEL = config.get("CALC_MODEL") or os.getenv("CALC_MODEL") or MODEL_NAME
 
 # Critic-specific configuration for finance question validation
 CRITIC_API_KEY = config.get("CRITIC_API_KEY") or os.getenv("CRITIC_API_KEY") or API_KEY
 CRITIC_BASE_URL = config.get("CRITIC_BASE_URL") or os.getenv("CRITIC_BASE_URL") or BASE_URL
 CRITIC_MODEL = config.get("CRITIC_MODEL") or os.getenv("CRITIC_MODEL") or MODEL_NAME
-CRITIC_PROVIDER = config.get("CRITIC_PROVIDER", "").lower() or os.getenv("CRITIC_PROVIDER", "").lower()
+CRITIC_PROVIDER = config.get("CRITIC_PROVIDER", "ait").lower() or os.getenv("CRITIC_PROVIDER", "ait").lower()
 
 # Code generation model configuration (for dynamic code generation)
 CODE_GEN_MODEL = config.get("CODE_GEN_MODEL") or os.getenv("CODE_GEN_MODEL", "doubao-seed-1.8")
 CODE_GEN_API_KEY = config.get("CODE_GEN_API_KEY") or os.getenv("CODE_GEN_API_KEY") or API_KEY
 CODE_GEN_BASE_URL = config.get("CODE_GEN_BASE_URL") or os.getenv("CODE_GEN_BASE_URL") or BASE_URL
-CODE_GEN_PROVIDER = config.get("CODE_GEN_PROVIDER", "").lower() or os.getenv("CODE_GEN_PROVIDER", "").lower()
-IMAGE_PROVIDER = config.get("IMAGE_PROVIDER", "").lower() or os.getenv("IMAGE_PROVIDER", "").lower()
+CODE_GEN_PROVIDER = config.get("CODE_GEN_PROVIDER", "ait").lower() or os.getenv("CODE_GEN_PROVIDER", "ait").lower()
+IMAGE_PROVIDER = config.get("IMAGE_PROVIDER", "ait").lower() or os.getenv("IMAGE_PROVIDER", "ait").lower()
 
 # Volcano Ark config (API Key preferred; AK/SK fallback)
 ARK_API_KEY = config.get("ARK_API_KEY") or os.getenv("ARK_API_KEY", "")

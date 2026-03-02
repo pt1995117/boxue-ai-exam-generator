@@ -31,7 +31,7 @@ else:
     sys.exit(1)
 
 OPENAI_API_KEY = config.get("OPENAI_API_KEY", "")
-DEEPSEEK_BASE_URL = config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_BASE_URL = config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 MODEL_NAME = config.get("OPENAI_MODEL", "deepseek-reasoner")
 
 print(f"API Key: {OPENAI_API_KEY[:10]}..." if OPENAI_API_KEY else "❌ API Key 为空", flush=True)

@@ -18,7 +18,7 @@ except Exception as e:
 # Model Config
 CRITIC_MODEL = config.get("OPENAI_MODEL", "deepseek-reasoner") # Or qwen-max
 CRITIC_API_KEY = config.get("OPENAI_API_KEY", "")
-CRITIC_BASE_URL = config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+CRITIC_BASE_URL = config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 
 print(f"Using Model: {CRITIC_MODEL}")
 

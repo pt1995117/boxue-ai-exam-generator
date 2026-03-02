@@ -3836,7 +3836,7 @@ def api_generate_questions(tenant_id: str):
         return _error("NO_VALID_SLICES", "审核记录与当前切片版本不一致，请重新审核切片后再出题", 400)
     cfg_path = Path("填写您的Key.txt")
     api_key = ""
-    base_url = "https://api.deepseek.com"
+    base_url = "https://openapi-ait.ke.com"
     model_name = "deepseek-reasoner"
     if cfg_path.exists():
         cfg: dict[str, str] = {}
@@ -4164,7 +4164,7 @@ def api_generate_questions_stream(tenant_id: str):
 
     cfg_path = Path("填写您的Key.txt")
     api_key = ""
-    base_url = "https://api.deepseek.com"
+    base_url = "https://openapi-ait.ke.com"
     model_name = "deepseek-reasoner"
     if cfg_path.exists():
         cfg: dict[str, str] = {}

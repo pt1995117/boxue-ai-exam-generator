@@ -18,6 +18,10 @@ from exam_factory import (
     API_KEY,
     BASE_URL,
     MODEL_NAME,
+    ROUTER_MODEL,
+    SPECIALIST_MODEL,
+    WRITER_MODEL,
+    CALC_MODEL,
     CRITIC_API_KEY,
     CRITIC_BASE_URL,
     CRITIC_MODEL,
@@ -1085,15 +1089,13 @@ def call_llm(
     if not model_name:
         model_name = MODEL_NAME or "deepseek-chat"
 
+    provider = str(provider or "").lower()
     model_lower = model_name.lower()
     base_url_lower = str(base_url or "").lower()
-    is_ark = (
-        provider == "ark"
-        or model_lower.startswith("gpt")
-        or "doubao" in model_lower
-        or "volces.com" in base_url_lower
-        or "ark.cn" in base_url_lower
-    )
+    if provider:
+        is_ark = provider == "ark"
+    else:
+        is_ark = ("volces.com" in base_url_lower) or ("ark.cn" in base_url_lower)
 
     def is_retryable_error(err: Exception) -> bool:
         err_str = str(err)
@@ -1202,36 +1204,57 @@ def call_llm(
     used_model = model_name
     backoff_seconds = [5, 10, 20, 30, 45, 60, 60, 60, 60, 60]
     started = time.time()
+    url_candidates: List[str] = []
+    base_u = str(url or "").rstrip("/")
+    if base_u:
+        url_candidates.append(base_u)
+        if not base_u.endswith("/v1"):
+            url_candidates.append(f"{base_u}/v1")
+    else:
+        url_candidates.append(base_u)
+    # de-duplicate while preserving order
+    seen_url = set()
+    url_candidates = [u for u in url_candidates if not (u in seen_url or seen_url.add(u))]
 
     for attempt in range(len(backoff_seconds) + 1):
         try:
-            client = OpenAI(api_key=key, base_url=url)
-            resp = client.chat.completions.create(
-                model=used_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout,
-            )
-            content = resp.choices[0].message.content if resp.choices else ""
-            if isinstance(content, list):
-                content = "\n".join(
-                    str(item.get("text", "")) if isinstance(item, dict) else str(item)
-                    for item in content
-                ).strip()
-            elif not isinstance(content, str):
-                content = str(content or "")
-            if not content.strip():
-                raise ValueError(f"Empty response (attempt {attempt + 1})")
-            record = build_record(
-                success=True,
-                used_model=used_model,
-                provider_used="openai_compatible",
-                started_at=started,
-                retries=attempt,
-                usage_obj=getattr(resp, "usage", None),
-            )
-            return content, used_model, record
+            last_non_retryable: Optional[Exception] = None
+            for candidate_url in url_candidates:
+                try:
+                    client = OpenAI(api_key=key, base_url=candidate_url)
+                    resp = client.chat.completions.create(
+                        model=used_model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout=timeout,
+                    )
+                    content = resp.choices[0].message.content if resp.choices else ""
+                    if isinstance(content, list):
+                        content = "\n".join(
+                            str(item.get("text", "")) if isinstance(item, dict) else str(item)
+                            for item in content
+                        ).strip()
+                    elif not isinstance(content, str):
+                        content = str(content or "")
+                    if not content.strip():
+                        raise ValueError(f"Empty response (attempt {attempt + 1})")
+                    record = build_record(
+                        success=True,
+                        used_model=used_model,
+                        provider_used=(provider or "ait"),
+                        started_at=started,
+                        retries=attempt,
+                        usage_obj=getattr(resp, "usage", None),
+                    )
+                    return content, used_model, record
+                except Exception as inner:
+                    if is_retryable_error(inner):
+                        raise
+                    last_non_retryable = inner
+            if last_non_retryable is not None:
+                raise last_non_retryable
+            raise RuntimeError("No valid base_url candidate for OpenAI-compatible call")
         except Exception as e:
             err_str = str(e)
             is_retryable = is_retryable_error(e)
@@ -1243,7 +1266,7 @@ def call_llm(
             record = build_record(
                 success=False,
                 used_model=used_model,
-                provider_used="openai_compatible",
+                provider_used=(provider or "ait"),
                 started_at=started,
                 retries=attempt,
                 usage_obj=None,
@@ -1271,7 +1294,7 @@ def resolve_code_gen_provider(model_name: str, provider: Optional[str], fallback
     if model_name:
         model_lower = model_name.lower()
         if model_lower.startswith("gpt") or "doubao" in model_lower:
-            return "ark"
+            return "ait"
     return fallback_provider
 
 # --- Nodes ---
@@ -1355,8 +1378,7 @@ def router_node(state: AgentState, config):
 - "reasoning": "决策理由"
 """
     
-    # Router 默认使用 DeepSeek（非计算题默认模型）
-    model_to_use = MODEL_NAME
+    model_to_use = ROUTER_MODEL or MODEL_NAME
     llm_records: List[Dict[str, Any]] = []
     response_text, _, llm_record = call_llm(
         node_name="router.route",
@@ -1687,7 +1709,7 @@ def specialist_node(state: AgentState, config):
         content, _, llm_record = call_llm(
             node_name="specialist.repair",
             prompt=prompt,
-            model_name=MODEL_NAME,
+            model_name=SPECIALIST_MODEL or MODEL_NAME,
             api_key=API_KEY,
             base_url=BASE_URL,
             trace_id=state.get("trace_id"),
@@ -1930,7 +1952,7 @@ def specialist_node(state: AgentState, config):
     content, _, llm_record = call_llm(
         node_name="specialist.draft",
         prompt=prompt,
-        model_name=MODEL_NAME,
+        model_name=SPECIALIST_MODEL or MODEL_NAME,
         api_key=API_KEY,
         base_url=BASE_URL,
         trace_id=state.get("trace_id"),
@@ -2093,8 +2115,7 @@ def writer_node(state: AgentState, config):
 **重要**：必须确保生成的难度值在指定范围内！
 """
 
-    # Writer 使用 DeepSeek 默认模型
-    model_to_use = MODEL_NAME
+    model_to_use = WRITER_MODEL or MODEL_NAME
     # 允许对“人名不规范”触发一次整体改写（不直接替换为“某某”）
     extra_self_check_issues = list(self_check_issues)
     last_exception = None
@@ -2588,7 +2609,7 @@ def critic_node(state: AgentState, config):
                     critic_model = "deepseek-reasoner"
                     critic_api_key = API_KEY  # Use default OpenAI-compatible key
                     critic_base_url = BASE_URL  # Use default base URL
-                    critic_provider = "ark"
+                    critic_provider = "ait"
             except Exception as e:
                 print(f"⚠️ 限流检测失败: {e}，使用默认模型")
     
@@ -4048,10 +4069,10 @@ def calculator_node(state: AgentState, config):
 """
     
     # ✅ Smart model switching: Check GPT rate limit and switch to Deepseek if needed
-    calc_model = MODEL_NAME
+    calc_model = CALC_MODEL or MODEL_NAME
     calc_api_key = API_KEY
     calc_base_url = BASE_URL
-    calc_provider = "openai"  # Default provider
+    calc_provider = "ait"  # Default provider
     
     # Check if GPT model is rate-limited
     if calc_model and calc_model.lower().startswith("gpt") and "api.deepseek.com" in (calc_base_url or ""):

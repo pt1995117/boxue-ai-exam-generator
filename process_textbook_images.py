@@ -74,7 +74,7 @@ def analyze_image_with_qwen_vl(
     image_path: str,
     api_key: str,
     model_name: str = "doubao-seed-1.8",
-    base_url: str = "https://api.deepseek.com",
+    base_url: str = "https://openapi-ait.ke.com",
     provider: str = "",
     ark_api_key: str = "",
     volc_ak: str = "",
@@ -95,7 +95,11 @@ def analyze_image_with_qwen_vl(
         mime = _guess_mime_type(prepared_path)
         lower_provider = str(provider or "").lower()
         lower_model = str(model_name or "").lower()
-        use_ark = lower_provider == "ark" or lower_model.startswith("gpt") or "doubao" in lower_model
+        base_url_lower = str(base_url or "").lower()
+        if lower_provider:
+            use_ark = lower_provider == "ark"
+        else:
+            use_ark = "volces.com" in base_url_lower or "ark.cn" in base_url_lower
         if use_ark and "deepseek" not in lower_model:
             if ark_api_key:
                 client = Ark(api_key=ark_api_key, base_url=base_url or "https://ark.cn-beijing.volces.com/api/v3")
@@ -133,7 +137,7 @@ def analyze_image_with_qwen_vl(
             }
         ]
         base_candidates = []
-        for root in [base_url, "https://api.deepseek.com"]:
+        for root in [base_url, "https://openapi-ait.ke.com"]:
             val = str(root or "").strip()
             if not val:
                 continue

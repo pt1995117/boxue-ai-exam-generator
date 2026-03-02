@@ -11,7 +11,7 @@ def run_test():
     # 1. Load Config
     config_path = "填写您的Key.txt"
     api_key = ""
-    base_url = "https://api.deepseek.com"
+    base_url = "https://openapi-ait.ke.com"
     if os.path.exists(config_path):
         with open(config_path, 'r', encoding='utf-8') as f:
             for line in f:

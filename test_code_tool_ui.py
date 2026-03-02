@@ -29,7 +29,7 @@ def load_config():
 
 config = load_config()
 OPENAI_API_KEY = config.get("OPENAI_API_KEY", "")
-DEEPSEEK_BASE_URL = config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_BASE_URL = config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
 MODEL_NAME = config.get("OPENAI_MODEL", "deepseek-reasoner")
 
 st.sidebar.header("配置信息")

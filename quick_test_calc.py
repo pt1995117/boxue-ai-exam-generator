@@ -28,7 +28,7 @@ try:
                 config[key.strip()] = value.strip()
     
     api_key = config.get("OPENAI_API_KEY", "")
-    base_url = config.get("OPENAI_BASE_URL", "https://api.deepseek.com")
+    base_url = config.get("OPENAI_BASE_URL", "https://openapi-ait.ke.com")
     model_name = config.get("OPENAI_MODEL", "deepseek-reasoner")
     
     print(f"\n配置: {model_name}")

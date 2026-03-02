@@ -21,9 +21,9 @@ def load_config(path: str = "填写您的Key.txt") -> dict[str, str]:
 def main() -> None:
     cfg = load_config()
     print("当前配置：")
-    print(f"- OPENAI_BASE_URL: {cfg.get('OPENAI_BASE_URL', 'https://api.deepseek.com')}")
+    print(f"- OPENAI_BASE_URL: {cfg.get('OPENAI_BASE_URL', 'https://openapi-ait.ke.com')}")
     print(f"- OPENAI_MODEL: {cfg.get('OPENAI_MODEL', 'deepseek-reasoner')}")
-    print(f"- DEEPSEEK_BASE_URL: {cfg.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')}")
+    print(f"- DEEPSEEK_BASE_URL: {cfg.get('DEEPSEEK_BASE_URL', 'https://openapi-ait.ke.com')}")
     print(f"- DEEPSEEK_MODEL: {cfg.get('DEEPSEEK_MODEL', 'deepseek-reasoner')}")
     print(f"- ARK_BASE_URL: {cfg.get('ARK_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3')}")
     print(f"- CRITIC_MODEL: {cfg.get('CRITIC_MODEL', cfg.get('OPENAI_MODEL', 'deepseek-reasoner'))}")
