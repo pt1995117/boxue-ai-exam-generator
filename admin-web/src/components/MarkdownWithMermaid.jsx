@@ -315,13 +315,62 @@ export default function MarkdownWithMermaid({
         table({ children }) {
           return (
             <div style={{ overflowX: 'auto' }}>
-              <table>{children}</table>
+              <table
+                style={{
+                  borderCollapse: 'collapse',
+                  width: '100%',
+                  minWidth: 560,
+                  fontSize: 14,
+                }}
+              >
+                {children}
+              </table>
             </div>
+          );
+        },
+        th({ children }) {
+          return (
+            <th
+              style={{
+                border: '1px solid #d9d9d9',
+                padding: '8px 10px',
+                background: '#fafafa',
+                fontWeight: 600,
+                textAlign: 'left',
+                verticalAlign: 'top',
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {children}
+            </th>
+          );
+        },
+        td({ children }) {
+          return (
+            <td
+              style={{
+                border: '1px solid #e5e5e5',
+                padding: '8px 10px',
+                textAlign: 'left',
+                verticalAlign: 'top',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}
+            >
+              {children}
+            </td>
           );
         },
         del({ children }) {
           if (disableStrikethrough) return <span>{children}</span>;
           return <del>{children}</del>;
+        },
+        a({ href, children }) {
+          return (
+            <a href={href} target="_blank" rel="noopener noreferrer">
+              {children}
+            </a>
+          );
         },
       }}
     >

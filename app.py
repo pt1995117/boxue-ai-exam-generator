@@ -2,8 +2,11 @@ import streamlit as st
 import pandas as pd
 import os
 import time
+import re
 import numpy as np
 import random
+import mimetypes
+import base64
 from collections import Counter
 from exam_factory import KnowledgeRetriever, ExamQuestion, set_active_tenant
 from exam_graph import app as graph_app
@@ -44,6 +47,73 @@ def _stringify_structured_value(value):
     except TypeError:
         return str(value)
 
+
+def _normalize_calc_label(raw_value):
+    text = str(raw_value or "").strip().lower()
+    if not text:
+        return ""
+    if text in {"计算题", "计算", "calc", "calculation", "true", "1", "yes", "y", "是"}:
+        return "计算题"
+    if text in {"非计算题", "非计算", "false", "0", "no", "n", "否"}:
+        return "非计算题"
+    if "非计算" in text:
+        return "非计算题"
+    if "计算" in text:
+        return "计算题"
+    return ""
+
+
+def _resolve_calc_question_type(item):
+    for key in (
+        "题型标签",
+        "题目类型",
+        "是否计算题",
+        "计算题标签",
+        "calc_type",
+        "question_calc_type",
+        "is_calculation",
+        "need_calculation",
+    ):
+        label = _normalize_calc_label(item.get(key))
+        if label:
+            return label
+
+    text_parts = [
+        str(item.get("题干", "") or ""),
+        str(item.get("解析", "") or ""),
+    ]
+    for idx in range(1, 9):
+        text_parts.append(str(item.get(f"选项{idx}", "") or ""))
+    text = " ".join([x for x in text_parts if x]).lower()
+
+    has_digit = bool(re.search(r"\d", text))
+    has_operator = bool(re.search(r"[+\-*/=×÷%]", text))
+    calc_keywords = (
+        "计算",
+        "税",
+        "税费",
+        "贷款",
+        "月供",
+        "利率",
+        "利息",
+        "首付",
+        "还款",
+        "金额",
+        "总价",
+        "单价",
+        "面积",
+        "比例",
+        "百分比",
+        "合计",
+        "折扣",
+        "公式",
+    )
+    keyword_hits = sum(1 for kw in calc_keywords if kw in text)
+    if (has_digit and (has_operator or keyword_hits >= 1)) or keyword_hits >= 2:
+        return "计算题"
+    return "非计算题"
+
+
 def build_slice_text_from_struct(struct):
     if not isinstance(struct, dict):
         return ""
@@ -73,6 +143,82 @@ def build_slice_raw_text(kb_chunk):
     struct = kb_chunk.get("结构化内容") or {}
     return build_slice_text_from_struct(struct)
 
+def _normalize_image_item(image):
+    if isinstance(image, dict):
+        return {
+            "image_id": str(image.get("image_id", "")).strip(),
+            "image_path": str(image.get("image_path", "")).strip(),
+            "analysis": str(image.get("analysis", "")).strip(),
+        }
+    if isinstance(image, str):
+        return {"image_id": "", "image_path": "", "analysis": image.strip()}
+    return {"image_id": "", "image_path": "", "analysis": ""}
+
+def _resolve_image_path(image_path: str) -> str:
+    if not image_path:
+        return ""
+    p = pathlib.Path(image_path)
+    if p.is_file():
+        return str(p)
+    workspace_path = pathlib.Path(__file__).parent / image_path
+    if workspace_path.is_file():
+        return str(workspace_path.resolve())
+    filename = p.name
+    tenant_id = os.getenv("TENANT_ID", "").strip()
+    if tenant_id and filename:
+        images_root = pathlib.Path(__file__).parent / "data" / tenant_id / "slices" / "images"
+        if images_root.exists():
+            for candidate in images_root.rglob(filename):
+                if candidate.is_file():
+                    return str(candidate.resolve())
+    return ""
+
+def _build_image_href(local_path: str) -> str:
+    if not local_path:
+        return ""
+    try:
+        content = pathlib.Path(local_path).read_bytes()
+        mime = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{mime};base64,{encoded}"
+    except Exception:
+        return f"file://{local_path}"
+
+def _render_image_items(images, scope_key: str):
+    normalized = [_normalize_image_item(img) for img in (images or [])]
+    normalized = [x for x in normalized if x.get("image_path") or x.get("analysis")]
+    if not normalized:
+        st.info("（该切片暂无可展示图片）")
+        return
+    for idx, image in enumerate(normalized, 1):
+        image_id = image.get("image_id") or f"图{idx}"
+        image_path = image.get("image_path", "")
+        analysis = image.get("analysis", "")
+        resolved_path = _resolve_image_path(image_path)
+        col_a, col_b = st.columns([2, 3])
+        with col_a:
+            st.markdown(f"**{image_id}**")
+            if resolved_path:
+                href = _build_image_href(resolved_path)
+                st.markdown(
+                    f'<a href="{href}" target="_blank" rel="noopener noreferrer">🔗 点击在新页面查看图片</a>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"路径：`{resolved_path}`")
+                st.image(resolved_path, use_container_width=True)
+            elif image_path:
+                st.warning("图片文件未找到")
+                st.caption(f"原始路径：`{image_path}`")
+            else:
+                st.caption("无图片路径")
+        with col_b:
+            st.markdown("**图片解析**")
+            if analysis:
+                st.markdown(analysis)
+            else:
+                st.caption("（暂无解析）")
+        st.divider()
+
 def render_structured_slice(struct):
     if not isinstance(struct, dict) or not struct:
         st.info("（未提供结构化内容）")
@@ -81,8 +227,12 @@ def render_structured_slice(struct):
     if context_before:
         st.markdown(str(context_before))
     tables = struct.get("tables") or []
+    images = struct.get("images") or []
     for table in tables:
         st.markdown(str(table))
+    if tables:
+        st.markdown("**表格关联图片（可点击新页查看）**")
+        _render_image_items(images, scope_key="table_images")
     context_after = struct.get("context_after")
     if context_after:
         st.markdown(str(context_after))
@@ -103,11 +253,9 @@ def render_structured_slice(struct):
         st.markdown("**公式**")
         for idx, formula in enumerate(formulas, 1):
             st.markdown(f"{idx}. {formula}")
-    images = struct.get("images") or []
-    if images:
+    if images and not tables:
         st.markdown("**图片**")
-        for idx, image in enumerate(images, 1):
-            st.markdown(f"{idx}. {image}")
+        _render_image_items(images, scope_key="images_only")
 
 # Page Config
 st.set_page_config(page_title="搏学大考出题工厂", page_icon="📝", layout="wide")
@@ -1326,6 +1474,7 @@ if (last_results or last_results_all) and not st.session_state.get("is_generatin
             "选项H": safe_str(item.get("选项8", "")),
             "答案选项(必填)": answer,
             "难度": difficulty,
+            "题型": _resolve_calc_question_type(item),
             "一级知识点": parts[0] if len(parts) > 0 else "",
             "二级知识点": parts[1] if len(parts) > 1 else "",
             "三级知识点": parts[2] if len(parts) > 2 else "",
@@ -1346,6 +1495,7 @@ if (last_results or last_results_all) and not st.session_state.get("is_generatin
         "选项H",
         "答案选项(必填)",
         "难度",
+        "题型",
         "一级知识点",
         "二级知识点",
         "三级知识点",

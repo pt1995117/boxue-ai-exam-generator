@@ -495,7 +495,7 @@ export default function AIGeneratePage() {
         gen_scope_mode: genScopeMode,
         num_questions: genScopeMode === 'per_slice' ? candidateIds.length : (values.num_questions || 1),
         question_type: values.question_type || '单选题',
-        generation_mode: values.generation_mode || '灵活',
+        generation_mode: values.generation_mode || '随机',
         difficulty: values.difficulty || '随机',
         save_to_bank: AUTO_SAVE_PASSED_QUESTIONS,
         slice_ids: candidateIds,
@@ -1099,8 +1099,15 @@ export default function AIGeneratePage() {
                     ]}
                   />
                 </Form.Item>
-                <Form.Item name="generation_mode" initialValue="灵活" label="模式">
-                  <Select style={{ width: 120 }} options={[{ label: '灵活', value: '灵活' }, { label: '严谨', value: '严谨' }]} />
+                <Form.Item name="generation_mode" initialValue="随机" label="筛选条件">
+                  <Select
+                    style={{ width: 220 }}
+                    options={[
+                      { label: '基础概念/理解记忆', value: '基础概念/理解记忆' },
+                      { label: '实战应用/推演', value: '实战应用/推演' },
+                      { label: '随机', value: '随机' },
+                    ]}
+                  />
                 </Form.Item>
                 <Form.Item name="difficulty" initialValue="随机" label="难度">
                   <Select

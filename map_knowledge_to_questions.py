@@ -94,6 +94,51 @@ def load_config():
                     config[k.strip()] = v.strip()
     return config
 
+
+def _usable_key(v: str) -> bool:
+    return bool(v) and "请将您的Key" not in v
+
+
+def _normalize_base_url(url: str) -> str:
+    u = str(url or "").strip().rstrip("/")
+    if not u:
+        return "https://openapi-ait.ke.com/v1"
+    if u.endswith("/v1") or u.endswith("/api/v1"):
+        return u
+    return f"{u}/v1"
+
+
+def resolve_llm_config(config: dict) -> Tuple[str, str, str]:
+    """
+    Resolve API_KEY/BASE_URL/MODEL as one consistent triplet.
+    Priority: AIT -> OPENAI -> DEEPSEEK -> CRITIC
+    """
+    default_base = _normalize_base_url(
+        config.get("AIT_BASE_URL")
+        or config.get("OPENAI_BASE_URL")
+        or config.get("DEEPSEEK_BASE_URL")
+        or "https://openapi-ait.ke.com/v1"
+    )
+    default_model = (
+        config.get("MAPPING_MODEL")
+        or config.get("AIT_MODEL")
+        or config.get("DEEPSEEK_MODEL")
+        or config.get("OPENAI_MODEL")
+        or "deepseek-chat"
+    )
+    for prefix in ("AIT", "OPENAI", "DEEPSEEK", "CRITIC"):
+        key = str(config.get(f"{prefix}_API_KEY", "")).strip()
+        if not _usable_key(key):
+            continue
+        base = _normalize_base_url(config.get(f"{prefix}_BASE_URL") or default_base)
+        model = (
+            config.get(f"{prefix}_MODEL")
+            or config.get("MAPPING_MODEL")
+            or default_model
+        )
+        return key, base, model
+    return "", default_base, default_model
+
 def normalize_path_dehydration(text):
     """
     Normalize path with "dehydration" according to PRD FR2.1.1.
@@ -1556,9 +1601,7 @@ def create_mapping():
     question_to_kb = build_question_to_kb(reverse_index, question_indices)
 
     config = load_config()
-    api_key = config.get('DEEPSEEK_API_KEY') or config.get('OPENAI_API_KEY')
-    base_url = config.get('DEEPSEEK_BASE_URL') or config.get('OPENAI_BASE_URL', 'https://openapi-ait.ke.com')
-    model_name = config.get('DEEPSEEK_MODEL', 'deepseek-chat')
+    api_key, base_url, model_name = resolve_llm_config(config)
 
     mapping = {}
     nq = len(questions_df_work)

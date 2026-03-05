@@ -11,6 +11,7 @@ import sys
 import argparse
 import zipfile
 import shutil
+import html
 from typing import List, Dict, Optional, Tuple
 from docx import Document
 from docx.oxml.table import CT_Tbl
@@ -20,10 +21,15 @@ from tenants_config import tenant_slices_dir
 
 # Import helper for image analysis if available
 try:
-    from process_textbook_images import analyze_image_with_qwen_vl, extract_table_from_content
+    from process_textbook_images import (
+        analyze_image_with_qwen_vl,
+        extract_table_from_content,
+        normalize_image_analysis_content,
+    )
 except ImportError:
     analyze_image_with_qwen_vl = None
     extract_table_from_content = None
+    normalize_image_analysis_content = None
 
 # Import exam_graph for splitting
 try:
@@ -186,6 +192,181 @@ def process_document(
     
     table_index_global = 0
     image_index_global = 0
+
+    def _build_table_anchor(table_index: int, row_idx: int, col_idx: int, cell_text: str) -> Dict:
+        """
+        Build a stable anchor describing where an image sits inside a table.
+        row_idx/col_idx are 1-based.
+        """
+        text_preview = (cell_text or "").strip().replace("\n", " ")
+        if len(text_preview) > 80:
+            text_preview = text_preview[:80] + "..."
+        return {
+            "anchor_type": "table_cell",
+            "table_index": table_index,
+            "row": row_idx,
+            "col": col_idx,
+            "anchor_label": f"表{table_index}-R{row_idx}C{col_idx}",
+            "cell_text_preview": text_preview,
+        }
+
+    def _render_table_preserve_merge(table) -> Dict[str, object]:
+        """
+        Render table with merge-awareness.
+        - If no merged cells: return Markdown table.
+        - If merged cells exist: return HTML table with rowspan/colspan.
+        """
+        rows = table.rows
+        if not rows:
+            return {"text": "", "format": "markdown", "has_merged": False}
+
+        # Build grid of underlying XML tc pointers; merged cells share same pointer.
+        max_cols = max((len(r.cells) for r in rows), default=0)
+        if max_cols == 0:
+            return {"text": "", "format": "markdown", "has_merged": False}
+
+        tc_grid = []
+        text_grid = []
+        for r in rows:
+            row_tcs = []
+            row_txt = []
+            for c in range(max_cols):
+                if c < len(r.cells):
+                    cell = r.cells[c]
+                    row_tcs.append(cell._tc)
+                    row_txt.append((cell.text or "").strip().replace("\n", " "))
+                else:
+                    row_tcs.append(None)
+                    row_txt.append("")
+            tc_grid.append(row_tcs)
+            text_grid.append(row_txt)
+
+        nrows = len(tc_grid)
+        ncols = max_cols
+        masters = []
+        has_merged = False
+
+        for r in range(nrows):
+            for c in range(ncols):
+                tc = tc_grid[r][c]
+                if tc is None:
+                    continue
+                # Top-left master of a merged block
+                is_top = (r == 0) or (tc_grid[r - 1][c] is not tc)
+                is_left = (c == 0) or (tc_grid[r][c - 1] is not tc)
+                if not (is_top and is_left):
+                    continue
+
+                colspan = 1
+                while c + colspan < ncols and tc_grid[r][c + colspan] is tc:
+                    colspan += 1
+
+                rowspan = 1
+                while r + rowspan < nrows and tc_grid[r + rowspan][c] is tc:
+                    rowspan += 1
+
+                if rowspan > 1 or colspan > 1:
+                    has_merged = True
+
+                masters.append({
+                    "r": r,
+                    "c": c,
+                    "rowspan": rowspan,
+                    "colspan": colspan,
+                    "text": text_grid[r][c],
+                })
+
+        # No merged cells -> output markdown for compactness
+        if not has_merged:
+            header = [text_grid[0][c] for c in range(ncols)]
+            lines = [
+                f"| {' | '.join(header)} |",
+                f"| {' | '.join(['---'] * ncols)} |",
+            ]
+            for r in range(1, nrows):
+                row_vals = [text_grid[r][c] for c in range(ncols)]
+                lines.append(f"| {' | '.join(row_vals)} |")
+            return {"text": "\n".join(lines), "format": "markdown", "has_merged": False}
+
+        # Has merged cells -> output HTML with rowspan/colspan
+        master_map = {(m["r"], m["c"]): m for m in masters}
+        covered = set()
+        for m in masters:
+            r0, c0 = m["r"], m["c"]
+            for rr in range(r0, r0 + m["rowspan"]):
+                for cc in range(c0, c0 + m["colspan"]):
+                    if rr == r0 and cc == c0:
+                        continue
+                    covered.add((rr, cc))
+
+        html_lines = ["<table>"]
+        for r in range(nrows):
+            html_lines.append("  <tr>")
+            for c in range(ncols):
+                if (r, c) in covered:
+                    continue
+                m = master_map.get((r, c))
+                if not m:
+                    continue
+                attrs = []
+                if m["rowspan"] > 1:
+                    attrs.append(f'rowspan="{m["rowspan"]}"')
+                if m["colspan"] > 1:
+                    attrs.append(f'colspan="{m["colspan"]}"')
+                attr_str = (" " + " ".join(attrs)) if attrs else ""
+                tag = "th" if r == 0 else "td"
+                txt = html.escape(m["text"] or "")
+                html_lines.append(f"    <{tag}{attr_str}>{txt}</{tag}>")
+            html_lines.append("  </tr>")
+        html_lines.append("</table>")
+        return {"text": "\n".join(html_lines), "format": "html", "has_merged": True}
+
+    def analyze_extracted_image(fpath: str, fname: str, idx: int, total: int) -> Dict:
+        print(f"🖼️ 处理图片 [{idx}/{total}]: {os.path.basename(fpath)}", flush=True)
+        analysis = ""
+        contains_table = False
+        contains_chart = False
+        if api_key and analyze_image_with_qwen_vl:
+            analysis_result = analyze_image_with_qwen_vl(
+                fpath,
+                api_key,
+                model_name=image_model,
+                base_url=image_base_url,
+                provider=image_provider,
+                ark_api_key=ark_api_key,
+                volc_ak=volc_ak,
+                volc_sk=volc_sk,
+                ark_project_name=ark_project_name,
+            )
+            if analysis_result:
+                analysis = analysis_result.strip()
+                if extract_table_from_content:
+                    _, table_content = extract_table_from_content(analysis_result)
+                    contains_table = bool(table_content)
+                if normalize_image_analysis_content:
+                    analysis = normalize_image_analysis_content(analysis, contains_table=contains_table)
+                contains_chart = any(
+                    kw in analysis_result.lower()
+                    for kw in ['坐标', '曲线', '趋势', '图表', '图', 'axis', 'chart']
+                )
+            else:
+                detail = str(getattr(analyze_image_with_qwen_vl, "last_error", "") or "")[:300].strip()
+                analysis = (
+                    f"(分析失败：{detail})"
+                    if detail
+                    else "(分析失败：图片模型调用失败，请检查 ARK_API_KEY 或 IMAGE_API_KEY / IMAGE_BASE_URL 配置)"
+                )
+        elif not api_key:
+            analysis = "(分析失败：未配置图片模型 KEY，请在填写您的Key.txt设置 IMAGE_API_KEY 或 OPENAI_API_KEY)"
+        else:
+            analysis = "(分析失败：图片分析模块未加载)"
+        return {
+            "image_id": fname,
+            "image_path": fpath,
+            "analysis": analysis,
+            "contains_table": contains_table,
+            "contains_chart": contains_chart,
+        }
     
     for element in doc.element.body:
         if isinstance(element, CT_P):
@@ -203,6 +384,11 @@ def process_document(
                     fpath = extracted_image_map.get(fname)
                     if fpath:
                         image_index_global += 1
+                        total_images = len(extracted_image_map)
+                        print(
+                            f"🖼️ 处理图片 [{image_index_global}/{total_images}]: {os.path.basename(fpath)}",
+                            flush=True,
+                        )
                         # Perform analysis if API key is present and analyzer is available
                         analysis = ""
                         contains_table = False
@@ -224,6 +410,8 @@ def process_document(
                                 if extract_table_from_content:
                                     _, table_content = extract_table_from_content(analysis_result)
                                     contains_table = bool(table_content)
+                                if normalize_image_analysis_content:
+                                    analysis = normalize_image_analysis_content(analysis, contains_table=contains_table)
                                 contains_chart = any(
                                     kw in analysis_result.lower()
                                     for kw in ['坐标', '曲线', '趋势', '图表', '图', 'axis', 'chart']
@@ -296,32 +484,64 @@ def process_document(
             # We can try to match by identity? No, `doc.tables` creates new proxy objects.
             # Let's iterate `doc.tables` and pop? No.
             
-            # Simple Markdown extraction
             import docx.table
             table = docx.table.Table(element, doc)
-            
-            rows_md = []
-            try:
-                # Basic MD Table
-                r0_cells = [c.text.strip().replace('\n', ' ') for c in table.rows[0].cells]
-                rows_md.append(f"| {' | '.join(r0_cells)} |")
-                rows_md.append(f"| {' | '.join(['---']*len(r0_cells))} |")
-                for row in table.rows[1:]:
-                    cells = [c.text.strip().replace('\n', ' ') for c in row.cells]
-                    rows_md.append(f"| {' | '.join(cells)} |")
-            except:
-                pass
-            
-            table_md = "\n".join(rows_md)
+            table_rendered = _render_table_preserve_merge(table)
+            table_text = str(table_rendered.get("text", ""))
+            table_format = str(table_rendered.get("format", "markdown"))
+            table_has_merged = bool(table_rendered.get("has_merged", False))
             current_path = _clean_joined_path(" > ".join([p for p in path_stack[1:] if p]))
             table_index_global += 1
+            table_images = []
+            table_image_anchors = []
+            seen_table_images = set()
+            table_image_map = {}
+            try:
+                for row_idx, row in enumerate(table.rows, start=1):
+                    for col_idx, cell in enumerate(row.cells, start=1):
+                        for para_in_cell in cell.paragraphs:
+                            cell_images = find_images_in_paragraph(para_in_cell, rels)
+                            for img_info in cell_images:
+                                fname = img_info.get("filename")
+                                if not fname:
+                                    continue
+                                fpath = extracted_image_map.get(fname)
+                                if not fpath:
+                                    continue
+                                anchor = _build_table_anchor(table_index_global, row_idx, col_idx, cell.text)
+                                table_image_anchors.append({
+                                    "image_id": fname,
+                                    **anchor,
+                                })
+
+                                if fname in table_image_map:
+                                    table_image_map[fname].setdefault("anchors", []).append(anchor)
+                                    continue
+
+                                if fname not in seen_table_images:
+                                    seen_table_images.add(fname)
+                                    image_index_global += 1
+                                    total_images = len(extracted_image_map)
+                                    img_obj = analyze_extracted_image(fpath, fname, image_index_global, total_images)
+                                    img_obj["source_type"] = "table_cell"
+                                    img_obj["table_index"] = table_index_global
+                                    img_obj["anchors"] = [anchor]
+                                    table_image_map[fname] = img_obj
+            except Exception:
+                pass
+
+            table_images = list(table_image_map.values())
             
             elements.append({
                 "type": "table",
-                "text": table_md,
+                "text": table_text,
                 "path": current_path,
                 "mastery": last_mastery,
-                "table_index": table_index_global
+                "table_index": table_index_global,
+                "table_format": table_format,
+                "table_has_merged": table_has_merged,
+                "images": table_images,
+                "image_anchors": table_image_anchors,
             })
 
     return elements
@@ -351,6 +571,7 @@ def group_and_slice(elements: List[Dict], api_key: str):
                     "tables": [],
                     "context_after": "",
                     "images": [],
+                    "image_anchors": [],
                     "formulas": [],
                     "examples": [] # New field for examples
                 },
@@ -407,6 +628,10 @@ def group_and_slice(elements: List[Dict], api_key: str):
                 # For safety, let's reset example mode on visuals for now, or keep separate.
                 current_slice["_in_example"] = False 
                 current_slice["结构化内容"]["tables"].append(el["text"])
+                if el.get("images"):
+                    current_slice["结构化内容"]["images"].extend(el["images"])
+                if el.get("image_anchors"):
+                    current_slice["结构化内容"]["image_anchors"].extend(el["image_anchors"])
                 current_slice["_hit_visual"] = True
     
     if current_slice:
@@ -425,6 +650,7 @@ def group_and_slice(elements: List[Dict], api_key: str):
         # Metadata updates
         s["metadata"]["表格索引"] = len(s["结构化内容"]["tables"])
         s["metadata"]["图片索引"] = len(s["结构化内容"]["images"])
+        s["metadata"]["表格图片锚点数"] = len(s["结构化内容"].get("image_anchors", []) or [])
         s["metadata"]["包含计算公式"] = len(s["结构化内容"]["formulas"]) > 0
         
         final_slices.append(s)
@@ -562,24 +788,37 @@ def main():
     args = parser.parse_args()
 
     config = load_config()
-    # 图片分析走 AIT OpenAI 兼容接口
-    # 优先级：显式图片配置 > AIT配置 > CRITIC配置 > OPENAI配置
-    api_key = (
-        config.get('IMAGE_API_KEY')
-        or config.get('AIT_API_KEY')
-        or config.get('CRITIC_API_KEY')
-        or config.get('OPENAI_API_KEY')
-    )
+    # 图片分析走 provider 分流：
+    # - provider=ait: 优先 AIT_API_KEY / AIT_BASE_URL
+    # - provider=ark: 优先 Ark 链路配置
     image_model = config.get("IMAGE_MODEL") or "doubao-seed-1.8"
     image_provider = (config.get("IMAGE_PROVIDER") or "").lower()
-    image_base_url = (
-        config.get("IMAGE_BASE_URL")
-        or config.get("ARK_BASE_URL")
-        or config.get("AIT_BASE_URL")
-        or config.get("CRITIC_BASE_URL")
-        or config.get("OPENAI_BASE_URL")
-        or "https://ark.cn-beijing.volces.com/api/v3"
-    )
+    if image_provider == "ark":
+        api_key = (
+            config.get("IMAGE_API_KEY")
+            or config.get("ARK_API_KEY")
+            or config.get("OPENAI_API_KEY")
+            or ""
+        )
+        image_base_url = (
+            config.get("IMAGE_BASE_URL")
+            or config.get("ARK_BASE_URL")
+            or "https://ark.cn-beijing.volces.com/api/v3"
+        )
+    else:
+        api_key = (
+            config.get("AIT_API_KEY")
+            or config.get("IMAGE_API_KEY")
+            or config.get("OPENAI_API_KEY")
+            or config.get("CRITIC_API_KEY")
+            or ""
+        )
+        image_base_url = (
+            config.get("IMAGE_BASE_URL")
+            or config.get("AIT_BASE_URL")
+            or config.get("OPENAI_BASE_URL")
+            or "https://openapi-ait.ke.com/v1"
+        )
     ark_api_key = config.get("ARK_API_KEY") or ""
     volc_ak = config.get("VOLC_ACCESS_KEY_ID") or ""
     volc_sk = config.get("VOLC_SECRET_ACCESS_KEY") or ""
@@ -646,6 +885,7 @@ def main():
                 "tables": [appendix_table],
                 "context_after": "",
                 "images": [],
+                "image_anchors": [],
                 "formulas": [],
                 "examples": []
             },

@@ -56,7 +56,7 @@ init_observability("exam-admin-api")
 SLICE_STATUSES = {"pending", "approved"}
 MAP_STATUSES = {"pending", "approved"}
 QUESTION_TYPES = {"单选题", "多选题", "判断题", "随机"}
-GEN_MODES = {"灵活", "严谨"}
+GEN_MODES = {"基础概念/理解记忆", "实战应用/推演", "随机"}
 ALLOWED_ORIGINS = set(
     x.strip()
     for x in os.getenv(
@@ -83,6 +83,86 @@ def _json_response(payload: dict[str, Any], status: int = 200):
     if request_id:
         resp.headers["X-Request-Id"] = request_id
     return resp
+
+
+def _normalize_generation_mode(raw_mode: Any) -> str:
+    """
+    统一出题筛选条件，并兼容历史“灵活/严谨”取值。
+    """
+    mode = str(raw_mode or "").strip()
+    if mode in GEN_MODES:
+        return mode
+    if mode == "灵活":
+        return "实战应用/推演"
+    if mode == "严谨":
+        return "基础概念/理解记忆"
+    return "随机"
+
+
+def _normalize_calc_label(raw_value: Any) -> str:
+    text = str(raw_value or "").strip().lower()
+    if not text:
+        return ""
+    if text in {"计算题", "计算", "calc", "calculation", "true", "1", "yes", "y", "是"}:
+        return "计算题"
+    if text in {"非计算题", "非计算", "false", "0", "no", "n", "否"}:
+        return "非计算题"
+    if "非计算" in text:
+        return "非计算题"
+    if "计算" in text:
+        return "计算题"
+    return ""
+
+
+def _resolve_calc_question_type(question: dict[str, Any]) -> str:
+    for key in (
+        "题型标签",
+        "题目类型",
+        "是否计算题",
+        "计算题标签",
+        "calc_type",
+        "question_calc_type",
+        "is_calculation",
+        "need_calculation",
+    ):
+        label = _normalize_calc_label(question.get(key))
+        if label:
+            return label
+
+    text_parts = [
+        str(question.get("题干", "") or ""),
+        str(question.get("解析", "") or ""),
+    ]
+    for idx in range(1, 9):
+        text_parts.append(str(question.get(f"选项{idx}", "") or ""))
+    text = " ".join([x for x in text_parts if x]).lower()
+
+    has_digit = bool(re.search(r"\d", text))
+    has_operator = bool(re.search(r"[+\-*/=×÷%]", text))
+    calc_keywords = (
+        "计算",
+        "税",
+        "税费",
+        "贷款",
+        "月供",
+        "利率",
+        "利息",
+        "首付",
+        "还款",
+        "金额",
+        "总价",
+        "单价",
+        "面积",
+        "比例",
+        "百分比",
+        "合计",
+        "折扣",
+        "公式",
+    )
+    keyword_hits = sum(1 for kw in calc_keywords if kw in text)
+    if (has_digit and (has_operator or keyword_hits >= 1)) or keyword_hits >= 2:
+        return "计算题"
+    return "非计算题"
 
 
 def _error(code: str, message: str, status: int = 400):
@@ -1081,7 +1161,7 @@ def _make_gen_task(tenant_id: str, system_user: str, body: dict[str, Any]) -> di
             "gen_scope_mode": str(body.get("gen_scope_mode", "custom")),
             "num_questions": int(body.get("num_questions", 1) or 1),
             "question_type": str(body.get("question_type", "单选题")),
-            "generation_mode": str(body.get("generation_mode", "灵活")),
+            "generation_mode": _normalize_generation_mode(body.get("generation_mode", "随机")),
             "difficulty": str(body.get("difficulty", "随机")),
             "save_to_bank": bool(body.get("save_to_bank", True)),
             "slice_ids": [int(x) for x in (body.get("slice_ids") or []) if str(x).isdigit()],
@@ -2214,18 +2294,34 @@ def api_image_ocr_test(tenant_id: str):
     config = load_config()
     image_model = config.get("IMAGE_MODEL") or "doubao-seed-1.8"
     image_provider = (config.get("IMAGE_PROVIDER") or "").lower()
-    image_base_url = config.get("IMAGE_BASE_URL") or config.get("ARK_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+    if image_provider == "ark":
+        image_base_url = config.get("IMAGE_BASE_URL") or config.get("ARK_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+    else:
+        image_base_url = (
+            config.get("IMAGE_BASE_URL")
+            or config.get("AIT_BASE_URL")
+            or config.get("OPENAI_BASE_URL")
+            or "https://openapi-ait.ke.com/v1"
+        )
     ark_api_key = config.get("ARK_API_KEY") or ""
     volc_ak = config.get("VOLC_ACCESS_KEY_ID") or ""
     volc_sk = config.get("VOLC_SECRET_ACCESS_KEY") or ""
     ark_project_name = config.get("ARK_PROJECT_NAME") or ""
-    api_key = (
-        config.get("IMAGE_API_KEY")
-        or config.get("AIT_API_KEY")
-        or config.get("CRITIC_API_KEY")
-        or config.get("OPENAI_API_KEY")
-        or ""
-    )
+    if image_provider == "ark":
+        api_key = (
+            config.get("IMAGE_API_KEY")
+            or config.get("ARK_API_KEY")
+            or config.get("OPENAI_API_KEY")
+            or ""
+        )
+    else:
+        api_key = (
+            config.get("AIT_API_KEY")
+            or config.get("IMAGE_API_KEY")
+            or config.get("OPENAI_API_KEY")
+            or config.get("CRITIC_API_KEY")
+            or ""
+        )
 
     analysis = analyze_image_with_qwen_vl(
         str(target_resolved),
@@ -3778,7 +3874,7 @@ def api_generate_questions(tenant_id: str):
     num_questions = int(body.get("num_questions", 1))
     num_questions = min(max(num_questions, 1), 200)
     question_type = str(body.get("question_type", "单选题"))
-    generation_mode = str(body.get("generation_mode", "灵活"))
+    generation_mode = _normalize_generation_mode(body.get("generation_mode", "随机"))
     difficulty = str(body.get("difficulty", "随机"))
     slice_ids_input = body.get("slice_ids") or []
     save_to_bank = bool(body.get("save_to_bank", True))
@@ -3836,8 +3932,8 @@ def api_generate_questions(tenant_id: str):
         return _error("NO_VALID_SLICES", "审核记录与当前切片版本不一致，请重新审核切片后再出题", 400)
     cfg_path = Path("填写您的Key.txt")
     api_key = ""
-    base_url = "https://openapi-ait.ke.com"
-    model_name = "deepseek-reasoner"
+    base_url = "https://openapi-ait.ke.com/v1"
+    model_name = "deepseek-v3.2"
     if cfg_path.exists():
         cfg: dict[str, str] = {}
         for line in cfg_path.read_text(encoding="utf-8").splitlines():
@@ -3850,8 +3946,8 @@ def api_generate_questions(tenant_id: str):
             return bool(v) and "请将您的Key" not in v
 
         # Keep provider triplet consistent: API_KEY/BASE_URL/MODEL must come from the same prefix.
-        # Priority is OPENAI -> DEEPSEEK -> CRITIC to match current admin usage.
-        for prefix in ("OPENAI", "DEEPSEEK", "CRITIC"):
+        # Priority should prefer AIT in current deployment.
+        for prefix in ("AIT", "OPENAI", "DEEPSEEK", "CRITIC"):
             key = str(cfg.get(f"{prefix}_API_KEY", "")).strip()
             if not _usable_key(key):
                 continue
@@ -4105,7 +4201,7 @@ def api_generate_questions_stream(tenant_id: str):
     num_questions = int(body.get("num_questions", 1))
     num_questions = min(max(num_questions, 1), 200)
     question_type = str(body.get("question_type", "单选题"))
-    generation_mode = str(body.get("generation_mode", "灵活"))
+    generation_mode = _normalize_generation_mode(body.get("generation_mode", "随机"))
     difficulty = str(body.get("difficulty", "随机"))
     slice_ids_input = body.get("slice_ids") or []
     save_to_bank = bool(body.get("save_to_bank", True))
@@ -4164,8 +4260,8 @@ def api_generate_questions_stream(tenant_id: str):
 
     cfg_path = Path("填写您的Key.txt")
     api_key = ""
-    base_url = "https://openapi-ait.ke.com"
-    model_name = "deepseek-reasoner"
+    base_url = "https://openapi-ait.ke.com/v1"
+    model_name = "deepseek-v3.2"
     if cfg_path.exists():
         cfg: dict[str, str] = {}
         for line in cfg_path.read_text(encoding="utf-8").splitlines():
@@ -4177,7 +4273,7 @@ def api_generate_questions_stream(tenant_id: str):
         def _usable_key(v: str) -> bool:
             return bool(v) and "请将您的Key" not in v
 
-        for prefix in ("OPENAI", "DEEPSEEK", "CRITIC"):
+        for prefix in ("AIT", "OPENAI", "DEEPSEEK", "CRITIC"):
             key = str(cfg.get(f"{prefix}_API_KEY", "")).strip()
             if not _usable_key(key):
                 continue
@@ -4528,7 +4624,7 @@ def _build_gen_task_summary(task: dict[str, Any]) -> dict[str, Any]:
         "request": {
             "num_questions": int(req.get("num_questions", 0) or 0),
             "question_type": str(req.get("question_type", "")),
-            "generation_mode": str(req.get("generation_mode", "")),
+            "generation_mode": _normalize_generation_mode(req.get("generation_mode", "")),
             "difficulty": str(req.get("difficulty", "")),
         },
     }
@@ -4571,7 +4667,7 @@ def _persist_failed_task_qa_run(
     req = task.get("request") if isinstance(task.get("request"), dict) else {}
     config_payload = {
         "question_type": str(req.get("question_type", "")),
-        "generation_mode": str(req.get("generation_mode", "")),
+        "generation_mode": _normalize_generation_mode(req.get("generation_mode", "")),
         "difficulty": str(req.get("difficulty", "")),
         "num_questions": int(req.get("num_questions", 0) or 0),
         "gen_scope_mode": str(req.get("gen_scope_mode", "")),
@@ -5448,6 +5544,7 @@ def api_bank_export(tenant_id: str):
             "选项H": safe_str(q.get("选项8", "")),
             "答案选项(必填)": answer,
             "难度": difficulty,
+            "题型": _resolve_calc_question_type(q),
             "一级知识点": safe_str(q.get("一级知识点", "")) or (parts[0] if len(parts) > 0 else ""),
             "二级知识点": safe_str(q.get("二级知识点", "")) or (parts[1] if len(parts) > 1 else ""),
             "三级知识点": safe_str(q.get("三级知识点", "")) or (parts[2] if len(parts) > 2 else ""),
@@ -5468,6 +5565,7 @@ def api_bank_export(tenant_id: str):
         "选项H",
         "答案选项(必填)",
         "难度",
+        "题型",
         "一级知识点",
         "二级知识点",
         "三级知识点",

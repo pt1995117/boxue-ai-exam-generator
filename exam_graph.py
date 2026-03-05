@@ -567,6 +567,118 @@ def build_extended_kb_context(kb_chunk: Dict[str, Any], retriever: Optional[Know
     }
     return json.dumps(data, ensure_ascii=False, indent=2), parent_slices, related_slices
 
+
+def resolve_target_question_type(
+    configured_question_type: Optional[str],
+    recommended_type: str,
+    kb_chunk: Dict[str, Any],
+    retriever: Optional[KnowledgeRetriever],
+) -> Tuple[str, List[str]]:
+    """
+    决定本次出题的最终题型。
+    规则：
+    1) 指定题型（单选/多选/判断）直接使用指定题型；
+    2) 随机题型优先使用“当前切片已关联母题”的题型集合；
+    3) 若无可用映射题型，回退 Router 推荐题型。
+    """
+    cfg = str(configured_question_type or "").strip()
+    rec = recommended_type if recommended_type in {"单选题", "多选题", "判断题"} else "单选题"
+    if cfg in {"单选题", "多选题", "判断题"}:
+        return cfg, []
+    if cfg == "随机":
+        preferred_types: List[str] = []
+        if retriever and hasattr(retriever, "get_preferred_question_types_by_knowledge_point"):
+            try:
+                preferred_types = retriever.get_preferred_question_types_by_knowledge_point(kb_chunk) or []
+            except Exception:
+                preferred_types = []
+        if preferred_types:
+            # 轻量轮转，避免长期只命中一种题型。
+            idx = int(time.time() * 1000) % len(preferred_types)
+            return preferred_types[idx], preferred_types
+        return rec, []
+    return rec, []
+
+
+def normalize_generation_mode(raw_mode: Optional[str]) -> str:
+    """
+    统一出题筛选条件取值，并兼容历史配置。
+    可选值：
+    - 基础概念/理解记忆
+    - 实战应用/推演
+    - 随机
+    """
+    mode = str(raw_mode or "").strip()
+    if mode in {"基础概念/理解记忆", "实战应用/推演", "随机"}:
+        return mode
+    # 兼容历史模式
+    if mode == "灵活":
+        return "实战应用/推演"
+    if mode == "严谨":
+        return "基础概念/理解记忆"
+    return "随机"
+
+
+def resolve_effective_generation_mode(raw_mode: Optional[str], state: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
+    """
+    返回 (effective_mode, normalized_mode)：
+    - normalized_mode: 规范化后的用户筛选条件
+    - effective_mode: 本题实际执行条件（随机模式下在两类中选一）
+    """
+    normalized = normalize_generation_mode(raw_mode)
+    if normalized != "随机":
+        return normalized, normalized
+    # 随机模式下做轻量轮转，保证两类都能覆盖
+    seed = int(time.time() * 1000)
+    if isinstance(state, dict):
+        seed += int(state.get("retry_count", 0) or 0)
+    effective = "基础概念/理解记忆" if seed % 2 == 0 else "实战应用/推演"
+    return effective, normalized
+
+
+def build_mode_instruction(effective_mode: str, normalized_mode: str) -> str:
+    """构建出题筛选条件提示词。"""
+    if effective_mode == "基础概念/理解记忆":
+        random_note = "（来自随机模式自动选择）" if normalized_mode == "随机" else ""
+        return f"""
+# 出题筛选条件：基础概念/理解记忆{random_note}
+要求：
+1. **聚焦知识点本体**：重点考察定义、规则、条件、结构与关键边界。
+2. **不强制业务场景**：可直接围绕教材切片命题，不要求绑定客户或交易情境。
+3. **忠实教材原文**：不得引入材料外结论；题干、选项、解析必须可回溯到切片。
+4. **解析要说明依据**：清晰给出教材依据与推理链路。
+"""
+    random_note = "（来自随机模式自动选择）" if normalized_mode == "随机" else ""
+    return f"""
+# 出题筛选条件：实战应用/推演{random_note}
+要求：
+1. **必须关联业务场景**：题干需出现可识别的经纪业务情境（客户咨询、交易流程、签约、合规、税费或贷款决策等）。
+2. **强调应用与推演**：通过场景条件推导结论，避免只考纯记忆点。
+3. **忠实教材原文**：场景可重构但规则依据必须来自切片，不得超纲。
+4. **解析要体现应用链路**：明确“场景条件 -> 规则套用 -> 结论”。
+"""
+
+
+def build_mode_instruction_repair(effective_mode: str, normalized_mode: str) -> str:
+    """修复阶段的简版筛选条件提示。"""
+    if effective_mode == "基础概念/理解记忆":
+        suffix = "（随机模式本题选中）" if normalized_mode == "随机" else ""
+        return f"出题筛选条件：基础概念/理解记忆{suffix}。本题不强制业务场景，直接考察切片知识点，禁止偏离教材依据。"
+    suffix = "（随机模式本题选中）" if normalized_mode == "随机" else ""
+    return f"出题筛选条件：实战应用/推演{suffix}。本题必须关联业务场景，并体现条件推演过程。"
+
+
+def has_business_context(text: str) -> bool:
+    """轻量判定题干是否包含业务场景语义。"""
+    content = str(text or "")
+    if not content.strip():
+        return False
+    keywords = [
+        "客户", "业主", "经纪人", "门店", "带看", "签约", "过户", "交易",
+        "税费", "贷款", "公积金", "合同", "房源", "咨询", "看房", "收佣", "服务",
+    ]
+    return any(k in content for k in keywords)
+
 # --- State Definition ---
 class AgentState(TypedDict):
     kb_chunk: Dict
@@ -592,6 +704,7 @@ class AgentState(TypedDict):
     solver_commentary: Optional[str]  # Critic's independent solving explanation
     # ✅ Question type state transfer: Writer passes actual question type to downstream nodes
     current_question_type: Optional[str]  # Actual question type determined by Writer node
+    current_generation_mode: Optional[str]  # Actual mode chosen for this question
     # ✅ Model switching: Track which model was actually used
     critic_model_used: Optional[str]  # Actual model used by Critic (for UI display)
     calculator_model_used: Optional[str]  # Actual model used by Calculator (for UI display)
@@ -1483,7 +1596,8 @@ def specialist_node(state: AgentState, config):
     # Fetch examples AFTER routing, based on knowledge point and question type
     retriever = config['configurable'].get('retriever')
     question_type = config['configurable'].get('question_type')
-    generation_mode = config['configurable'].get('generation_mode', '灵活')
+    generation_mode = config['configurable'].get('generation_mode', '随机')
+    effective_generation_mode, normalized_generation_mode = resolve_effective_generation_mode(generation_mode, state)
     uniqueness_note = ""
     avoid_superlative = "   - **避免“最XX”考法**：禁止用“最重要/最关键/重点/主要”等表述设计题干或选项，重点考察完整流程、条件、责任边界或操作要点。"
     # Set uniqueness constraint for single-choice questions
@@ -1496,6 +1610,16 @@ def specialist_node(state: AgentState, config):
     # Get mastery level from kb_chunk (FR7.5)
     mastery = kb_chunk.get('掌握程度', '未知')
     
+    # 题型决策：指定题型直接使用；随机题型优先用映射母题题型
+    router_details = state.get('router_details', {})
+    rec_type = router_details.get('recommended_type', '单选题')
+    target_type, preferred_types = resolve_target_question_type(
+        configured_question_type=question_type,
+        recommended_type=rec_type,
+        kb_chunk=kb_chunk,
+        retriever=retriever,
+    )
+
     # Fetch examples logic updated:
     # 1. First priority: Structural examples from the slice itself (100% match)
     # 2. Second priority: Retrieved examples from vector DB (Reference)
@@ -1509,7 +1633,7 @@ def specialist_node(state: AgentState, config):
     # But usually builtin is better. Let's use builtin first.
     
     if retriever:
-        retrieved_examples = retriever.get_examples_by_knowledge_point(kb_chunk, k=3, question_type=question_type)
+        retrieved_examples = retriever.get_examples_by_knowledge_point(kb_chunk, k=3, question_type=target_type)
 
     # Combine examples for passing to state (normalize to dict)
     def _normalize_examples(ex_list):
@@ -1544,33 +1668,7 @@ def specialist_node(state: AgentState, config):
             # For now just list them.
             examples_text += f"参考题 {i}: {title}\n"
     
-    # 根据模式调整提示词
-    if generation_mode == "严谨":
-        mode_instructions = """
-# 出题模式：严谨模式（用于标准化考试）
-出题目标：帮助房地产经纪人在实际业务、客户沟通、合规操作中避免不专业失误，强调实战应用，而非死记投诉等级或孤立条文。
-要求：
-1. **严格忠实原文**：题目必须严格按照参考材料的内容，不得添加任何材料外的信息或推理。
-2. **标准化表述**：使用标准的考试题目表述方式，避免口语化或刻意堆砌场景化描述。
-3. **直接考察知识点的实务含义**：结合经纪业务决策/合规/客户服务的正确做法来考察知识点，避免只考背诵性细节。
-4. **标准化选项**：选项表述简洁、准确，符合标准化考试风格。干扰项设计利用**"相近的数字"**或**"错误的参照物"**。
-5. **严谨的解析**：解析必须严格按照"1、教材原文 2、试题分析 3、结论"的结构，直接引用原文。
-
-禁止：
-- 禁止添加假设性场景（如"客户咨询..."、"在交易中..."）
-- 禁止使用口语化表达
-- 禁止在题干中添加材料外的信息
-"""
-    else:  # 灵活模式
-        mode_instructions = """
-# 出题模式：灵活模式（适合日常练习）
-出题目标：让房地产经纪人能在真实业务、客户沟通、合规服务中表现专业，题目应帮助识别常见业务失误，而非机械背诵条文或投诉级别数量。
-要求：
-1. **场景化表达**：将题目融入实际工作场景（例如"客户咨询..."、"在交易中..."），体现如何提供专业、合规的服务。
-2. **灵活表述**：可以使用更自然、更贴近实际工作的表述方式。
-3. **创意干扰项**：错误选项可以更灵活，利用常见误区。利用**"相近的数字"**或**"错误的参照物"**设计干扰项，模拟经纪人容易犯的业务错误。
-4. **生动解析**：解析可以更生动，但必须保持准确性，并指出正确的专业做法。
-"""
+    mode_instructions = build_mode_instruction(effective_generation_mode, normalized_generation_mode)
     
     # Feature Injection
     struct = kb_chunk.get('结构化内容', {})
@@ -1587,15 +1685,7 @@ def specialist_node(state: AgentState, config):
         struct_instruction += f"\n## 关键参数 (建议作为选项干扰项)\n" + ", ".join(key_params)
 
     # Question type control (strict)
-    router_details = state.get('router_details', {})
-    rec_type = router_details.get('recommended_type', '单选题')
     cfg_type = question_type
-    if cfg_type == "随机":
-        target_type = rec_type
-    elif cfg_type in ["单选题", "多选题", "判断题"]:
-        target_type = cfg_type
-    else:
-        target_type = rec_type
     if target_type == "判断题":
         type_instruction = (
             "题型要求：判断题。\n"
@@ -1618,6 +1708,10 @@ def specialist_node(state: AgentState, config):
             "括号格式：题干占位括号必须为中文括号“（ ）”，括号前后无空格，括号内有空格。"
         )
 
+    mapped_type_hint = ""
+    if cfg_type == "随机" and preferred_types:
+        mapped_type_hint = f"\n# 随机题型优先规则\n当前切片关联母题题型优先集合：{preferred_types}。\n本题请按已选定题型【{target_type}】生成。"
+
     # Repair mode for reroute: inject critic feedback and previous question
     if state.get("retry_count", 0) > 0 and state.get("prev_final_json"):
         prev_question = state.get("prev_final_json")
@@ -1625,7 +1719,8 @@ def specialist_node(state: AgentState, config):
         
         # Get constraints from config for repair mode
         question_type = config['configurable'].get('question_type')
-        generation_mode = config['configurable'].get('generation_mode', '灵活')
+        generation_mode = state.get("current_generation_mode") or config['configurable'].get('generation_mode', '随机')
+        effective_generation_mode, normalized_generation_mode = resolve_effective_generation_mode(generation_mode, state)
         difficulty_range = config['configurable'].get('difficulty_range')
         if question_type == "随机":
             question_type = state.get("current_question_type") or rec_type
@@ -1639,10 +1734,7 @@ def specialist_node(state: AgentState, config):
             type_instruction_repair = "题型要求：单选题。4个选项且只有一个正确。答案必须是单个字母，如 'A'。括号格式：题干占位括号必须为中文括号“（ ）”，括号前后无空格，括号内有空格。"
         
         # Build mode instruction for repair
-        if generation_mode == "严谨":
-            mode_instruction_repair = "出题模式：严谨模式。严格忠实原文，使用标准化表述，禁止添加假设性场景。"
-        else:
-            mode_instruction_repair = "出题模式：灵活模式。场景化表达，可以使用更自然、更贴近实际工作的表述。"
+        mode_instruction_repair = build_mode_instruction_repair(effective_generation_mode, normalized_generation_mode)
         
         # Build difficulty instruction for repair
         difficulty_instruction_repair = ""
@@ -1678,6 +1770,7 @@ def specialist_node(state: AgentState, config):
 
 {difficulty_instruction_repair}
 {term_lock_text}
+{mapped_type_hint}
 
 # 人名规范（必须遵守）
 1. **非必要不取名**：能不出现人名就不要出现。
@@ -1698,7 +1791,7 @@ def specialist_node(state: AgentState, config):
 - 禁止解释出题过程
 - 禁止辩解
 - 禁止直接照搬原文案例中的具体人名、金额、日期、房产面积（必须做数据重构）
-- 禁止定义题，必须保持场景化案例题
+- 出题筛选条件必须严格执行：基础概念/理解记忆可非场景化；实战应用/推演必须场景化
 
 # 参考材料
 {kb_context}
@@ -1721,6 +1814,7 @@ def specialist_node(state: AgentState, config):
             return {
                 "draft": draft,
                 "examples": examples,
+                "current_generation_mode": effective_generation_mode,
                 "llm_trace": llm_records,
                 "logs": [f"🛠️ {agent_name}: 已进入修复模式"]
             }
@@ -1769,13 +1863,13 @@ def specialist_node(state: AgentState, config):
 
 # 好题标准（必须遵守）
 ## 好情境（用什么材料考）
-1. **聚焦贴业务**：情境必须来源于房地产经纪人实际工作场景，实用常见。
+1. **聚焦考点**：围绕教材切片核心知识点命题；是否使用业务场景由筛选条件决定。
 2. **真诚说人话**：情境描述要通俗易懂，避免生僻词和专业黑话，使用自然的日常表达。
 3. **简洁不啰嗦**：情境表述要简洁清晰，避免冗余信息，突出核心要点。
 
 ## 好方法（用什么方法）
 1. **直接不拐弯**：考点直接，不设置复杂陷阱，让学员能清晰理解要考察的知识点。
-2. **场景化案例**：必须使用具体场景案例，禁止直接问定义或概念。
+2. **按筛选条件决定场景化**：基础概念/理解记忆可直接考知识点；实战应用/推演必须使用业务场景案例。
 3. **数据重构**：严禁直接照搬原文案例中的具体人名、金额、日期、房产面积。
 
 # 题型要求（必须遵守）
@@ -1914,14 +2008,10 @@ def specialist_node(state: AgentState, config):
 4. **相关性 (15%)**: 考察核心概念在经纪业务/合规/客户服务中的应用，避免纯背诵性琐碎记忆。
 5. **格式 (10%)**: 严格的 JSON 输出。
 {struct_instruction}
-6. **强制场景化应用 (Scenario-Based Only)**:
-   - **禁止定义题**：严禁出“以下哪个条件是二套房？”这种直接问定义的题目。
-   - **必须出案例题**：题干必须描述一个具体的业务场景。
-     - ❌ 废题模式：题干问“A是什么”，选项说“A是A”。
-     - ✅ 实战模式：
-      - **题干**：客户王先生家庭名下在拟购房区域已有1套住房，且从未申请过公积金贷款。现王先生计划在该区域**购买第二套住房并申请公积金贷款**，请问根据认定细则，该笔贷款将被认定为？
-      - **正确选项**：二套房贷款
-      - **干扰选项**：首套房贷款（利用"无贷记录"进行误导）、拒贷
+6. **筛选条件强约束（必须执行）**:
+   - 若筛选条件为【基础概念/理解记忆】：可直接考察定义、条件、规则，不强制业务场景。
+   - 若筛选条件为【实战应用/推演】：题干必须描述具体业务场景，并体现推演过程。
+   - ❌ 禁止无效题：题干问“A是什么”，选项说“A是A”。
 # 参考材料
 {kb_context}
 
@@ -1975,8 +2065,9 @@ def specialist_node(state: AgentState, config):
             "draft": draft,
             "examples": examples,  # Pass examples to UI
             "self_check_issues": self_check_issues,
+            "current_generation_mode": effective_generation_mode,
             "llm_trace": llm_records,
-            "logs": [f"👨‍💻 {agent_name}: 初稿已生成"]
+            "logs": [f"👨‍💻 {agent_name}: 初稿已生成（题型={target_type}，筛选条件={effective_generation_mode}）"]
         }
     except Exception as e:
         return {"llm_trace": llm_records, "logs": [f"❌ {agent_name} 错误: {str(e)}"]}
@@ -2537,6 +2628,30 @@ def critic_node(state: AgentState, config):
             }
     else:
         print(f"✅ 跳过题型校验（随机模式或已匹配）")
+
+    configured_mode = config['configurable'].get('generation_mode', '随机')
+    effective_generation_mode = state.get("current_generation_mode") or resolve_effective_generation_mode(configured_mode, state)[0]
+
+    # ✅ 模式强约束：实战应用/推演必须体现业务场景
+    if effective_generation_mode == "实战应用/推演":
+        stem_text = str(final_json.get("题干", "")) if isinstance(final_json, dict) else ""
+        if not has_business_context(stem_text):
+            reason = "筛选条件不符合：当前为【实战应用/推演】，题干未体现业务场景语义"
+            return {
+                "critic_feedback": "FAIL",
+                "critic_rules_context": full_rules_text,
+                "critic_related_rules": related_rules,
+                "critic_result": {
+                    "passed": False,
+                    "issue_type": "major",
+                    "reason": reason,
+                    "fix_strategy": "regenerate"
+                },
+                "critic_details": reason,
+                "critic_model_used": "rule-based",
+                "llm_trace": llm_records,
+                "logs": [f"🔍 批评家: ❌ {reason} → 重新生成"]
+            }
 
     # ✅ Bracket format validation for judgment/choice questions
     if question_type in ["单选题", "多选题", "判断题"]:
@@ -3497,7 +3612,8 @@ def fixer_node(state: AgentState, config):
     # Get constraints from config
     # ✅ Prioritize reading question type from state (set by Writer), fallback to config
     question_type = state.get('current_question_type') or config['configurable'].get('question_type', '单选题')
-    generation_mode = config['configurable'].get('generation_mode', '灵活')
+    generation_mode = state.get("current_generation_mode") or config['configurable'].get('generation_mode', '随机')
+    effective_generation_mode, normalized_generation_mode = resolve_effective_generation_mode(generation_mode, state)
     difficulty_range = config['configurable'].get('difficulty_range')
     
     # Build type instruction
@@ -3509,29 +3625,7 @@ def fixer_node(state: AgentState, config):
         type_instruction = "题型要求：单选题。4个选项且只有一个正确。答案必须是单个字母，如 'A'。括号格式：题干占位括号必须为中文括号“（ ）”，括号前后无空格，括号内有空格。"
     
     # Build mode instruction
-    if generation_mode == "严谨":
-        mode_instruction = """
-# 出题模式：严谨模式（用于标准化考试）
-要求：
-1. **严格忠实原文**：题目必须严格按照参考材料的内容，不得添加任何材料外的信息或推理。
-2. **标准化表述**：使用标准的考试题目表述方式，避免口语化或刻意堆砌场景化描述。
-3. **标准化选项**：选项表述简洁、准确，符合标准化考试风格。
-4. **严谨的解析**：解析必须严格按照"1、教材原文 2、试题分析 3、结论"的结构，直接引用原文。
-
-禁止：
-- 禁止添加假设性场景（如"客户咨询..."、"在交易中..."）
-- 禁止使用口语化表达
-- 禁止在题干中添加材料外的信息
-"""
-    else:  # 灵活模式
-        mode_instruction = """
-# 出题模式：灵活模式（适合日常练习）
-要求：
-1. **场景化表达**：将题目融入实际工作场景（例如"客户咨询..."、"在交易中..."），体现如何提供专业、合规的服务。
-2. **灵活表述**：可以使用更自然、更贴近实际工作的表述方式。
-3. **创意干扰项**：错误选项可以更灵活，利用常见误区。
-4. **生动解析**：解析可以更生动，但必须保持准确性，并指出正确的专业做法。
-"""
+    mode_instruction = build_mode_instruction(effective_generation_mode, normalized_generation_mode)
     
     # Build difficulty instruction
     difficulty_instruction = ""
@@ -4095,10 +4189,18 @@ def calculator_node(state: AgentState, config):
     # Step 1: Fetch examples FIRST (照猫画虎)
     retriever = config['configurable'].get('retriever') or get_default_retriever()
     question_type = config['configurable'].get('question_type')
+    router_details = state.get('router_details', {})
+    rec_type = router_details.get('recommended_type', '单选题')
+    target_type, preferred_types = resolve_target_question_type(
+        configured_question_type=question_type,
+        recommended_type=rec_type,
+        kb_chunk=kb_chunk,
+        retriever=retriever,
+    )
     
     examples = []
     if retriever:
-        examples = retriever.get_examples_by_knowledge_point(kb_chunk, k=3, question_type=question_type)
+        examples = retriever.get_examples_by_knowledge_point(kb_chunk, k=3, question_type=target_type)
     
     # Step 2: Decide if calculation is needed based on examples and material
     # If examples contain calculation questions, we should also do calculation
@@ -4228,17 +4330,12 @@ def calculator_node(state: AgentState, config):
     # Step 3: Generate Question (with calculation result and examples)
     
     # 根据模式与题型调整提示词
-    generation_mode = config['configurable'].get('generation_mode', '灵活')
+    generation_mode = state.get("current_generation_mode") or config['configurable'].get('generation_mode', '随机')
+    effective_generation_mode, normalized_generation_mode = resolve_effective_generation_mode(generation_mode, state)
     question_type = config['configurable'].get('question_type')
     difficulty_range = config['configurable'].get('difficulty_range')
-    router_details = state.get('router_details', {})
-    rec_type = router_details.get('recommended_type', '单选题')
-    if question_type == "随机":
-        target_type = rec_type
-    elif question_type in ["单选题", "多选题", "判断题"]:
-        target_type = question_type
-    else:
-        target_type = rec_type
+    if question_type not in ["随机", "单选题", "多选题", "判断题"]:
+        question_type = "随机"
     
     uniqueness_note = ""
     avoid_superlative = "   - **避免\"最XX\"考法**：禁止用\"最重要/最关键/重点/主要\"等表述设计题干或选项，重点考察完整流程、条件、责任边界或操作要点。"
@@ -4252,6 +4349,14 @@ def calculator_node(state: AgentState, config):
     else:
         type_instruction = "题型要求：单选题。4个选项且只有一个正确。答案必须是单个字母，如 'A'。括号格式：题干占位括号必须为中文括号“（ ）”，括号前后无空格，括号内有空格。"
     
+    mapped_type_hint = ""
+    if question_type == "随机" and preferred_types:
+        mapped_type_hint = f"""
+# 随机题型优先规则
+当前切片关联母题题型优先集合：{preferred_types}。
+本题请按已选定题型【{target_type}】生成。
+"""
+
     # Build difficulty instruction
     difficulty_instruction = ""
     if difficulty_range:
@@ -4271,31 +4376,7 @@ def calculator_node(state: AgentState, config):
 - 所需推理步骤（简单题直接答案，困难题需要多步推理）
 """
     
-    if generation_mode == "严谨":
-        mode_instructions = """
-# 出题模式：严谨模式（用于标准化考试）
-出题目标：帮助房地产经纪人在实际业务、客户沟通、合规操作中避免不专业失误，强调实战应用，而非死记投诉等级或孤立条文。
-要求：
-1. **严格忠实原文**：严格按照参考材料，不得添加材料外的信息。
-2. **标准化表述**：使用标准考试题目表述，避免场景化包装。
-3. **直接考察计算的实务含义**：围绕经纪业务的正确计算/合规操作来出题，避免只考背诵性细节。
-4. **标准化选项**：选项表述简洁、准确，符合标准化考试风格。干扰项设计利用**"相近的数字"**或**"错误的参照物"**。
-5. **严谨的解析**：解析必须严格按照"1、教材原文 2、试题分析 3、结论"的结构。
-
-禁止：
-- 禁止添加假设性场景（如"客户咨询..."、"在交易中..."）
-- 禁止使用口语化表达
-"""
-    else:  # 灵活模式
-        mode_instructions = """
-# 出题模式：灵活模式（适合日常练习）
-出题目标：让房地产经纪人能在真实业务、客户沟通、合规服务中表现专业，题目应帮助识别常见业务失误，而非机械背诵条文或投诉级别数量。
-要求：
-1. **场景化表达**：将题目融入实际工作场景，增强实用性。
-2. **灵活表述**：可以使用更自然、更贴近实际工作的表述。
-3. **创意干扰项**：错误选项可以更灵活，利用常见误区。利用**"相近的数字"**或**"错误的参照物"**设计干扰项，模拟经纪人容易犯的业务错误。
-4. **生动解析**：解析可以更生动，但必须保持准确性。
-"""
+    mode_instructions = build_mode_instruction(effective_generation_mode, normalized_generation_mode)
     
     prompt_gen = f"""
 # 角色
@@ -4306,12 +4387,13 @@ def calculator_node(state: AgentState, config):
 
 # 好题标准（必须遵守）
 ## 四大核心要求
-1. **聚焦贴业务**：计算题必须来源于房地产经纪人实际工作场景，实用常见（如税费、贷款、面积计算等）。
+1. **聚焦考点**：计算题必须围绕教材切片的计算规则，可直接知识点考察或业务场景考察（由筛选条件决定）。
 2. **直接不拐弯**：计算考点直接明确，避免复杂陷阱，让学员清楚知道要计算什么。
 3. **简洁不啰嗦**：题干提供计算所需条件即可，避免冗余信息干扰。
 4. **真诚说人话**：用通俗易懂的表达，避免生僻词，数值设置符合常识（如房价不能是1元或1亿元）。
 
 {type_instruction}
+{mapped_type_hint}
 
 # 简化场景，符合实际（必须遵守）⚠️
 1. **无意义的场景铺垫不要**：直接陈述计算场景，去掉"某某告诉某某"、"在培训时了解到"等冗余铺垫。
@@ -4393,7 +4475,7 @@ def calculator_node(state: AgentState, config):
   ③ 第三步：考虑其他因素（如：借款人年龄限制），取最小值
   ④ 最终答案
 
-(如果结果不为 None，你**必须**使用该计算结果，但需要理解它可能是中间步骤还是最终答案。{'构建标准化题目场景以匹配使用的参数。' if generation_mode == '严谨' else '构建题目场景以匹配使用的参数。'})
+(如果结果不为 None，你**必须**使用该计算结果，但需要理解它可能是中间步骤还是最终答案。{'可不构建业务场景，直接围绕知识点计算规则命题。' if effective_generation_mode == '基础概念/理解记忆' else '需要构建业务场景并匹配使用的参数。'})
 
 # 质量标准 (必须达成):
 1. **准确性 (40%)**: 100% 事实准确。如果有计算结果 {calc_result}，必须使用。
@@ -4471,9 +4553,10 @@ def calculator_node(state: AgentState, config):
             "generated_code": generated_code_str,  # ✅ 动态生成的Python代码
             "code_status": code_status,  # success / error / no_calculation
             "examples": examples,  # Pass examples to UI
+            "current_generation_mode": effective_generation_mode,
             "self_check_issues": [],
             "llm_trace": llm_records,
-            "logs": [log_msg]
+            "logs": [f"{log_msg}（筛选条件={effective_generation_mode}）"]
         }
     except Exception as e:
         return {

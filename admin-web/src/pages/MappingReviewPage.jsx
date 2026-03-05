@@ -6,6 +6,17 @@ import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 
 const statusColor = { pending: 'default', approved: 'green' };
 const statusLabel = { pending: '待审核', approved: '已通过' };
+const hasMarkdownTable = (text) => {
+  const lines = String(text || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const h = lines[i];
+    const d = lines[i + 1];
+    if (!h.includes('|') || !d.includes('|')) continue;
+    const delim = d.replace(/\|/g, '').replace(/[:\-\s]/g, '');
+    if (!delim) return true;
+  }
+  return false;
+};
 
 export default function MappingReviewPage() {
   const [tenantId, setTenantId] = useState(getGlobalTenantId());
@@ -454,9 +465,30 @@ export default function MappingReviewPage() {
                                     >
                                       {title}
                                     </Button>
-                                    <div style={{ marginTop: 6 }}>
-                                      <MarkdownWithMermaid text={String(img?.analysis || '（无图片解析）')} disableStrikethrough />
-                                    </div>
+                                    {(() => {
+                                      const analysisText = String(img?.analysis || '（无图片解析）');
+                                      const useMarkdownTable = Boolean(img?.contains_table) || hasMarkdownTable(analysisText);
+                                      if (useMarkdownTable) {
+                                        return <MarkdownWithMermaid text={analysisText} disableStrikethrough />;
+                                      }
+                                      return (
+                                        <pre
+                                          style={{
+                                            marginTop: 6,
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-word',
+                                            fontSize: 13,
+                                            lineHeight: 1.6,
+                                            background: '#fafafa',
+                                            border: '1px solid #f0f0f0',
+                                            borderRadius: 6,
+                                            padding: 10,
+                                          }}
+                                        >
+                                          {analysisText}
+                                        </pre>
+                                      );
+                                    })()}
                                   </div>
                                 );
                               })}
