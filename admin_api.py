@@ -244,6 +244,68 @@ def _normalize_mapping_status(value: Any) -> str:
     return "pending"
 
 
+def _has_dual_review_completed_slice(tenant_id: str, material_version_id: str) -> tuple[bool, int]:
+    """
+    Return whether material has at least one slice that completed both reviews:
+    - slice review is approved
+    - all mapping review entries for that slice are approved
+    """
+    if not tenant_id or not material_version_id:
+        return False, 0
+    slice_file = _resolve_slice_file_for_material(tenant_id, material_version_id)
+    mapping_file = _resolve_mapping_path_for_material(tenant_id, material_version_id)
+    if not slice_file or not mapping_file:
+        return False, 0
+
+    kb_items = _load_kb_items_from_file(slice_file)
+    if not kb_items:
+        return False, 0
+    try:
+        mapping = json.loads(mapping_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False, 0
+    if not isinstance(mapping, dict) or not mapping:
+        return False, 0
+
+    slice_reviews = _load_slice_review_for_material(tenant_id, material_version_id)
+    mapping_reviews = _load_mapping_review_for_material(tenant_id, material_version_id)
+    approved_slice_ids = {
+        i for i in range(len(kb_items))
+        if str((slice_reviews.get(str(i), {}) or {}).get("review_status", "pending")) == "approved"
+    }
+    if not approved_slice_ids:
+        return False, 0
+
+    completed_slice_ids: set[int] = set()
+    for slice_id, payload in mapping.items():
+        if not str(slice_id).isdigit():
+            continue
+        sid = int(slice_id)
+        if sid not in approved_slice_ids:
+            continue
+        matched_questions = payload.get("matched_questions", []) if isinstance(payload, dict) else []
+        if not isinstance(matched_questions, list) or not matched_questions:
+            continue
+
+        total_entries = 0
+        approved_entries = 0
+        for entry in matched_questions:
+            if not isinstance(entry, dict):
+                continue
+            question_index = entry.get("question_index")
+            if question_index is None:
+                continue
+            total_entries += 1
+            map_key = f"{slice_id}:{question_index}"
+            review_status = _normalize_mapping_status((mapping_reviews.get(map_key, {}) or {}).get("confirm_status", "pending"))
+            if review_status == "approved":
+                approved_entries += 1
+        if total_entries > 0 and approved_entries == total_entries:
+            completed_slice_ids.add(sid)
+
+    return bool(completed_slice_ids), len(completed_slice_ids)
+
+
 def _load_audit_events(tenant_id: str) -> list[dict[str, Any]]:
     path = tenant_audit_log_path(tenant_id)
     if not path.exists():
@@ -302,7 +364,17 @@ def _extract_slice_text(item: dict[str, Any]) -> str:
     struct = item.get("结构化内容") or {}
     if isinstance(struct, dict):
         parts: list[str] = []
-        for key in ("context_before", "tables", "context_after", "examples", "formulas", "rules", "key_params"):
+        # context_before
+        txt = _as_text(struct.get("context_before"))
+        if txt:
+            parts.append(txt)
+        # 图片解析（按切片预览方式完整呈现）
+        for img in (struct.get("images") or []):
+            if isinstance(img, dict):
+                analysis = _as_text(img.get("analysis"))
+                if analysis:
+                    parts.append(analysis)
+        for key in ("tables", "context_after", "examples", "formulas", "rules", "key_params"):
             txt = _as_text(struct.get(key))
             if txt:
                 parts.append(txt)
@@ -315,6 +387,41 @@ def _extract_slice_text(item: dict[str, Any]) -> str:
         if txt:
             return txt
     return ""
+
+
+def _build_complete_slice_content_for_mapping(
+    slice_item: dict[str, Any] | None,
+    slice_id: int | str,
+    kb_items: list[dict[str, Any]],
+    path: str,
+) -> str:
+    """
+    构建映射审核用的完整切片内容：仅关联上的该切片，不含父级下其他切片。
+    若该切片有直接子切片（如「二、贝壳战略」下有「（一）第一翼：整装」等），
+    则追加直接子切片内容以形成完整呈现。
+    """
+    base = _extract_slice_text(slice_item or {})
+    if not slice_item or not kb_items:
+        return base
+    slice_path = str(slice_item.get("完整路径", "") or path).strip()
+    if not slice_path:
+        return base
+    # 直接子切片：路径为「当前路径 > xxx」且无更深层级
+    prefix = slice_path + " > "
+    children_parts: list[str] = []
+    for other in kb_items:
+        other_path = str(other.get("完整路径", "")).strip()
+        if not other_path.startswith(prefix):
+            continue
+        suffix = other_path[len(prefix) :]
+        if " > " in suffix:
+            continue  # 非直接子级，跳过
+        child_text = _extract_slice_text(other)
+        if child_text:
+            children_parts.append(child_text)
+    if not children_parts:
+        return base
+    return base + "\n\n" + "\n\n".join(children_parts)
 
 
 def _extract_slice_images(item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -3085,7 +3192,9 @@ def api_mappings(tenant_id: str):
                 if not slice_item:
                     # Fallback to path match when id mismatch
                     slice_item = next((x for x in kb_items if x.get("完整路径", "") == path), None)
-                slice_text = _extract_slice_text(slice_item or {})
+                slice_text = _build_complete_slice_content_for_mapping(
+                    slice_item, slice_id, kb_items, path
+                )
                 q_row = history_rows.get(int(q_idx), {})
                 image_items = _extract_slice_images(slice_item or {})
                 items.append(
@@ -3273,6 +3382,13 @@ def api_materials(tenant_id: str):
             rec["mapping_status"] = "pending"
             if not str(rec.get("mapping_error", "")).strip():
                 rec["mapping_error"] = "映射文件缺失，请重新映射"
+        can_set_effective, dual_review_slice_count = _has_dual_review_completed_slice(tenant_id, mid)
+        rec["can_set_effective"] = bool(can_set_effective)
+        rec["dual_review_slice_count"] = int(dual_review_slice_count)
+        if can_set_effective:
+            rec["effective_block_reason"] = ""
+        else:
+            rec["effective_block_reason"] = "需至少存在1条映射核对与切片核对都完成的知识切片"
         rec["slice_error"] = str(rec.get("slice_error", "") or "")
         rec["mapping_error"] = str(rec.get("mapping_error", "") or "")
         enriched.append(rec)
@@ -3642,6 +3758,20 @@ def api_material_set_effective(tenant_id: str):
     material_version_id = str(body.get("material_version_id", "")).strip()
     if not material_version_id:
         return _error("BAD_REQUEST", "material_version_id is required", 400)
+    current = _find_material_record(tenant_id, material_version_id)
+    if not current:
+        return _error("MATERIAL_NOT_FOUND", "教材版本不存在", 404)
+    slice_status = str(current.get("slice_status", "") or "").strip()
+    mapping_status = str(current.get("mapping_status", "") or "").strip()
+    slice_file = _resolve_slice_file_for_material(tenant_id, material_version_id)
+    mapping_file = _resolve_mapping_path_for_material(tenant_id, material_version_id)
+    if slice_status != "success" or not slice_file:
+        return _error("MATERIAL_NOT_READY", "切片未成功，不能设为生效教材", 400)
+    if mapping_status != "success" or not mapping_file:
+        return _error("MATERIAL_NOT_READY", "映射未成功，不能设为生效教材", 400)
+    has_dual_review_slice, _ = _has_dual_review_completed_slice(tenant_id, material_version_id)
+    if not has_dual_review_slice:
+        return _error("MATERIAL_REVIEW_NOT_READY", "需至少存在1条映射核对与切片核对都完成的知识切片，才能设为生效教材", 400)
     updated = set_effective_material_version(tenant_id, material_version_id)
     if not updated:
         return _error("MATERIAL_NOT_FOUND", "教材版本不存在", 404)
@@ -3828,11 +3958,10 @@ def api_upload_material(tenant_id: str):
             slice_error="切片结果为空，请检查教材内容后重试",
         )
         return _error("SLICE_EMPTY", "切片结果为空，请检查教材内容后重试", 400)
-    set_effective_material_version(tenant_id, version_id)
     upsert_material_runtime(
         tenant_id,
         version_id,
-        status="effective",
+        status="ready_for_review",
         slice_status="success",
         slice_error="",
         mapping_status="pending",
@@ -3875,6 +4004,8 @@ def api_generate_questions(tenant_id: str):
     num_questions = min(max(num_questions, 1), 200)
     question_type = str(body.get("question_type", "单选题"))
     generation_mode = _normalize_generation_mode(body.get("generation_mode", "随机"))
+    if generation_mode not in GEN_MODES:
+        generation_mode = "随机"
     difficulty = str(body.get("difficulty", "随机"))
     slice_ids_input = body.get("slice_ids") or []
     save_to_bank = bool(body.get("save_to_bank", True))
@@ -4202,6 +4333,8 @@ def api_generate_questions_stream(tenant_id: str):
     num_questions = min(max(num_questions, 1), 200)
     question_type = str(body.get("question_type", "单选题"))
     generation_mode = _normalize_generation_mode(body.get("generation_mode", "随机"))
+    if generation_mode not in GEN_MODES:
+        generation_mode = "随机"
     difficulty = str(body.get("difficulty", "随机"))
     slice_ids_input = body.get("slice_ids") or []
     save_to_bank = bool(body.get("save_to_bank", True))

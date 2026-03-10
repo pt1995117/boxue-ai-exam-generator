@@ -415,10 +415,9 @@ export default function AIGeneratePage() {
     try {
       const res = await listMaterials(tid);
       const items = res.items || [];
-      const activeItems = items.filter((x) => String(x?.status || '') !== 'archived');
-      setMaterials(activeItems);
-      const effective = activeItems.find((x) => x.status === 'effective');
-      const chosen = (effective || activeItems[0] || {}).material_version_id || '';
+      const effectiveItems = items.filter((x) => String(x?.status || '') === 'effective');
+      setMaterials(effectiveItems);
+      const chosen = (effectiveItems[0] || {}).material_version_id || '';
       setMaterialVersionId(chosen);
       if (!chosen) {
         setApprovedSlices([]);

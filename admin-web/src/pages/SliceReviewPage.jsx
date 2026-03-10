@@ -649,9 +649,12 @@ export default function SliceReviewPage() {
     listMaterials(tenantId)
       .then((res) => {
         const items = res.items || [];
-        const effectiveItems = items.filter((x) => x.status === 'effective');
-        setMaterials(effectiveItems);
-        setMaterialVersionId((effectiveItems[0] || {}).material_version_id || '');
+        const visibleItems = items.filter((x) => (
+          String(x?.status || '') !== 'archived' && String(x?.slice_status || '') === 'success'
+        ));
+        setMaterials(visibleItems);
+        const effective = visibleItems.find((x) => x.status === 'effective');
+        setMaterialVersionId((effective || visibleItems[0] || {}).material_version_id || '');
       })
       .catch(() => {
         setMaterials([]);

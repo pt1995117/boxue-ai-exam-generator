@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Button, Card, Col, Empty, Form, Input, Modal, Row, Select, Space, Tag, Tree, Typography, message } from 'antd';
-import { batchReviewMappings, fetchSliceImageBlob, getMappings, listMaterials, getSystemUser } from '../services/api';
+import { batchReviewMappings, fetchSliceImageBlob, getMappings, getSliceImageUrl, listMaterials, getSystemUser } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 
@@ -16,6 +16,41 @@ const hasMarkdownTable = (text) => {
     if (!delim) return true;
   }
   return false;
+};
+
+const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * 按切片预览方式：将切片内容中的图片引用转为可点击链接
+ * @param {string} text - 切片文本
+ * @param {object} row - 映射行（含 images、material_version_id）
+ * @param {string} tenantId - 租户ID
+ * @param {string} materialVersionId - 教材版本ID
+ * @returns {string} 注入链接后的 Markdown 文本
+ */
+const injectImageLinksToMarkdown = (text, row, tenantId, materialVersionId) => {
+  const content = String(text || '');
+  if (!content) return '（空）';
+  const items = Array.isArray(row?.images) ? row.images : [];
+  const targets = [];
+  items.forEach((img) => {
+    const path = String(img?.image_path || '').trim();
+    if (!path) return;
+    const url = getSliceImageUrl(tenantId, path, row.material_version_id || materialVersionId);
+    const basename = path.split('/').pop() || '';
+    const imageId = String(img?.image_id || '').trim();
+    targets.push({ token: path, url });
+    if (basename) targets.push({ token: basename, url });
+    if (imageId && imageId !== basename) targets.push({ token: imageId, url });
+  });
+  targets.sort((a, b) => (b.token?.length || 0) - (a.token?.length || 0));
+  if (!targets.length) return content;
+  let next = content;
+  targets.forEach(({ token, url }) => {
+    if (!token || !next.includes(token)) return;
+    next = next.replace(new RegExp(escapeRegExp(token), 'g'), `[${token}](${url})`);
+  });
+  return next;
 };
 
 export default function MappingReviewPage() {
@@ -86,9 +121,12 @@ export default function MappingReviewPage() {
     listMaterials(tenantId)
       .then((res) => {
         const items = res.items || [];
-        setMaterials(items);
-        const effective = items.find((x) => x.status === 'effective');
-        setMaterialVersionId((effective || items[0] || {}).material_version_id || '');
+        const visibleItems = items.filter((x) => (
+          String(x?.status || '') !== 'archived' && String(x?.mapping_status || '') === 'success'
+        ));
+        setMaterials(visibleItems);
+        const effective = visibleItems.find((x) => x.status === 'effective');
+        setMaterialVersionId((effective || visibleItems[0] || {}).material_version_id || '');
       })
       .catch(() => {
         setMaterials([]);
@@ -427,9 +465,17 @@ export default function MappingReviewPage() {
                           </Typography.Text>
                         )}
                         <Typography.Text strong>切片内容（完整）</Typography.Text>
-                        <Typography.Paragraph style={{ whiteSpace: 'pre-line', marginBottom: 0 }}>
-                          {row.slice_content || row.slice_preview || '（空）'}
-                        </Typography.Paragraph>
+                        <div style={{ maxHeight: 360, overflow: 'auto' }}>
+                          <MarkdownWithMermaid
+                            text={injectImageLinksToMarkdown(
+                              String(row.slice_content || row.slice_preview || '（空）'),
+                              row,
+                              tenantId,
+                              materialVersionId
+                            )}
+                            disableStrikethrough
+                          />
+                        </div>
                         {!!(row.images || []).length && (
                           <>
                             <Typography.Text strong>{`切片图片（${(row.images || []).length}）`}</Typography.Text>

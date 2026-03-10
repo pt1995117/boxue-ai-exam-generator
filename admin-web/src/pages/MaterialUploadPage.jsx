@@ -51,6 +51,12 @@ export default function MaterialUploadPage() {
     if (status === 'running') return 'status-text status-warn';
     return 'status-text status-muted';
   };
+  const canSetEffective = (item) => {
+    const backendFlag = item?.can_set_effective;
+    if (typeof backendFlag === 'boolean') return backendFlag;
+    // Backward compatibility for old backend payloads.
+    return String(item?.slice_status || '') === 'success' && String(item?.mapping_status || '') === 'success';
+  };
 
   const loadMaterials = async (tid) => {
     if (!tid) return;
@@ -316,6 +322,8 @@ export default function MaterialUploadPage() {
                           <Button
                             key="effective"
                             size="small"
+                            disabled={!canSetEffective(item)}
+                            title={canSetEffective(item) ? '' : (item?.effective_block_reason || '需至少存在1条映射核对与切片核对都完成的知识切片')}
                             onClick={() => onSetEffective(item.material_version_id)}
                           >
                             生效

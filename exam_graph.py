@@ -2156,6 +2156,24 @@ def writer_node(state: AgentState, config):
         target_type = draft_type if draft_type else rec_type
 
     
+    pre_writer_logs: List[str] = []
+    draft_for_prompt = draft
+    pre_hard_issues: List[str] = []
+    if isinstance(draft, dict):
+        draft_for_prompt = prepare_draft_for_writer(draft, target_type)
+        pre_hard_issues = validate_writer_format(
+            draft_for_prompt.get("question", ""),
+            draft_for_prompt.get("options", []),
+            draft_for_prompt.get("answer"),
+            target_type,
+        )
+        if pre_hard_issues:
+            pre_writer_logs.append(
+                f"⚠️ 作家: 预清洗后仍有硬约束风险（将优先修复）: {', '.join(pre_hard_issues)}"
+            )
+        else:
+            pre_writer_logs.append("⚠️ 作家: 已在润色前完成一次格式硬预清洗")
+
     # ------------------------------------------------------------------
     # 1. 动态构建 Prompt (Type-Aware)
     # ------------------------------------------------------------------
@@ -2209,9 +2227,11 @@ def writer_node(state: AgentState, config):
     model_to_use = WRITER_MODEL or MODEL_NAME
     # 允许对“人名不规范”触发一次整体改写（不直接替换为“某某”）
     extra_self_check_issues = list(self_check_issues)
+    if pre_hard_issues:
+        extra_self_check_issues.extend([f"格式硬约束残留: {x}" for x in pre_hard_issues])
     last_exception = None
     final_dict = None
-    writer_logs = []
+    writer_logs = list(pre_writer_logs)
     for attempt in range(2):
         self_check_text = ""
         if extra_self_check_issues:
@@ -2363,7 +2383,7 @@ def writer_node(state: AgentState, config):
 
 {self_check_text}
 
-初稿: {json.dumps(draft, ensure_ascii=False)}
+初稿（已执行一次机器硬预清洗，请在此基础上做语义与规范润色）: {json.dumps(draft_for_prompt, ensure_ascii=False)}
 参考教材: {kb_context}
 {examples_text}
 
@@ -2388,7 +2408,7 @@ def writer_node(state: AgentState, config):
         llm_records.append(llm_record)
         try:
             final_dict = parse_json_from_response(response_text)
-            writer_logs = []
+            writer_logs = list(pre_writer_logs)
             print(f"DEBUG WRITER FINAL_JSON: {final_dict}")
             # Post-LLM hard format repair
             if isinstance(final_dict, dict):
