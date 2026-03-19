@@ -1,0 +1,38 @@
+# Offline Judge 项目流程图
+
+```mermaid
+flowchart TD
+    A[开始] --> B{输入来源}
+    B -->|JSON 单题/多题| C[judge_cli.py 或 src.main]
+    B -->|Golden JSON 数据集| D[src.evaluation.batch_runner]
+    B -->|Excel 题库| E[src.evaluation.excel_to_word_report]
+
+    C --> F[load_dotenv + 选择 LLM<br/>mock/openai/anthropic/ark]
+    D --> F
+    E --> F
+    E --> E1[读取 Excel -> 转 QuestionInput]
+
+    C --> G[逐题调用 run_judge]
+    D --> G
+    E1 --> G
+
+    subgraph P[LangGraph 评测主流程 src/pipeline/graph.py]
+        G --> P1[Phase 1: gatekeeper<br/>DeterministicFilter 硬规则]
+        P1 --> P2[LLM 二次复核<br/>设问句式/泄题/代入/单选唯一性]
+        P2 --> P3[Phase 2-1: layer1_blind_solver<br/>盲答 + 语义漂移]
+        P3 --> J{solver 歧义?}
+        J -->|是| P5[aggregate]
+        J -->|否| P4[Phase 2-2: soft_scoring<br/>质量/教学价值/风险/业务真实性<br/>计算题代码评估]
+        P4 --> P5[aggregate]
+        P5 --> P6[Phase 3: 决策与评分<br/>PASS / REVIEW / REJECT]
+    end
+
+    P6 --> K{调用入口}
+    K -->|judge_cli / src.main| L[输出 JSON 报告]
+    K -->|batch_runner| M[输出 reports.json + metrics.json]
+    K -->|excel_to_word_report| N[输出 评测 JSON + 进度 JSON + Word 报告]
+    L --> Z[结束]
+    M --> Z
+    N --> Z
+```
+

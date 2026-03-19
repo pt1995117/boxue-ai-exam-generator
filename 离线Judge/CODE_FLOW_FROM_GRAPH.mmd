@@ -1,0 +1,61 @@
+flowchart TD
+    START["run_judge() start"]
+    ENDNODE["END"]
+
+    N1["node_layer1_blind_solver
+    - 第1层: 盲答校验
+    - 调用 layer1_blind_solver_agent
+    - 产出 solver_validation / solver_issues"]
+
+    R1{"route_after_layer1_blind_solver
+    solver.ambiguity_flag ?"}
+
+    N2["node_layer2_knowledge_gate
+    - 第2层: 知识边界守门
+    - 命中超纲/约束漂移可短路"]
+
+    R2{"route_after_layer2_knowledge_gate
+    knowledge_gate_reject ?"}
+
+    N3["node_layer3_basic_rules_gate
+    - 第3层: 基础校验(非门禁)
+    - _basic_rules_code_checks + _llm_layer1_gatekeeper
+    - 合并 hard_rule_errors / hard_rule_warnings"]
+
+    R3{"route_after_layer1"}
+
+    N4["node_layer3_surface_a
+    - 第3层并行A: 题面综合质检
+    - 业务真实性 + 严谨性 + 干扰项"]
+
+    N5["node_layer3_teaching_b
+    - 第3层并行B: 教学复盘评估
+    - 解析质量 + 教学价值"]
+
+    N6["node_layer3_calc_branch
+    - 第3层并行C(可选): 计算专项评估
+    - 仅 is_calculation=true 执行"]
+
+    N7["node_aggregate
+    - 汇总 errors/warnings + 各层 issues
+    - decision: REJECT/REVIEW/PASS
+    - 组装 JudgeReport(final_report)"]
+
+    START --> N1
+    N1 --> R1
+    R1 -->|ambiguity_flag=true| N7
+    R1 -->|ambiguity_flag=false| N2
+
+    N2 --> R2
+    R2 -->|knowledge_gate_reject=true| N7
+    R2 -->|knowledge_gate_reject=false| N3
+
+    N3 --> R3
+    R3 --> N4
+    R3 --> N5
+    R3 -->|is_calculation=true| N6
+
+    N4 --> N7
+    N5 --> N7
+    N6 --> N7
+    N7 --> ENDNODE

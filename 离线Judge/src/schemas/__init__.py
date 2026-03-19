@@ -1,0 +1,41 @@
+"""结构化数据模型与 JSON Schema 定义"""
+
+from .evaluation import (
+    Costs,
+    Decision,
+    DimensionResult,
+    DimensionStatus,
+    DistractorQuality,
+    Evidence,
+    HardGate,
+    JudgeReport,
+    KnowledgeMatch,
+    Observability,
+    QuestionInput,
+    RiskAssessment,
+    RiskLevel,
+    Scores,
+    SemanticDrift,
+    SolverValidation,
+    TeachingValue,
+)
+
+__all__ = [
+    "Costs",
+    "Decision",
+    "DimensionResult",
+    "DimensionStatus",
+    "DistractorQuality",
+    "Evidence",
+    "HardGate",
+    "JudgeReport",
+    "KnowledgeMatch",
+    "Observability",
+    "QuestionInput",
+    "RiskAssessment",
+    "RiskLevel",
+    "Scores",
+    "SemanticDrift",
+    "SolverValidation",
+    "TeachingValue",
+]

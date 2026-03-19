@@ -1,0 +1,75 @@
+flowchart LR
+    %% 离线 Judge 业务流程图（单题评测 + 组卷判断）
+
+    subgraph SG1[单题评测主链（run_judge / LangGraph）]
+        A0([开始<br/>输入单题])
+        A1[盲答可解性校验<br/>node_layer1_blind_solver]
+        R1{是否歧义?<br/>ambiguity_flag}
+
+        A2[知识边界守门<br/>node_layer2_knowledge_gate]
+        R2{是否超纲/约束冲突?<br/>knowledge_gate_reject}
+
+        B1[并行质量评估A<br/>基础规则复核<br/>node_layer3_basic_rules_gate]
+        B2[并行质量评估B<br/>题面综合质检<br/>node_layer3_surface_a]
+        B3[并行质量评估C<br/>教学复盘<br/>node_layer3_teaching_b]
+        B4[并行质量评估D（可选）<br/>计算可执行性与复杂度<br/>node_layer3_calc_branch]
+
+        C1[汇总决策中心<br/>node_aggregate]
+        R3{单题判定}
+        D1([REJECT])
+        D2([REVIEW])
+        D3([PASS])
+        E0([输出单题报告<br/>JudgeReport])
+
+        A0 --> A1 --> R1
+        R1 -- 是 --> C1
+        R1 -- 否 --> A2 --> R2
+
+        R2 -- 是 --> C1
+        R2 -- 否 --> B1
+        R2 -- 否 --> B2
+        R2 -- 否 --> B3
+        R2 -- 否且 is_calculation=true --> B4
+
+        B1 --> C1
+        B2 --> C1
+        B3 --> C1
+        B4 --> C1
+
+        C1 --> R3
+        R3 --> D1 --> E0
+        R3 --> D2 --> E0
+        R3 --> D3 --> E0
+    end
+
+    M0([批量题目输入<br/>Excel/JSON])
+    M1[逐题执行单题评测主链<br/>得到每题 decision]
+    M2[组卷规则判定<br/>_compute_batch_rule_checks<br/>+ LLM 否定设问占比检查]
+    M3{组卷是否告警?}
+    M4([组卷通过<br/>可进入发卷/上线])
+    M5([组卷告警<br/>建议调题后再发卷])
+
+    MAP["组卷动作映射（业务口径）<br/>PASS -> 保留<br/>REVIEW -> 修文(FIX_TEXT)<br/>REJECT -> 换题(REGEN_QUESTION)"]
+    J_REJECT["REJECT 判定（命中任一）<br/>1) 盲答不可判定（歧义）<br/>2) 知识边界短路（超纲/约束冲突）<br/>3) 业务真实性不通过<br/>4) 泄题成立<br/>5) 法理/数学闭环不成立"]
+    J_REVIEW["REVIEW 判定（无致命但命中任一）<br/>结构/表达问题、严谨性问题、<br/>干扰项冲突、解析质量不足、教学价值不足、<br/>知识匹配不足、计算复杂度过高、风险中/高"]
+    J_PASS["PASS 判定<br/>未命中 REJECT 条件，且未命中 REVIEW 条件"]
+
+    M0 --> M1 --> M2 --> M3
+    M3 -- 否 --> M4
+    M3 -- 是 --> M5
+    M1 -.单题结果汇总.-> MAP
+    R3 -.判定细则.-> J_REJECT
+    R3 -.判定细则.-> J_REVIEW
+    R3 -.判定细则.-> J_PASS
+
+    classDef core fill:#eaf4ff,stroke:#2b6cb0,stroke-width:1.5px,color:#1a202c;
+    classDef route fill:#fff7e6,stroke:#b7791f,stroke-width:1.5px,color:#1a202c;
+    classDef pass fill:#e6fffa,stroke:#2c7a7b,stroke-width:1.5px,color:#1a202c;
+    classDef warn fill:#fff5f5,stroke:#c53030,stroke-width:1.5px,color:#1a202c;
+    classDef note fill:#f7fafc,stroke:#718096,stroke-dasharray: 5 3,color:#2d3748;
+
+    class A1,A2,B1,B2,B3,B4,C1,M1,M2 core;
+    class R1,R2,R3,M3 route;
+    class D3,E0,M4 pass;
+    class D1,D2,M5 warn;
+    class MAP,J_REJECT,J_REVIEW,J_PASS note;

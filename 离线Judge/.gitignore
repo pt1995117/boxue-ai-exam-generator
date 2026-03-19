@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Env / secrets
+.env
+.env.*
+AIT_CONFIG.txt
+ARK_CONFIG.txt
+
+# Runtime outputs
+outputs/
+*.log
+
+# Temporary/editor
+.vscode/
+.idea/
