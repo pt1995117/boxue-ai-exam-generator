@@ -2677,6 +2677,34 @@ def _load_run_task_name_lookup(tenant_id: str) -> dict[str, str]:
     return lookup
 
 
+def _load_latest_judge_task_by_run(tenant_id: str) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for row in _read_jsonl(_qa_judge_tasks_path(tenant_id)):
+        if not isinstance(row, dict):
+            continue
+        run_id = str(row.get("run_id", "") or "").strip()
+        if not run_id:
+            req = row.get("request") if isinstance(row.get("request"), dict) else {}
+            run_id = str(req.get("run_id", "") or "").strip()
+        if not run_id:
+            continue
+        created_at = str(row.get("created_at", "") or "")
+        prev = out.get(run_id)
+        if isinstance(prev, dict) and str(prev.get("created_at", "") or "") >= created_at:
+            continue
+        req = row.get("request") if isinstance(row.get("request"), dict) else {}
+        task_name = str(row.get("task_name", "") or req.get("task_name", "") or "").strip()
+        out[run_id] = {
+            "task_id": str(row.get("task_id", "") or "").strip(),
+            "task_name": task_name,
+            "status": str(row.get("status", "") or "").strip(),
+            "created_at": created_at,
+            "started_at": str(row.get("started_at", "") or "").strip(),
+            "ended_at": str(row.get("ended_at", "") or "").strip(),
+        }
+    return out
+
+
 def _build_judge_task_summary(task: dict[str, Any], run_task_name_lookup: dict[str, str] | None = None) -> dict[str, Any]:
     req = task.get("request") if isinstance(task.get("request"), dict) else {}
     run_id = str(task.get("run_id", "") or req.get("run_id", "") or "").strip()
@@ -3220,39 +3248,129 @@ def _append_qa_release(tenant_id: str, release: dict[str, Any]) -> None:
     _append_jsonl(_qa_releases_path(tenant_id), release)
 
 
+_GIT_CODE_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx",
+    ".css", ".scss", ".less", ".html",
+    ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+    ".sql", ".sh", ".bash", ".zsh", ".command",
+    ".txt",
+}
+_GIT_CODE_FILENAMES = {"Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml"}
+_GIT_EXCLUDED_PREFIXES = (
+    "data/",
+    "admin-web/node_modules/",
+    "admin-web/dist/",
+    ".venv/",
+    "__pycache__/",
+    "tmp/",
+)
+
+
+def _is_code_path_for_release_commit(rel_path: str) -> bool:
+    p = str(rel_path or "").strip().replace("\\", "/")
+    if not p:
+        return False
+    if p.startswith("./"):
+        p = p[2:]
+    for prefix in _GIT_EXCLUDED_PREFIXES:
+        if p.startswith(prefix):
+            return False
+    name = Path(p).name
+    if name in _GIT_CODE_FILENAMES:
+        return True
+    return Path(p).suffix.lower() in _GIT_CODE_EXTS
+
+
+def _collect_changed_paths(repo_root: Path) -> list[str]:
+    tracked = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMRTD", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    if tracked.returncode != 0:
+        raise RuntimeError((tracked.stderr or tracked.stdout or "git diff failed").strip())
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    if untracked.returncode != 0:
+        raise RuntimeError((untracked.stderr or untracked.stdout or "git ls-files failed").strip())
+    out: set[str] = set()
+    for line in (tracked.stdout or "").splitlines():
+        p = line.strip()
+        if p:
+            out.add(p)
+    for line in (untracked.stdout or "").splitlines():
+        p = line.strip()
+        if p:
+            out.add(p)
+    return sorted(out)
+
+
 def _run_git_commit_for_release(tenant_id: str, version: str, release_notes: str) -> dict[str, Any]:
-    """Optionally run git add + commit for the releases file. Returns {ok, message, error}."""
+    """Optionally commit code-only changes (exclude runtime data). Returns {ok, message, error}."""
     try:
-        repo_root = Path.cwd()
-        if not (repo_root / ".git").exists():
-            return {"ok": False, "message": "not a git repo", "error": "no .git"}
-        rel_path = f"data/{tenant_id}/audit/qa_releases.jsonl"
-        path = repo_root / rel_path
-        if not path.exists():
-            return {"ok": False, "message": "file not found", "error": rel_path}
-        msg = f"Release {version}: {release_notes[:200]}" + ("..." if len(release_notes) > 200 else "")
-        msg_quoted = msg.replace('"', '\\"')
-        r1 = subprocess.run(
-            ["git", "add", rel_path],
-            cwd=repo_root,
+        service_root = Path(__file__).resolve().parent
+        repo_probe = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=service_root,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=8,
         )
-        if r1.returncode != 0:
-            return {"ok": False, "message": "git add failed", "error": (r1.stderr or r1.stdout or "").strip()}
+        if repo_probe.returncode != 0:
+            return {
+                "ok": False,
+                "message": "not a git repo",
+                "error": (repo_probe.stderr or repo_probe.stdout or "").strip() or "git rev-parse failed",
+            }
+        repo_root_txt = str(repo_probe.stdout or "").strip()
+        if not repo_root_txt:
+            return {"ok": False, "message": "not a git repo", "error": "empty repo root"}
+        repo_root = Path(repo_root_txt)
+        if not (repo_root / ".git").exists():
+            return {"ok": False, "message": "not a git repo", "error": f"no .git under {repo_root}"}
+
+        changed_paths = _collect_changed_paths(repo_root)
+        code_paths = [p for p in changed_paths if _is_code_path_for_release_commit(p)]
+        if not code_paths:
+            return {"ok": True, "message": "no code changes to commit", "checked_changed_files": len(changed_paths)}
+
+        msg = f"Release {version}: {release_notes[:200]}" + ("..." if len(release_notes) > 200 else "")
+        for i in range(0, len(code_paths), 200):
+            chunk = code_paths[i:i + 200]
+            r1 = subprocess.run(
+                ["git", "add", "-A", "--", *chunk],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if r1.returncode != 0:
+                return {"ok": False, "message": "git add failed", "error": (r1.stderr or r1.stdout or "").strip()}
         r2 = subprocess.run(
-            ["git", "commit", "-m", msg_quoted],
+            ["git", "commit", "-m", msg, "--", *code_paths],
             cwd=repo_root,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=30,
         )
         if r2.returncode != 0:
             if "nothing to commit" in (r2.stderr or r2.stdout or "").lower():
                 return {"ok": True, "message": "no changes to commit (already committed)"}
             return {"ok": False, "message": "git commit failed", "error": (r2.stderr or r2.stdout or "").strip()}
-        return {"ok": True, "message": "committed", "commit_message": msg}
+        return {
+            "ok": True,
+            "message": "committed",
+            "commit_message": msg,
+            "committed_code_files": len(code_paths),
+            "checked_changed_files": len(changed_paths),
+        }
     except subprocess.TimeoutExpired:
         return {"ok": False, "message": "timeout", "error": "git command timeout"}
     except Exception as e:
@@ -8166,6 +8284,7 @@ def api_qa_runs(tenant_id: str):
         days=days,
         success_only=success_only,
     )
+    latest_judge_by_run = _load_latest_judge_task_by_run(tenant_id)
     items: list[dict[str, Any]] = []
     for r in runs:
         bm = r.get("batch_metrics") if isinstance(r.get("batch_metrics"), dict) else {}
@@ -8189,14 +8308,39 @@ def api_qa_runs(tenant_id: str):
             task_id = str(r.get("task_id", "") or "").strip()
         if not str(task_name or "").strip():
             task_name = str(r.get("task_name", "") or "").strip()
+        if not str(task_name or "").strip():
+            cfg = r.get("config") if isinstance(r.get("config"), dict) else {}
+            task_name = str(cfg.get("task_name", "") or "").strip()
+        if not str(task_name or "").strip():
+            if str(task_id or "").strip():
+                task_name = f"未命名任务({task_id})"
+            elif str(run_id or "").strip():
+                task_name = f"未命名任务({run_id})"
+        started_at = str(r.get("started_at", "") or "")
+        ended_at = str(r.get("ended_at", "") or "")
+        run_duration_sec: float | None = None
+        st = _parse_iso_ts(started_at)
+        ed = _parse_iso_ts(ended_at)
+        if st is not None and ed is not None:
+            run_duration_sec = round(max(0.0, (ed - st).total_seconds()), 3)
+        judge_meta = latest_judge_by_run.get(run_id) if run_id else None
+        judge_job = r.get("judge_job") if isinstance(r.get("judge_job"), dict) else {}
+        judge_started_at = str(judge_job.get("started_at", "") or "")
+        judge_ended_at = str(judge_job.get("finished_at", "") or judge_job.get("ended_at", "") or "")
+        judge_duration_sec: float | None = None
+        jst = _parse_iso_ts(judge_started_at)
+        jed = _parse_iso_ts(judge_ended_at)
+        if jst is not None and jed is not None:
+            judge_duration_sec = round(max(0.0, (jed - jst).total_seconds()), 3)
         items.append(
             {
                 "run_id": run_id,
                 "task_id": task_id,
                 "task_name": task_name,
                 "material_version_id": r.get("material_version_id", ""),
-                "started_at": r.get("started_at", ""),
-                "ended_at": r.get("ended_at", ""),
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "run_duration_sec": run_duration_sec,
                 "generated_count": bm.get("generated_count", 0),
                 "saved_count": bm.get("saved_count", 0),
                 "hard_pass_rate": bm.get("hard_pass_rate", 0),
@@ -8211,6 +8355,12 @@ def api_qa_runs(tenant_id: str):
                 "error_call_rate": bm.get("error_call_rate", 0),
                 "release_eligible": release_eligible,
                 "release_eligible_reason": release_eligible_reason,
+                "latest_judge_task_id": str((judge_meta or {}).get("task_id", "") or ""),
+                "latest_judge_task_name": str((judge_meta or {}).get("task_name", "") or ""),
+                "latest_judge_status": str((judge_meta or {}).get("status", "") or str(judge_job.get("status", "") or "")),
+                "latest_judge_started_at": str((judge_meta or {}).get("started_at", "") or judge_started_at),
+                "latest_judge_ended_at": str((judge_meta or {}).get("ended_at", "") or judge_ended_at),
+                "latest_judge_duration_sec": judge_duration_sec,
             }
         )
     payload = _paginate(items, page, page_size)

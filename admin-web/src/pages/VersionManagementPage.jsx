@@ -62,6 +62,24 @@ export default function VersionManagementPage() {
 
   const eligibleRuns = runs.filter((r) => r.release_eligible === true);
   const lastRelease = releases[0];
+  const formatRunDuration = (sec) => {
+    const n = Number(sec || 0);
+    if (!Number.isFinite(n) || n <= 0) return '-';
+    if (n < 60) return `${Math.round(n)}s`;
+    const m = Math.floor(n / 60);
+    const s = Math.round(n % 60);
+    if (m < 60) return `${m}m${s}s`;
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return `${h}h${rm}m`;
+  };
+  const renderRunTaskName = (r) => {
+    const name = String(r?.task_name || '').trim();
+    if (name) return name;
+    const tid = String(r?.task_id || '').trim();
+    if (tid) return `未命名任务(${tid})`;
+    return `未命名任务(${String(r?.run_id || '').trim()})`;
+  };
 
   const onPublish = async () => {
     if (!tenantId) return;
@@ -115,14 +133,14 @@ export default function VersionManagementPage() {
             />
             <Select
               mode="multiple"
-              placeholder="选择 run（可多选，仅显示可发布的 run）"
+              placeholder="按任务名选择 run（可多选，仅显示可发布）"
               value={runIds}
               onChange={setRunIds}
               style={{ width: 560 }}
               showSearch
               optionFilterProp="label"
               options={eligibleRuns.map((r) => ({
-                label: `${r.run_id} | saved=${r.saved_count} | ${r.ended_at || ''}`,
+                label: `${renderRunTaskName(r)} | Judge:${String(r?.latest_judge_task_name || r?.latest_judge_status || '-')} | 出题耗时:${formatRunDuration(r?.run_duration_sec)} | Judge耗时:${formatRunDuration(r?.latest_judge_duration_sec)} | ${r.run_id} | saved=${r.saved_count} | ${r.ended_at || ''}`,
                 value: r.run_id,
               }))}
             />
