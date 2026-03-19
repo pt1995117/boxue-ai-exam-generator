@@ -73,6 +73,7 @@ export default function QualityEvaluationPage() {
   const [materialVersionId, setMaterialVersionId] = useState('');
   const [days, setDays] = useState(30);
   const [runs, setRuns] = useState([]);
+  const [selectedRunIds, setSelectedRunIds] = useState([]);
   const [selectedRunId, setSelectedRunId] = useState('');
   const [overview, setOverview] = useState({});
   const [runDetail, setRunDetail] = useState({});
@@ -89,6 +90,43 @@ export default function QualityEvaluationPage() {
   const [llmQuestionFilter, setLlmQuestionFilter] = useState('');
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
+
+  useEffect(() => {
+    setJudgeBatchProgress({ running: false, completed: 0, total: 0, currentRunId: '' });
+    // Tenant switched: reset tenant-scoped filters/selections to avoid stale city data.
+    setMaterialVersionId('');
+    setSelectedRunIds([]);
+    setSelectedRunId('');
+    setRuns([]);
+    setRunDetail({});
+    setLlmCalls([]);
+    setDriftBase('');
+    setDriftTarget('');
+    setReleaseBaseRunIds([]);
+    setJudgeTaskItems([]);
+    setActiveJudgeTaskId('');
+  }, [tenantId]);
+
+  const isJudgeTaskRunning = (status) => ['pending', 'running'].includes(String(status || '').toLowerCase());
+
+  const loadJudgeTaskList = async (tid, keepActive = true) => {
+    if (!tid) return;
+    const res = await listJudgeTasks(tid, { limit: 100 });
+    const items = Array.isArray(res?.items) ? res.items : [];
+    setJudgeTaskItems(items);
+    if (!items.length) {
+      if (!keepActive) setActiveJudgeTaskId('');
+      return;
+    }
+    const running = items.find((x) => isJudgeTaskRunning(x?.status));
+    const preferred = String((running?.task_id || items[0]?.task_id || '')).trim();
+    if (!keepActive || !activeJudgeTaskId) {
+      setActiveJudgeTaskId(preferred);
+      return;
+    }
+    const hasActive = items.some((x) => String(x?.task_id || '') === String(activeJudgeTaskId));
+    if (!hasActive) setActiveJudgeTaskId(preferred);
+  };
 
   const loadAll = async () => {
     if (!tenantId) return;
@@ -121,14 +159,45 @@ export default function QualityEvaluationPage() {
         }
       }
       setRuns(runItems);
-      const selectedStillExists = runItems.some((x) => String(x.run_id) === String(selectedRunId || ''));
-      const firstRunId = selectedStillExists ? selectedRunId : (runItems[0]?.run_id || '');
-      if (!selectedRunId && firstRunId) setSelectedRunId(firstRunId);
-      if (!driftBase && runItems[1]?.run_id) setDriftBase(runItems[1].run_id);
-      if (!driftTarget && runItems[0]?.run_id) setDriftTarget(runItems[0].run_id);
+      const validRunSet = new Set((runItems || []).map((x) => String(x.run_id || '')).filter(Boolean));
+      let scopedRunIds = (selectedRunIds || []).map((x) => String(x || '')).filter((x) => validRunSet.has(x));
+      if (scopedRunIds.length === 0) {
+        // 默认全选
+        scopedRunIds = (runItems || []).map((x) => String(x.run_id || '')).filter(Boolean);
+      }
+      setSelectedRunIds(scopedRunIds);
+      const selectedStillExists = selectedRunId && validRunSet.has(String(selectedRunId));
+      const firstRunId = selectedStillExists ? selectedRunId : (scopedRunIds[0] || runItems[0]?.run_id || '');
+      if (String(firstRunId || '') !== String(selectedRunId || '')) setSelectedRunId(firstRunId || '');
+      // Default baseline: prefer latest release from version management; else qa_config.baseline_run_id; else second-newest run
+      const [releasesRes, qaConfig] = await Promise.all([
+        getQaReleases(tenantId).catch(() => ({ items: [] })),
+        getQaConfig(tenantId).catch(() => ({})),
+      ]);
+      if (seq !== loadSeqRef.current || tenantSnapshot !== getGlobalTenantId()) return;
+      const releaseItems = releasesRes?.items || [];
+      const latestReleaseRunIds = Array.isArray(releaseItems[0]?.run_ids) && releaseItems[0].run_ids.length
+        ? releaseItems[0].run_ids.map((x) => String(x || '').trim()).filter(Boolean)
+        : (releaseItems[0]?.run_id ? [String(releaseItems[0].run_id).trim()] : []);
+      const latestReleaseRunId = latestReleaseRunIds[0] || '';
+      const releaseBaselineExists = latestReleaseRunId && runItems.some((x) => String(x.run_id) === latestReleaseRunId);
+      const savedBaseline = String(qaConfig?.baseline_run_id || '').trim();
+      const savedBaselineExists = savedBaseline && runItems.some((x) => String(x.run_id) === savedBaseline);
+      const driftBaseExists = driftBase && runItems.some((x) => String(x.run_id) === String(driftBase));
+      if (!driftBase || !driftBaseExists) {
+        setDriftBase(releaseBaselineExists ? latestReleaseRunId : (savedBaselineExists ? savedBaseline : (runItems[1]?.run_id || '')));
+      }
+      setReleaseBaseRunIds(releaseBaselineExists ? latestReleaseRunIds : []);
+      const driftTargetExists = driftTarget && runItems.some((x) => String(x.run_id) === String(driftTarget));
+      if ((!driftTarget || !driftTargetExists) && runItems[0]?.run_id) setDriftTarget(runItems[0].run_id);
 
       const [ov, tr, th, al, pr, wk] = await Promise.all([
-        getQaOverview(tenantId, { material_version_id: effectiveMid || undefined, days, run_id: firstRunId || undefined }),
+        getQaOverview(tenantId, {
+          material_version_id: effectiveMid || undefined,
+          days,
+          run_id: firstRunId || undefined,
+          run_ids: scopedRunIds.length ? scopedRunIds.join(',') : undefined,
+        }),
         getQaTrends(tenantId, { material_version_id: effectiveMid || undefined, days }),
         getQaThresholds(tenantId),
         listQaAlerts(tenantId, { page: 1, page_size: 200 }),
@@ -165,13 +234,23 @@ export default function QualityEvaluationPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, days, materialVersionId]);
 
-  const onRefreshCurrentRun = async (runId) => {
+  useEffect(() => {
+    if (!tenantId) return;
+    loadJudgeTaskList(tenantId, true).catch(() => setJudgeTaskItems([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, selectedRunId]);
+
+  const onRefreshCurrentRun = async (runId, scopedRunIds = selectedRunIds) => {
     if (!tenantId || !runId) return;
     setSelectedRunId(runId);
     setLoading(true);
     try {
       const [ov, detail, calls] = await Promise.all([
-        getQaOverview(tenantId, { material_version_id: materialVersionId || undefined, run_id: runId }),
+        getQaOverview(tenantId, {
+          material_version_id: materialVersionId || undefined,
+          run_id: runId,
+          run_ids: Array.isArray(scopedRunIds) && scopedRunIds.length ? scopedRunIds.join(',') : undefined,
+        }),
         getQaRunDetail(tenantId, runId),
         listQaLlmCalls(tenantId, { run_id: runId, question_id: llmQuestionFilter || undefined, page: 1, page_size: 2000 }),
       ]);
@@ -331,14 +410,38 @@ export default function QualityEvaluationPage() {
           <InputNumber min={1} max={365} value={days} onChange={(v) => setDays(Number(v || 30))} addonBefore="最近天数" />
           <Button onClick={loadAll} loading={loading}>刷新</Button>
           <Select
-            style={{ width: 320 }}
-            value={selectedRunId || undefined}
-            placeholder="选择 run"
-            options={runs.map((r) => ({ label: `${r.run_id} | ${r.ended_at || ''}`, value: r.run_id }))}
-            onChange={onRefreshCurrentRun}
+            mode="multiple"
+            style={{ width: 520 }}
+            value={selectedRunIds}
+            placeholder="按任务名称选择 run（支持全选）"
+            options={runs.map((r) => {
+              const name = (r.task_name || '').trim() || (r.task_id || '') || r.run_id;
+              const date = (r.ended_at || '').slice(0, 10);
+              const label = date ? `${name} | ${date}` : name;
+              return { label, value: r.run_id };
+            })}
+            onChange={(vals) => {
+              const picked = Array.from(new Set((vals || []).map((x) => String(x || '')).filter(Boolean)));
+              const next = picked.length > 0 ? picked : (runs || []).map((r) => String(r.run_id || '')).filter(Boolean);
+              setSelectedRunIds(next);
+              const nextRunId = next.includes(String(selectedRunId || '')) ? String(selectedRunId || '') : (next[0] || '');
+              if (nextRunId) onRefreshCurrentRun(nextRunId, next);
+            }}
             showSearch
             optionFilterProp="label"
           />
+          <Button
+            onClick={() => {
+              const allRunIds = (runs || []).map((r) => String(r.run_id || '')).filter(Boolean);
+              setSelectedRunIds(allRunIds);
+              const nextRunId = allRunIds.includes(String(selectedRunId || '')) ? String(selectedRunId || '') : (allRunIds[0] || '');
+              if (nextRunId) onRefreshCurrentRun(nextRunId, allRunIds);
+            }}
+            disabled={!runs.length}
+          >
+            全选
+          </Button>
+          <Text type="secondary">已选 {selectedRunIds.length}/{runs.length}</Text>
         </Space>
       </Card>
 
@@ -348,27 +451,58 @@ export default function QualityEvaluationPage() {
             key: 'overview',
             label: '总览',
             children: (
-              <Row gutter={12}>
-                {[
-                  ['hard_pass_rate', '硬通过率', pct(overview.hard_pass_rate)],
-                  ['quality_score_avg', '质量均分', Number(overview.quality_score_avg || 0).toFixed(2)],
-                  ['risk_high_rate', '高风险率', pct(overview.risk_high_rate)],
-                  ['logic_pass_rate', '逻辑合格率', pct(overview.logic_pass_rate)],
-                  ['duplicate_rate', '重复率', pct(overview.duplicate_rate)],
-                  ['knowledge_match_rate', '考点命中率', pct(overview.knowledge_match_rate)],
-                  ['avg_tokens_per_question', '平均Token/题', Number(overview.avg_tokens_per_question || 0).toFixed(2)],
-                  ['avg_latency_ms_per_question', '平均时长ms/题', Number(overview.avg_latency_ms_per_question || 0).toFixed(2)],
-                  ['avg_cost_per_question', '平均成本/题', `${Number(overview.avg_cost_per_question || 0).toFixed(4)} ${overview.currency || 'CNY'}`],
-                  ['total_cost', '总成本', `${Number(overview.total_cost || 0).toFixed(4)} ${overview.currency || 'CNY'}`],
-                ].map((x) => (
-                  <Col xs={24} md={12} lg={6} key={x[0]} style={{ marginBottom: 12 }}>
-                    <Card loading={loading}>
-                      <Text type="secondary">{x[1]}</Text>
-                      <div style={{ fontSize: 24, fontWeight: 600 }}>{x[2]}</div>
-                    </Card>
-                  </Col>
-                ))}
-              </Row>
+              <Space direction="vertical" style={{ width: '100%' }}>
+                <Row gutter={12}>
+                  {[
+                    ['run_count', '统计run数', Number(overview.run_count || 0)],
+                    ['hard_pass_rate', '入库率', pct(overview.hard_pass_rate)],
+                    ['logic_pass_rate', '逻辑合格率', pct(overview.logic_pass_rate)],
+                    ['risk_high_rate', 'Critic判失败率', pct(overview.risk_high_rate)],
+                    ['quality_score_avg', '质量均分(离线Judge)', Number(overview.quality_score_avg || 0).toFixed(2)],
+                    ['judge_pass_rate', 'Judge通过率', overview.judge_pass_rate != null ? pct(overview.judge_pass_rate) : '—'],
+                    ['judge_review_rate', 'Judge复核率', overview.judge_review_rate != null ? pct(overview.judge_review_rate) : '—'],
+                    ['judge_baseline_score_avg', 'Judge基线均分', overview.judge_baseline_score_avg != null ? Number(overview.judge_baseline_score_avg).toFixed(2) : '—'],
+                    ['judge_overall_score_avg', 'Judge均分', overview.judge_overall_score_avg != null ? Number(overview.judge_overall_score_avg).toFixed(2) : '—'],
+                    ['judge_reject_rate', 'Judge拒绝率', overview.judge_reject_rate != null ? pct(overview.judge_reject_rate) : '—'],
+                    ['judge_scored_count', 'Judge已评分题数', Number(overview.judge_scored_count || 0)],
+                    ['judge_pass_count', 'Judge通过题数', Number(overview.judge_pass_count || 0)],
+                    ['judge_review_count', 'Judge复核题数', Number(overview.judge_review_count || 0)],
+                    ['judge_reject_count', 'Judge拒绝题数', Number(overview.judge_reject_count || 0)],
+                    ['duplicate_rate', '重复率', pct(overview.duplicate_rate)],
+                    ['knowledge_match_rate', '考点命中率', pct(overview.knowledge_match_rate)],
+                    ['avg_tokens_per_question', '出题平均Token/题', Number(overview.avg_tokens_per_question || 0).toFixed(2)],
+                    ['avg_latency_ms_per_question', '出题平均时长ms/题', Number(overview.avg_latency_ms_per_question || 0).toFixed(2)],
+                    ['avg_cost_per_question', '出题平均成本/题（毛）', formatAmount(overview.avg_cost_per_question, overview.currency)],
+                    ['cpvq', 'CPVQ（单题有效成本）', overview.cpvq != null ? formatAmount(overview.cpvq, overview.currency) : '—'],
+                    ['total_cost', '总成本', formatAmount(overview.total_cost, overview.currency)],
+                    ['judge_avg_tokens_per_question', 'Judge平均Token/题', Number(overview.judge_avg_tokens_per_question || 0).toFixed(2)],
+                    ['judge_avg_latency_ms_per_question', 'Judge平均时长ms/题', Number(overview.judge_avg_latency_ms_per_question || 0).toFixed(2)],
+                    ['judge_avg_cost_usd_per_question', 'Judge平均成本/题(USD)', Number(overview.judge_avg_cost_usd_per_question || 0).toFixed(6)],
+                  ].map((x) => (
+                    <Col xs={24} md={12} lg={6} key={x[0]} style={{ marginBottom: 12 }}>
+                      <Card loading={loading}>
+                        <Text type="secondary">{x[1]}</Text>
+                        <div style={{ fontSize: 24, fontWeight: 600 }}>{x[2]}</div>
+                      </Card>
+                    </Col>
+                  ))}
+                </Row>
+                <Card size="small" title="切片出题成功率（critic最终通过并落库）">
+                  <Table
+                    size="small"
+                    rowKey={(r) => `${r.slice_id}|${r.slice_path || ''}`}
+                    dataSource={Array.isArray(overview?.slice_success_stats) ? overview.slice_success_stats : []}
+                    pagination={{ pageSize: 10 }}
+                    columns={[
+                      { title: '切片ID', dataIndex: 'slice_id', width: 100 },
+                      { title: '来源路径', dataIndex: 'slice_path', ellipsis: true },
+                      { title: '尝试次数', dataIndex: 'attempt_count', width: 110 },
+                      { title: '成功次数', dataIndex: 'success_count', width: 110 },
+                      { title: '成功率', dataIndex: 'success_rate', width: 120, render: (v) => pct(v) },
+                    ]}
+                  />
+                </Card>
+              </Space>
             ),
           },
           {

@@ -5034,13 +5034,25 @@ def api_qa_overview(tenant_id: str):
     material_version_id = str(request.args.get("material_version_id", "")).strip()
     days = max(0, int(request.args.get("days", 30) or 30))
     run_id = str(request.args.get("run_id", "")).strip()
-    runs = _filter_qa_runs(tenant_id, material_version_id=material_version_id, days=days)
+    run_ids_raw = str(request.args.get("run_ids", "")).strip()
+    run_ids = [x.strip() for x in run_ids_raw.split(",") if x.strip()]
+    run_ids_set = set(run_ids)
+    success_only = request.args.get("success_only", "1").strip() in ("1", "true", "yes")
+    runs = _filter_qa_runs(
+        tenant_id,
+        material_version_id=material_version_id,
+        days=days,
+        success_only=success_only,
+    )
+    if run_ids_set:
+        runs = [x for x in runs if str(x.get("run_id", "")) in run_ids_set]
     if run_id:
         runs = [x for x in runs if str(x.get("run_id", "")) == run_id]
     if not runs:
         return _json_response(
             {
                 "run_id": run_id,
+                "run_ids": run_ids,
                 "material_version_id": material_version_id,
                 "days": days,
                 "run_count": 0,
@@ -5057,12 +5069,32 @@ def api_qa_overview(tenant_id: str):
                 "currency": "CNY",
                 "avg_critic_loops": 0,
                 "error_call_rate": 0,
+                "judge_pass_rate": None,
+                "judge_review_rate": None,
+                "judge_reject_rate": None,
+                "judge_overall_score_avg": None,
+                "judge_baseline_score_avg": None,
+                "judge_total_llm_calls": 0,
+                "judge_failed_llm_calls": 0,
+                "judge_total_tokens": 0,
+                "judge_total_latency_ms": 0,
+                "judge_total_cost_usd": 0,
+                "judge_avg_tokens_per_question": 0,
+                "judge_avg_latency_ms_per_question": 0,
+                "judge_avg_cost_usd_per_question": 0,
+                "judge_question_count": 0,
+                "judge_scored_count": 0,
+                "judge_pass_count": 0,
+                "judge_review_count": 0,
+                "judge_reject_count": 0,
+                "slice_success_stats": [],
             }
         )
     bm_list = [x.get("batch_metrics", {}) for x in runs if isinstance(x.get("batch_metrics"), dict)]
     n = len(bm_list)
     overview = {
         "run_id": run_id or str(runs[0].get("run_id", "")),
+        "run_ids": [str(x.get("run_id", "")) for x in runs if str(x.get("run_id", "")).strip()],
         "material_version_id": material_version_id,
         "days": days,
         "run_count": n,
@@ -5080,6 +5112,97 @@ def api_qa_overview(tenant_id: str):
         "avg_critic_loops": round(_safe_div(sum(float(x.get("avg_critic_loops", 0) or 0) for x in bm_list), n), 3),
         "error_call_rate": round(_safe_div(sum(float(x.get("error_call_rate", 0) or 0) for x in bm_list), n), 4),
     }
+    # Judge metrics: aggregate directly from latest offline_judge payload on each question.
+    judge_pass_sum = 0
+    judge_review_sum = 0
+    judge_reject_sum = 0
+    judge_total_questions = 0
+    judge_scored_count = 0
+    judge_overall_scores: list[float] = []
+    judge_baseline_scores: list[float] = []
+    judge_quality_scores: list[float] = []
+    judge_calls_sum = 0
+    judge_failed_calls_sum = 0
+    judge_total_tokens_sum = 0
+    judge_total_latency_ms_sum = 0
+    judge_total_cost_usd_sum = 0.0
+    for run in runs:
+        for q in (run.get("questions") or []):
+            if not isinstance(q, dict):
+                continue
+            oj = q.get("offline_judge") if isinstance(q.get("offline_judge"), dict) else {}
+            if not oj:
+                continue
+            judge_total_questions += 1
+            decision = str(oj.get("decision", "") or "").strip().lower()
+            if decision == "pass":
+                judge_pass_sum += 1
+            elif decision == "review":
+                judge_review_sum += 1
+            elif decision == "reject":
+                judge_reject_sum += 1
+            if decision in {"pass", "review", "reject"}:
+                judge_scored_count += 1
+            overall_score = oj.get("overall_score")
+            if overall_score is not None:
+                try:
+                    judge_overall_scores.append(float(overall_score))
+                except Exception:
+                    pass
+            baseline_score = oj.get("baseline_score")
+            if baseline_score is None:
+                baseline_score = oj.get("penalty_score")
+            if baseline_score is not None:
+                try:
+                    judge_baseline_scores.append(float(baseline_score))
+                except Exception:
+                    pass
+            quality_score = oj.get("quality_score")
+            if quality_score is not None:
+                try:
+                    judge_quality_scores.append(float(quality_score))
+                except Exception:
+                    pass
+            obs = oj.get("observability") if isinstance(oj.get("observability"), dict) else {}
+            tok = obs.get("tokens") if isinstance(obs.get("tokens"), dict) else {}
+            costs = oj.get("costs") if isinstance(oj.get("costs"), dict) else {}
+            judge_calls_sum += int(obs.get("llm_calls", 0) or 0)
+            judge_failed_calls_sum += int(obs.get("failed_calls", 0) or 0)
+            judge_total_tokens_sum += int(tok.get("total_tokens", 0) or 0)
+            judge_total_latency_ms_sum += int(obs.get("latency_ms", 0) or 0)
+            judge_total_cost_usd_sum += float(costs.get("per_question_usd", 0.0) or 0.0)
+
+    judge_total = judge_pass_sum + judge_review_sum + judge_reject_sum
+    if judge_total > 0:
+        overview["judge_pass_rate"] = round(_safe_div(judge_pass_sum, judge_total), 4)
+        overview["judge_review_rate"] = round(_safe_div(judge_review_sum, judge_total), 4)
+        overview["judge_reject_rate"] = round(_safe_div(judge_reject_sum, judge_total), 4)
+    else:
+        overview["judge_pass_rate"] = None
+        overview["judge_review_rate"] = None
+        overview["judge_reject_rate"] = None
+    overview["judge_overall_score_avg"] = round(_safe_div(sum(judge_overall_scores), len(judge_overall_scores)), 2) if judge_overall_scores else None
+    overview["judge_baseline_score_avg"] = round(_safe_div(sum(judge_baseline_scores), len(judge_baseline_scores)), 2) if judge_baseline_scores else None
+    # For overview card, prefer quality_score from offline_judge when available.
+    if judge_quality_scores:
+        overview["quality_score_avg"] = round(_safe_div(sum(judge_quality_scores), len(judge_quality_scores)), 2)
+
+    overview["judge_question_count"] = int(judge_total_questions)
+    overview["judge_scored_count"] = int(judge_scored_count)
+    overview["judge_pass_count"] = int(judge_pass_sum)
+    overview["judge_review_count"] = int(judge_review_sum)
+    overview["judge_reject_count"] = int(judge_reject_sum)
+    overview["judge_total_llm_calls"] = int(judge_calls_sum)
+    overview["judge_failed_llm_calls"] = int(judge_failed_calls_sum)
+    overview["judge_total_tokens"] = int(judge_total_tokens_sum)
+    overview["judge_total_latency_ms"] = int(judge_total_latency_ms_sum)
+    overview["judge_total_cost_usd"] = round(judge_total_cost_usd_sum, 6)
+    overview["judge_avg_tokens_per_question"] = round(_safe_div(judge_total_tokens_sum, judge_scored_count), 2) if judge_scored_count > 0 else 0.0
+    overview["judge_avg_latency_ms_per_question"] = round(_safe_div(judge_total_latency_ms_sum, judge_scored_count), 2) if judge_scored_count > 0 else 0.0
+    overview["judge_avg_cost_usd_per_question"] = round(_safe_div(judge_total_cost_usd_sum, judge_scored_count), 6) if judge_scored_count > 0 else 0.0
+    saved_sum = sum(int(x.get("saved_count", 0) or 0) for x in bm_list)
+    overview["saved_count"] = saved_sum
+    overview["cpvq"] = round(_safe_div(total_cost_sum, saved_sum), 6) if saved_sum > 0 else None
     return _json_response(overview)
 
 
