@@ -61,3 +61,24 @@ llm_rerank_debug_*.txt
 # Temporary files
 *.tmp
 *.bak
+
+# Node / frontend build artifacts
+node_modules/
+admin-web/node_modules/
+admin-web/dist/
+
+# Local model/cache artifacts
+models/
+
+# Runtime/temp outputs
+tmp/
+code_tool_test_log.txt
+test_output.txt
+
+
+# Runtime data (do not version generated runtime states)
+data/admin_p0.db
+data/*/audit/*.jsonl
+data/*/materials/uploads/
+data/*/slices/
+data/*/mapping/
