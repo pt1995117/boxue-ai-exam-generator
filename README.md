@@ -63,25 +63,36 @@
 pip install -r requirements.txt
 ```
 
-### 3. 配置API Key
+### 3. 配置 API Key
 
 复制并编辑 `填写您的Key.txt` 文件：
 
 ```
-OPENAI_API_KEY=你的密钥
+# 推荐：AIT 配置（当前主流程）
+AIT_API_KEY=你的密钥
+AIT_BASE_URL=https://openapi-ait.ke.com
+AIT_MODEL=deepseek-chat
 
-# DeepSeek 配置（推荐，国内可直连）
-OPENAI_BASE_URL=https://openapi-ait.ke.com
-OPENAI_MODEL=deepseek-chat
+# 兼容：OPENAI_* 仍可用
+# OPENAI_API_KEY=你的密钥
+# OPENAI_BASE_URL=https://openapi-ait.ke.com
+# OPENAI_MODEL=deepseek-chat
 ```
 
-### 4. 运行应用
+### 4. 运行应用（后端 + 管理台）
 
 ```bash
-streamlit run app.py
+# 终端1：启动后端 API
+python admin_api.py
+
+# 终端2：启动前端管理台
+cd admin-web
+npm run dev
 ```
 
-应用将在浏览器中打开 `http://localhost:8501`
+默认访问地址：
+- 后端健康检查：`http://127.0.0.1:8600/`
+- 前端管理台：`http://127.0.0.1:8520/`（或 Vite 输出端口）
 
 ## 📖 使用说明
 
@@ -93,10 +104,16 @@ streamlit run app.py
 4. **开始出题**：点击按钮，实时查看智能体协同过程
 5. **下载结果**：导出为Excel文件
 
+## 🧪 测试说明
+
+- 自动化测试（CI/pytest）仅运行 `test_*.py`
+- 脚本化/手工 UI 测试已迁移到 `manual_tests/`，需要手动执行，不参与 CI
+
 ## 📁 项目结构
 
 ```
-├── app.py                          # Streamlit 主应用
+├── admin_api.py                    # Flask 管理后台 API
+├── admin-web/                      # React + Vite 管理台
 ├── exam_factory.py                 # 知识库检索和数据模型
 ├── exam_graph.py                   # LangGraph 智能体定义
 ├── calculation_logic.py            # 17种计算器工具

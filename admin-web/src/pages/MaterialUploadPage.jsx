@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Button, Card, Dropdown, Input, List, message, Modal, Popconfirm, Row, Col, Select, Space, Tabs, Typography, Upload } from 'antd';
+import { Alert, Button, Card, Dropdown, Input, List, message, Modal, Popconfirm, Progress, Row, Col, Select, Space, Tabs, Typography, Upload } from 'antd';
 import { InboxOutlined, MoreOutlined } from '@ant-design/icons';
 import {
   archiveMaterial,
@@ -27,6 +27,11 @@ export default function MaterialUploadPage() {
   const [mappingLoading, setMappingLoading] = useState(false);
   const [resliceLoadingId, setResliceLoadingId] = useState('');
   const [remapLoadingId, setRemapLoadingId] = useState('');
+  const pickDefaultMaterialId = (items) => {
+    const list = Array.isArray(items) ? items : [];
+    const effective = list.find((x) => String(x?.status || '') === 'effective');
+    return String(effective?.material_version_id || list[0]?.material_version_id || '');
+  };
 
   const materialFileName = (item) => {
     const raw = String(item?.file_path || '').split('/').pop() || '';
@@ -64,7 +69,13 @@ export default function MaterialUploadPage() {
       const res = await listMaterials(tid);
       const items = res.items || [];
       setMaterials(items);
-      setSelectedMaterialIdForMap((prev) => prev || (items[0]?.material_version_id || ''));
+      const ids = new Set(items.map((x) => String(x?.material_version_id || '')).filter(Boolean));
+      const fallbackId = pickDefaultMaterialId(items);
+      setSelectedMaterialIdForMap((prev) => {
+        const current = String(prev || '');
+        if (current && ids.has(current)) return current;
+        return fallbackId;
+      });
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '加载教材版本失败');
     }
@@ -122,6 +133,9 @@ export default function MaterialUploadPage() {
         }
       );
       setLastResult(res);
+      if (res?.material_version_id) {
+        setSelectedMaterialIdForMap(String(res.material_version_id));
+      }
       message.success(`上传并切片成功，共生成 ${res.slice_count || 0} 条`);
       setFileList([]);
       setTextContent('');
@@ -148,7 +162,15 @@ export default function MaterialUploadPage() {
 
   const onUploadReferenceAndMap = async () => {
     if (!tenantId) return;
-    if (!selectedMaterialIdForMap) {
+    const ids = new Set(materials.map((x) => String(x?.material_version_id || '')).filter(Boolean));
+    let targetMaterialId = String(selectedMaterialIdForMap || '');
+    if (!targetMaterialId || !ids.has(targetMaterialId)) {
+      targetMaterialId = pickDefaultMaterialId(materials);
+      if (targetMaterialId) {
+        setSelectedMaterialIdForMap(targetMaterialId);
+      }
+    }
+    if (!targetMaterialId) {
       message.warning('请先选择教材版本');
       return;
     }
@@ -158,22 +180,22 @@ export default function MaterialUploadPage() {
       return;
     }
     setMaterials((prev) => prev.map((x) => (
-      x.material_version_id === selectedMaterialIdForMap
-        ? { ...x, mapping_status: 'running', mapping_error: '' }
+      x.material_version_id === targetMaterialId
+        ? { ...x, mapping_status: 'running', mapping_error: '', mapping_progress: 0, mapping_message: '任务已提交，等待后台执行' }
         : x
     )));
     setMappingLoading(true);
     try {
-      const res = await uploadReferenceAndMap(tenantId, selectedMaterialIdForMap, file, { timeout: LONG_TASK_TIMEOUT_MS });
-      message.success(`参考题上传并生成映射成功，映射 ${res.mapping_total || 0} 条`);
+      const res = await uploadReferenceAndMap(tenantId, targetMaterialId, file);
+      if (res?.accepted) {
+        message.success('参考题已上传，映射任务已在后台启动');
+      } else {
+        message.success(`参考题上传并生成映射成功，映射 ${res.mapping_total || 0} 条`);
+      }
       setReferenceFileList([]);
       await loadMaterials(tenantId);
     } catch (e) {
-      if (e?.code === 'ECONNABORTED') {
-        message.warning('上传/映射任务超时（任务较重），后端可能仍在执行，请稍后刷新列表确认结果');
-      } else {
-        message.error(e?.response?.data?.error?.message || '参考题上传/映射失败');
-      }
+      message.error(e?.response?.data?.error?.message || '参考题上传/映射失败');
     } finally {
       setMappingLoading(false);
     }
@@ -196,7 +218,7 @@ export default function MaterialUploadPage() {
     setResliceLoadingId(materialVersionId);
     setMaterials((prev) => prev.map((x) => (
       x.material_version_id === materialVersionId
-        ? { ...x, status: 'slicing', slice_status: 'running', slice_error: '' }
+        ? { ...x, status: 'slicing', slice_status: 'running', slice_error: '', slice_progress: 0, slice_message: '任务已提交，等待后台执行' }
         : x
     )));
     try {
@@ -219,19 +241,19 @@ export default function MaterialUploadPage() {
     setRemapLoadingId(materialVersionId);
     setMaterials((prev) => prev.map((x) => (
       x.material_version_id === materialVersionId
-        ? { ...x, mapping_status: 'running', mapping_error: '' }
+        ? { ...x, mapping_status: 'running', mapping_error: '', mapping_progress: 0, mapping_message: '任务已提交，等待后台执行' }
         : x
     )));
     try {
       const res = await remapMaterial(tenantId, materialVersionId);
-      message.success(`重新映射成功，共 ${res.mapping_total || 0} 条`);
+      if (res?.accepted) {
+        message.success('重新映射任务已在后台启动');
+      } else {
+        message.success(`重新映射成功，共 ${res.mapping_total || 0} 条`);
+      }
       await loadMaterials(tenantId);
     } catch (e) {
-      if (e?.code === 'ECONNABORTED') {
-        message.error('重新映射超时（任务较重），请稍后刷新列表确认结果');
-      } else {
-        message.error(e?.response?.data?.error?.message || '重新映射失败');
-      }
+      message.error(e?.response?.data?.error?.message || '重新映射失败');
     } finally {
       setRemapLoadingId('');
     }
@@ -296,7 +318,15 @@ export default function MaterialUploadPage() {
                         {flowStatusLabel(mappingStatus)}
                       </span>
                     </Typography.Text>
-                    {item.mapping_error ? (
+                    {mappingStatus === 'running' && Number.isFinite(Number(item.mapping_progress)) ? (
+                      <Typography.Text type="secondary">
+                        映射进度：{Math.max(0, Math.min(100, Number(item.mapping_progress || 0)))}%
+                      </Typography.Text>
+                    ) : null}
+                    {item.mapping_message ? (
+                      <Typography.Text type="secondary">进度信息：{item.mapping_message}</Typography.Text>
+                    ) : null}
+                    {mappingStatus === 'failed' && item.mapping_error ? (
                       <Typography.Text type="danger">映射错误：{item.mapping_error}</Typography.Text>
                     ) : null}
                     <Typography.Text type="secondary">
@@ -305,6 +335,16 @@ export default function MaterialUploadPage() {
                         {flowStatusLabel(sliceStatus)}
                       </span>
                     </Typography.Text>
+                    {sliceStatus === 'running' || Number(item.slice_progress || 0) > 0 ? (
+                      <Progress
+                        percent={Math.max(0, Math.min(100, Number(item.slice_progress || 0)))}
+                        size="small"
+                        status={sliceStatus === 'failed' ? 'exception' : (sliceStatus === 'success' ? 'success' : 'active')}
+                      />
+                    ) : null}
+                    {item.slice_message ? (
+                      <Typography.Text type="secondary">切片进度：{item.slice_message}</Typography.Text>
+                    ) : null}
                     {item.slice_error ? (
                       <Typography.Text type="danger">切片错误：{item.slice_error}</Typography.Text>
                     ) : null}

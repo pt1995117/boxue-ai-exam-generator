@@ -1,4 +1,4 @@
-from generate_knowledge_slices import repair_flattened_paths
+from generate_knowledge_slices import group_and_slice, merge_short_slices_at_parent, repair_flattened_paths
 
 
 def test_repair_flattened_paths_inserts_missing_l4_parent():
@@ -23,3 +23,69 @@ def test_repair_flattened_paths_keeps_already_full_paths():
     fixed = repair_flattened_paths(slices)
 
     assert fixed[0]["完整路径"] == "第一篇 > 第一章 > 第一节 > 三、房地产市场周期波动 > （一）周期影响因素"
+
+
+def test_group_and_slice_does_not_leak_internal_state_field():
+    elements = [
+        {
+            "type": "heading",
+            "level": 4,
+            "text": "一、总述",
+            "path": "第一篇 > 第一章 > 第一节 > 一、总述",
+            "mastery": "了解",
+        },
+        {
+            "type": "paragraph",
+            "text": "这是正文",
+            "path": "第一篇 > 第一章 > 第一节 > 一、总述",
+            "mastery": "了解",
+            "images": [],
+        },
+    ]
+
+    out = group_and_slice(elements, api_key="")
+
+    assert len(out) == 1
+    assert "_in_example" not in out[0]
+
+
+def test_merge_short_slices_keeps_route_hint_in_merged_content():
+    slices = [
+        {
+            "完整路径": "第一篇 > 第一章",
+            "掌握程度": "了解",
+            "结构化内容": {
+                "key_params": [],
+                "rules": [],
+                "context_before": "",
+                "tables": [],
+                "context_after": "",
+                "images": [],
+                "image_anchors": [],
+                "formulas": [],
+                "examples": [],
+            },
+            "metadata": {"类型": "自动组装"},
+        },
+        {
+            "完整路径": "第一篇 > 第一章 > 第一节",
+            "掌握程度": "了解",
+            "结构化内容": {
+                "key_params": [],
+                "rules": [],
+                "context_before": "正文A",
+                "tables": [],
+                "context_after": "",
+                "images": [],
+                "image_anchors": [],
+                "formulas": [],
+                "examples": [],
+            },
+            "metadata": {"类型": "自动组装"},
+        },
+    ]
+
+    merged = merge_short_slices_at_parent(slices, min_chars=200)
+    merged_text = merged[0]["结构化内容"]["context_before"]
+    assert "【路由】第一节" in merged_text
+    assert "正文A" in merged_text

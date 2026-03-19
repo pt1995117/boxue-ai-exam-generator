@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Form, Input, Modal, Row, Select, Space, Tag, Tree, Typography, message } from 'antd';
-import { batchReviewMappings, fetchSliceImageBlob, getMappings, getSliceImageUrl, listMaterials, getSystemUser } from '../services/api';
+import { Alert, Button, Card, Col, Empty, Form, Input, Modal, Row, Select, Slider, Space, Tag, Tooltip, Tree, Typography, message } from 'antd';
+import { SearchOutlined } from '@ant-design/icons';
+import { batchReviewMappings, fetchSliceImageBlob, getMappings, getMaterialMappingJob, getSliceImageUrl, listMaterials, getSystemUser } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 
@@ -20,6 +21,50 @@ const hasMarkdownTable = (text) => {
 
 const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+const SliceImagePreview = React.memo(({ tenantId, imagePath, materialVersionId }) => {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = '';
+    const run = async () => {
+      try {
+        const { blob, contentType } = await fetchSliceImageBlob(tenantId, imagePath, materialVersionId);
+        const ct = String(contentType || '').toLowerCase();
+        if (!blob || blob.size <= 0) return;
+        if (ct.includes('application/json') || ct.includes('text/html') || ct.includes('text/plain')) return;
+        objectUrl = window.URL.createObjectURL(blob);
+        if (!cancelled) setSrc(objectUrl);
+      } catch (_e) {
+        if (!cancelled) setSrc('');
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
+    };
+  }, [tenantId, imagePath, materialVersionId]);
+  if (!src) {
+    return <Typography.Text type="secondary">图片加载中...</Typography.Text>;
+  }
+  return (
+    <img
+      src={src}
+      alt={String(imagePath || '').split('/').pop() || 'slice-image'}
+      style={{
+        display: 'block',
+        maxWidth: '100%',
+        maxHeight: 220,
+        marginTop: 6,
+        border: '1px solid #f0f0f0',
+        borderRadius: 6,
+        objectFit: 'contain',
+        background: '#fff',
+      }}
+    />
+  );
+});
+
 /**
  * 按切片预览方式：将切片内容中的图片引用转为可点击链接
  * @param {string} text - 切片文本
@@ -32,25 +77,43 @@ const injectImageLinksToMarkdown = (text, row, tenantId, materialVersionId) => {
   const content = String(text || '');
   if (!content) return '（空）';
   const items = Array.isArray(row?.images) ? row.images : [];
-  const targets = [];
+  const map = new Map();
   items.forEach((img) => {
     const path = String(img?.image_path || '').trim();
     if (!path) return;
     const url = getSliceImageUrl(tenantId, path, row.material_version_id || materialVersionId);
     const basename = path.split('/').pop() || '';
     const imageId = String(img?.image_id || '').trim();
-    targets.push({ token: path, url });
-    if (basename) targets.push({ token: basename, url });
-    if (imageId && imageId !== basename) targets.push({ token: imageId, url });
+    map.set(path, { token: path, url });
+    if (basename) map.set(basename, { token: basename, url });
+    if (imageId && imageId !== basename) map.set(imageId, { token: imageId, url });
   });
-  targets.sort((a, b) => (b.token?.length || 0) - (a.token?.length || 0));
+  const targets = Array.from(map.values()).sort((a, b) => (b.token?.length || 0) - (a.token?.length || 0));
   if (!targets.length) return content;
-  let next = content;
-  targets.forEach(({ token, url }) => {
-    if (!token || !next.includes(token)) return;
-    next = next.replace(new RegExp(escapeRegExp(token), 'g'), `[${token}](${url})`);
+  const lines = content.split('\n');
+  let inCodeFence = false;
+  const transformed = lines.map((line) => {
+    const t = String(line || '');
+    if (t.trim().startsWith('```')) {
+      inCodeFence = !inCodeFence;
+      return t;
+    }
+    if (inCodeFence) return t;
+    let next = t;
+    const placeholders = [];
+    targets.forEach((target, idx) => {
+      const token = String(target.token || '').trim();
+      if (!token || !next.includes(token)) return;
+      const holder = `__IMG_LINK_${idx}_${token.length}__`;
+      next = next.replace(new RegExp(escapeRegExp(token), 'g'), holder);
+      placeholders.push({ holder, token, url: target.url });
+    });
+    placeholders.forEach(({ holder, token, url }) => {
+      next = next.replace(new RegExp(escapeRegExp(holder), 'g'), `[${token}](${url})`);
+    });
+    return next;
   });
-  return next;
+  return transformed.join('\n');
 };
 
 export default function MappingReviewPage() {
@@ -63,16 +126,75 @@ export default function MappingReviewPage() {
   const [materialVersionId, setMaterialVersionId] = useState('');
   const [activeMapKey, setActiveMapKey] = useState(null);
   const [previewMapKeys, setPreviewMapKeys] = useState([]);
+  const [previewMermaid, setPreviewMermaid] = useState({ open: false, code: '', title: '', zoom: 120 });
   const [editingMapKey, setEditingMapKey] = useState('');
   const [editingTargetId, setEditingTargetId] = useState('');
   const [editingComment, setEditingComment] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [approvingAll, setApprovingAll] = useState(false);
+  const [mappingJob, setMappingJob] = useState(null);
   const systemUser = getSystemUser();
+
+  const extractMermaid = (text) => {
+    const raw = String(text || '');
+    const match = raw.match(/```mermaid\s*([\s\S]*?)```/);
+    return match ? match[1].trim() : '';
+  };
 
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
     const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
     return `${name}${m?.status === 'effective' ? '（当前生效）' : ''}`;
+  };
+
+  const toMaterialName = (m) => {
+    const raw = String(m?.file_path || '').split('/').pop() || '';
+    return raw.replace(/^v\d{8}_\d{6}_/, '') || raw || String(m?.material_version_id || '');
+  };
+
+  const refreshMaterials = async (tid, { silent = false } = {}) => {
+    if (!tid) return;
+    try {
+      const res = await listMaterials(tid);
+      const items = res.items || [];
+      const visibleItems = items.filter((x) => (
+        String(x?.status || '') !== 'archived' && String(x?.mapping_status || '') === 'success'
+      ));
+      setMaterials(visibleItems);
+      const effective = visibleItems.find((x) => x.status === 'effective');
+      setMaterialVersionId((prev) => {
+        const current = String(prev || '');
+        if (current && visibleItems.some((m) => String(m?.material_version_id || '') === current)) return current;
+        return String((effective || visibleItems[0] || {}).material_version_id || '');
+      });
+
+      const running = items.find((x) => String(x?.mapping_status || '') === 'running');
+      if (!running) {
+        setMappingJob(null);
+        return;
+      }
+      const target = String(running?.material_version_id || '');
+      if (!target) {
+        setMappingJob(null);
+        return;
+      }
+      const jobRes = await getMaterialMappingJob(tid, target);
+      const job = jobRes?.job || {};
+      setMappingJob({
+        material_version_id: target,
+        material_name: toMaterialName(running),
+        status: String(job?.status || 'running'),
+        progress: Math.max(0, Math.min(100, Number(job?.progress || running?.mapping_progress || 0))),
+        message: String(job?.message || running?.mapping_message || ''),
+      });
+    } catch (e) {
+      if (!silent) {
+        message.error(e?.response?.data?.error?.message || '加载教材版本失败');
+      }
+      setMaterials([]);
+      setMaterialVersionId('');
+      setMappingJob(null);
+    }
   };
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
@@ -118,21 +240,18 @@ export default function MappingReviewPage() {
 
   useEffect(() => {
     if (!tenantId) return;
-    listMaterials(tenantId)
-      .then((res) => {
-        const items = res.items || [];
-        const visibleItems = items.filter((x) => (
-          String(x?.status || '') !== 'archived' && String(x?.mapping_status || '') === 'success'
-        ));
-        setMaterials(visibleItems);
-        const effective = visibleItems.find((x) => x.status === 'effective');
-        setMaterialVersionId((effective || visibleItems[0] || {}).material_version_id || '');
-      })
-      .catch(() => {
-        setMaterials([]);
-        setMaterialVersionId('');
-      });
+    refreshMaterials(tenantId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
+
+  useEffect(() => {
+    if (!tenantId || !mappingJob || mappingJob.status !== 'running') return undefined;
+    const timer = setInterval(() => {
+      refreshMaterials(tenantId, { silent: true });
+    }, 3000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantId, mappingJob?.status, mappingJob?.material_version_id]);
 
   const metrics = useMemo(() => {
     const total = rows.length;
@@ -159,6 +278,33 @@ export default function MappingReviewPage() {
       await loadData();
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '批量确认失败');
+    }
+  };
+
+  const onApproveAllInCurrentTree = async () => {
+    const ids = rows.map((x) => String(x.map_key || '')).filter(Boolean);
+    if (!ids.length) {
+      message.warning('当前筛选下没有可审核映射');
+      return;
+    }
+    setApprovingAll(true);
+    try {
+      const chunkSize = 200;
+      for (let i = 0; i < ids.length; i += chunkSize) {
+        // eslint-disable-next-line no-await-in-loop
+        await batchReviewMappings(tenantId, {
+          map_keys: ids.slice(i, i + chunkSize),
+          confirm_status: 'approved',
+          reviewer: systemUser,
+          material_version_id: materialVersionId || undefined,
+        });
+      }
+      message.success(`当前筛选下 ${ids.length} 条映射已全部通过`);
+      await loadData();
+    } catch (e) {
+      message.error(e?.response?.data?.error?.message || '全部通过失败');
+    } finally {
+      setApprovingAll(false);
     }
   };
 
@@ -328,10 +474,19 @@ export default function MappingReviewPage() {
             <Button type="primary" onClick={() => loadData()}>查询</Button>
           </Space>
           <Typography.Text type="secondary" className="slice-toolbar-metrics">
-            当前页映射 {metrics.total} ｜ 待审核 {metrics.pending} ｜ 已通过 {metrics.approved}
+            当前筛选映射 {metrics.total} ｜ 待审核 {metrics.pending} ｜ 已通过 {metrics.approved}
           </Typography.Text>
         </div>
       </Card>
+      {mappingJob ? (
+        <Alert
+          style={{ marginBottom: 12 }}
+          type={mappingJob.status === 'failed' ? 'error' : (mappingJob.status === 'completed' ? 'success' : 'info')}
+          showIcon
+          message={`映射任务：${mappingJob.material_name}（${mappingJob.progress}%）`}
+          description={mappingJob.message || (mappingJob.status === 'running' ? '后台正在执行映射，请稍候…' : '')}
+        />
+      ) : null}
 
       {selectedRowKeys.length > 0 && (
         <Card className="slice-batch-card" style={{ marginBottom: 12 }}>
@@ -364,6 +519,26 @@ export default function MappingReviewPage() {
             className="slice-tree-card"
             title="教材目录树"
             loading={loading}
+            extra={(
+              <Space size={8}>
+                <Tooltip title="目录树（不支持关键词输入）">
+                  <Button size="small" icon={<SearchOutlined />} />
+                </Tooltip>
+                <Tooltip title={metrics.pending > 0 ? '' : '当前筛选下没有待审核映射'}>
+                  <span>
+                    <Button
+                      size="small"
+                      type="primary"
+                      disabled={metrics.pending <= 0}
+                      loading={approvingAll}
+                      onClick={onApproveAllInCurrentTree}
+                    >
+                      全部通过
+                    </Button>
+                  </span>
+                </Tooltip>
+              </Space>
+            )}
           >
             {treeData.length ? (
               <Tree
@@ -474,6 +649,7 @@ export default function MappingReviewPage() {
                               materialVersionId
                             )}
                             disableStrikethrough
+                            plainText
                           />
                         </div>
                         {!!(row.images || []).length && (
@@ -511,6 +687,27 @@ export default function MappingReviewPage() {
                                     >
                                       {title}
                                     </Button>
+                                    {extractMermaid(String(img?.analysis || '')) && (
+                                      <Button
+                                        size="small"
+                                        style={{ marginLeft: 8 }}
+                                        onClick={() => {
+                                          setPreviewMermaid({
+                                            open: true,
+                                            code: extractMermaid(String(img?.analysis || '')),
+                                            title: `${title}（Mermaid 放大）`,
+                                            zoom: 140,
+                                          });
+                                        }}
+                                      >
+                                        放大Mermaid
+                                      </Button>
+                                    )}
+                                    <SliceImagePreview
+                                      tenantId={tenantId}
+                                      imagePath={p}
+                                      materialVersionId={row.material_version_id || materialVersionId}
+                                    />
                                     {(() => {
                                       const analysisText = String(img?.analysis || '（无图片解析）');
                                       const useMarkdownTable = Boolean(img?.contains_table) || hasMarkdownTable(analysisText);
@@ -562,6 +759,28 @@ export default function MappingReviewPage() {
           </Card>
         </Col>
       </Row>
+
+      <Modal
+        open={previewMermaid.open}
+        title={previewMermaid.title || 'Mermaid 预览'}
+        width={900}
+        onCancel={() => setPreviewMermaid({ open: false, code: '', title: '', zoom: 120 })}
+        footer={null}
+      >
+        <Space align="center" style={{ marginBottom: 12 }}>
+          <Typography.Text type="secondary">缩放</Typography.Text>
+          <Slider
+            value={previewMermaid.zoom}
+            min={60}
+            max={180}
+            style={{ width: 240 }}
+            onChange={(v) => setPreviewMermaid((s) => ({ ...s, zoom: v }))}
+          />
+        </Space>
+        <div style={{ transform: `scale(${previewMermaid.zoom / 100})`, transformOrigin: 'top left' }}>
+          <MarkdownWithMermaid text={`\n\`\`\`mermaid\n${previewMermaid.code}\n\`\`\`\n`} />
+        </div>
+      </Modal>
     </div>
   );
 }

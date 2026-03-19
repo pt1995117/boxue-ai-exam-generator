@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Button, Card, Input, message, Modal, Popconfirm, Select, Space, Table } from 'antd';
+import { Alert, Button, Card, Input, Tag, message, Modal, Popconfirm, Select, Space, Table } from 'antd';
 import { deleteBankQuestions, exportBankQuestions, listBankQuestions, listMaterials } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import QuestionDetailView from '../components/QuestionDetailView';
@@ -35,7 +35,6 @@ export default function QuestionBankPage() {
         pageSize: res.page_size || pageSize,
         total: res.total || 0,
       });
-      setSelectedRowKeys([]);
     } catch (e) {
       const apiMsg = e?.response?.data?.error?.message;
       const status = e?.response?.status;
@@ -52,6 +51,7 @@ export default function QuestionBankPage() {
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
 
   useEffect(() => {
+    setSelectedRowKeys([]);
     loadData(1, pagination.pageSize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, materialVersionId]);
@@ -101,10 +101,77 @@ export default function QuestionBankPage() {
     }
   };
 
+  const onSearch = () => {
+    setSelectedRowKeys([]);
+    loadData(1, pagination.pageSize);
+  };
+
+  const fmtScore = (raw) => {
+    if (raw === null || raw === undefined || raw === '') return '-';
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return String(raw);
+    const score = n > 10 ? n / 10 : n;
+    return score.toFixed(2);
+  };
+
   const columns = [
     { title: 'ID', dataIndex: 'question_id', width: 90 },
     { title: '题干', dataIndex: '题干', ellipsis: true },
     { title: '答案', dataIndex: '正确答案', width: 100 },
+    {
+      title: '出题任务',
+      dataIndex: 'source_task_name',
+      width: 220,
+      ellipsis: true,
+      render: (_, record) => record?.source_task_name || record?.出题任务名称 || record?.source_task_id || record?.出题任务ID || '-',
+    },
+    {
+      title: '最终分',
+      dataIndex: 'offline_judge_score',
+      width: 100,
+      render: (_, record) => fmtScore(record?.offline_judge_score ?? record?.离线Judge评分),
+    },
+    {
+      title: 'Judge结论',
+      dataIndex: 'offline_judge_decision',
+      width: 110,
+      render: (_, record) => {
+        const d = String(record?.offline_judge_decision || record?.离线Judge结论 || '').trim().toLowerCase();
+        if (!d) return '-';
+        const color = d === 'pass' ? 'green' : d === 'review' ? 'orange' : d === 'reject' ? 'red' : 'default';
+        return <Tag color={color}>{d}</Tag>;
+      },
+    },
+    {
+      title: '质量分',
+      dataIndex: 'offline_judge_quality_score',
+      width: 100,
+      render: (_, record) => fmtScore(record?.offline_judge_quality_score),
+    },
+    {
+      title: '基准分',
+      dataIndex: 'offline_judge_baseline_score',
+      width: 100,
+      render: (_, record) => fmtScore(record?.offline_judge_baseline_score),
+    },
+    {
+      title: '质量分结论',
+      dataIndex: 'offline_judge_quality_conclusion',
+      width: 260,
+      ellipsis: true,
+      render: (v) => (
+        <span title={String(v || '-')}>{String(v || '-')}</span>
+      ),
+    },
+    {
+      title: '基准分结论',
+      dataIndex: 'offline_judge_baseline_conclusion',
+      width: 260,
+      ellipsis: true,
+      render: (v) => (
+        <span title={String(v || '-')}>{String(v || '-')}</span>
+      ),
+    },
     { title: '教材版本', dataIndex: '教材版本ID', width: 170, render: (v) => v || 'legacy' },
     { title: '来源路径', dataIndex: '来源路径', ellipsis: true, width: 320 },
     {
@@ -146,7 +213,7 @@ export default function QuestionBankPage() {
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
         />
-        <Button type="primary" onClick={() => loadData(1, pagination.pageSize)}>查询</Button>
+        <Button type="primary" onClick={onSearch}>查询</Button>
       </Space>
 
       <Card style={{ marginBottom: 12 }}>
@@ -165,7 +232,7 @@ export default function QuestionBankPage() {
           loading={loading}
           columns={columns}
           dataSource={rows}
-          rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys }}
+          rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, preserveSelectedRowKeys: true }}
           pagination={{
             current: pagination.current,
             pageSize: pagination.pageSize,
@@ -184,6 +251,7 @@ export default function QuestionBankPage() {
         }}
         footer={null}
         width={900}
+        styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
       >
         <QuestionDetailView question={viewQuestionRecord || {}} />
       </Modal>

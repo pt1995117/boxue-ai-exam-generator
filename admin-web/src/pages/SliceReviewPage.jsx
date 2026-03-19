@@ -1217,6 +1217,7 @@ export default function SliceReviewPage() {
             {treeData.length ? (
               <Tree
                 checkable
+                checkStrictly
                 checkedKeys={checkedTreeKeys}
                 onCheck={onTreeCheck}
                 onSelect={(_, info) => {
@@ -1398,6 +1399,7 @@ export default function SliceReviewPage() {
                             <MarkdownWithMermaid
                               text={injectImageLinksToMarkdown(formatSliceContent(row.slice_content || row.preview), row)}
                               disableStrikethrough
+                              plainText
                             />
                           </div>
                         )}

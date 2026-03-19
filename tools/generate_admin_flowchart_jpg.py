@@ -251,7 +251,7 @@ def main() -> None:
 
     # 质量与运营
     qa_boxes = [
-        ((3150, 300, 3500, 570), "质量总览", "/qa/overview /qa/runs\n硬通过率/质量分/风险率"),
+        ((3150, 300, 3500, 570), "质量总览", "/qa/overview /qa/runs\n入库率/质量分/风险率"),
         ((3150, 610, 3500, 850), "调用与成本", "/qa/llm-calls /qa/pricing\ntokens/时延/成本"),
         ((3150, 890, 3500, 1140), "趋势与漂移", "/qa/trends /qa/drift\n跨run对比"),
         ((3150, 1180, 3500, 1460), "发布评估与告警", "/qa/release-report /qa/alerts\n阈值+SLA闭环"),

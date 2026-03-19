@@ -10,6 +10,9 @@ import AIGenerateTaskDetailPage from './pages/AIGenerateTaskDetailPage';
 import QuestionBankPage from './pages/QuestionBankPage';
 import CityAdminPage from './pages/CityAdminPage';
 import QualityEvaluationPage from './pages/QualityEvaluationPage';
+import VersionManagementPage from './pages/VersionManagementPage';
+import JudgeTaskPage from './pages/JudgeTaskPage';
+import JudgeTaskDetailPage from './pages/JudgeTaskDetailPage';
 
 export default function App() {
   return (
@@ -22,6 +25,9 @@ export default function App() {
         <Route path="ai-generate" element={<AIGeneratePage />} />
         <Route path="ai-generate/tasks/:taskId" element={<AIGenerateTaskDetailPage />} />
         <Route path="qa-evaluation" element={<QualityEvaluationPage />} />
+        <Route path="judge-tasks" element={<JudgeTaskPage />} />
+        <Route path="judge-tasks/:taskId" element={<JudgeTaskDetailPage />} />
+        <Route path="version-management" element={<VersionManagementPage />} />
         <Route path="question-bank" element={<QuestionBankPage />} />
         <Route path="city-admin" element={<CityAdminPage />} />
       </Route>

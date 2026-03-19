@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { Breadcrumb, Button, Input, Layout, Menu, Select, Space, Typography, message } from 'antd';
-import { FileSearchOutlined, LinkOutlined, DashboardOutlined, UploadOutlined, RobotOutlined, DatabaseOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined, BookOutlined, LineChartOutlined } from '@ant-design/icons';
+import { FileSearchOutlined, LinkOutlined, DashboardOutlined, UploadOutlined, RobotOutlined, DatabaseOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined, BookOutlined, LineChartOutlined, TagOutlined, OrderedListOutlined } from '@ant-design/icons';
 import { getAuthToken, getSystemUser, listTenants, setAuthToken, setSystemUser } from '../services/api';
 import { getGlobalTenantId, setGlobalTenantId } from '../services/tenantScope';
 
@@ -14,12 +14,18 @@ const items = [
   { key: '/mapping-review', icon: <LinkOutlined />, label: <Link to="/mapping-review">映射确认</Link> },
   { key: '/ai-generate', icon: <RobotOutlined />, label: <Link to="/ai-generate">AI出题</Link> },
   { key: '/qa-evaluation', icon: <LineChartOutlined />, label: <Link to="/qa-evaluation">质量评估</Link> },
+  { key: '/judge-tasks', icon: <OrderedListOutlined />, label: <Link to="/judge-tasks">Judge任务</Link> },
+  { key: '/version-management', icon: <TagOutlined />, label: <Link to="/version-management">版本管理</Link> },
   { key: '/question-bank', icon: <DatabaseOutlined />, label: <Link to="/question-bank">题库</Link> },
   { key: '/city-admin', icon: <TeamOutlined />, label: <Link to="/city-admin">城市管理</Link> },
 ];
 
 export default function AdminLayout() {
   const location = useLocation();
+  const pathname = location.pathname || '/';
+  const selectedMenuKey = pathname.startsWith('/ai-generate/tasks/')
+    ? '/ai-generate'
+    : (pathname.startsWith('/judge-tasks/') ? '/judge-tasks' : pathname);
   const [collapsed, setCollapsed] = useState(localStorage.getItem('layout_sider_collapsed') === '1');
   const [tenants, setTenants] = useState([]);
   const [globalTenantId, setGlobalTenantIdState] = useState(getGlobalTenantId());
@@ -32,6 +38,8 @@ export default function AdminLayout() {
     '/mapping-review': '映射确认',
     '/ai-generate': 'AI出题',
     '/qa-evaluation': '质量评估',
+    '/judge-tasks': 'Judge任务',
+    '/version-management': '版本管理',
     '/question-bank': '题库',
     '/city-admin': '城市管理',
   };
@@ -71,7 +79,7 @@ export default function AdminLayout() {
             )}
           </Space>
         </div>
-        <Menu mode="inline" selectedKeys={[location.pathname]} items={items} style={{ height: '100%' }} />
+        <Menu mode="inline" selectedKeys={[selectedMenuKey]} items={items} style={{ height: '100%' }} />
       </Sider>
       <Layout>
         <Header style={{ background: '#fff', borderBottom: '1px solid #f0f0f0', padding: '10px 20px', height: 'auto', lineHeight: 'normal' }}>

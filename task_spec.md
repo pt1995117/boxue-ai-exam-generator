@@ -87,8 +87,10 @@
 - 支持掌握程度约束（影响题目复杂度设计）
 - 严格遵循题型、模式、难度约束
 - 数据重构：禁止直接照搬原文案例中的具体数据
-- **题型格式规范**：判断/单选/多选结构一致，且括号使用中文括号“（ ）”、括号前后无空格、括号内有空格
+- **题型格式规范**：判断/单选/多选结构一致，且括号使用中文括号“（ ）”、括号前后无空格、括号内为全角空格
 - 命中 `term_locks` 的专有名词必须原词输出，禁止同义替换/缩写替换
+- **遣词造句与指代一致**：题干注意主谓搭配与指代一致，避免指代对象错误导致语义偏差
+- **判断题定义类例外**：行为/说法类判断题用【XX做法正确/错误】；定义类判断题（含属于/是指/定义/概念）可用其他表述，不强制该模板
 
 **验收标准 (DoD)**:
 1. ✅ Specialist节点能优先使用教材原题（builtin_examples）
@@ -97,8 +99,10 @@
 4. ✅ Specialist节点生成的初稿符合指定的出题筛选条件（基础概念/理解记忆、实战应用/推演、随机）
 5. ✅ Specialist节点生成的初稿符合指定的难度范围
 6. ✅ Specialist节点输出的draft字段是有效的JSON格式
-7. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内有空格
+7. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内为全角空格
 8. ✅ Specialist节点命中术语保持原词不改写
+9. ✅ Specialist节点提示词包含“遣词造句与指代一致”要求
+10. ✅ Specialist节点判断题规范包含“定义类判断题例外”说明
 
 **关键测试点**:
 - **测试点2.1**: 教材原题优先 → 应优先使用builtin_examples
@@ -136,6 +140,8 @@
 - 参数提取：必须提取具体数值，禁止描述性文字
 - **题型格式规范**：生成题目需符合指定题型结构，括号统一为中文括号“（ ）”
 - 命中 `term_locks` 的专有名词必须按原词出现在题干/选项/解析
+- **遣词造句与指代一致**：题干注意主谓搭配与指代一致，避免指代对象错误导致语义偏差
+- **判断题定义类例外**：行为/说法类判断题用【XX做法正确/错误】；定义类判断题（含属于/是指/定义/概念）可用其他表述，不强制该模板
 
 **验收标准 (DoD)**:
 1. ✅ Calculator节点检测GPT限流状态，限流等待>5秒时自动切换Deepseek
@@ -146,8 +152,10 @@
 6. ✅ Calculator节点生成的代码能正确提取具体数值参数
 7. ✅ Calculator节点执行代码时能捕获执行异常与导入错误
 8. ✅ Calculator节点输出的calculation_code、calculation_result字段有效
-9. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内有空格
+9. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内为全角空格
 10. ✅ Calculator节点命中术语保持原词不改写
+11. ✅ Calculator节点提示词包含“遣词造句与指代一致”要求
+12. ✅ Calculator节点判断题规范包含“定义类判断题例外”说明
 
 **关键测试点**:
 - **测试点3.1**: 代码生成 → 应生成有效的Python代码
@@ -203,6 +211,13 @@
   - 禁止使用“姓+女士/先生”“小+姓氏”等称谓
   - Writer 必须在润色后执行代码级检测并触发整体改写（显式提示人名违规；不得直接替换为“某某”）
   - 改写后进入 Critic
+- **硬规则独立校验器（Writer Validate）**：
+  - Writer Validate 调用独立硬规则校验器输出 `ValidationReport.issues`
+  - 校验范围：年份约束、表格/图片禁用、单引号禁用、兜底选项禁用、数值选项升序、题干/选项/解析长度阈值
+  - 表格/图片禁用需与离线 Judge `REQUIREMENTS.md 4.5` 对齐，且覆盖**题干/选项/解析**：
+    - 图片：`![...](...)`、`<img>`、`.png/.jpg/.jpeg/.gif`
+    - 表格：Markdown 表格行（`|` + `---` 行）与 `<table>`
+  - Writer 仅基于 issues 做最小修复，不改题意
 
 - **动态意图约束（仅特定题型触发）**：
   - 仅当题干被识别为 `ENUMERATION`（完整清单/资料包括）或 `EXCLUSION`（不需要/不包括）时，才触发强校验
@@ -219,6 +234,8 @@
 - 出题节点（Specialist/Calculator/General）需基于【当前切片 + 上一级切片全集 + 相似切片】做**题干一致性自检**，若不一致必须输出**问题清单**给 Writer
   - 问题清单需明确指出：冲突维度、冲突点、建议调整方向（改背景/改条件/改答案）
   - Writer 必须据此修订题干与解析，并保持与自检问题一一对应的修复结果
+- **遣词造句与指代一致**：润色时注意主谓搭配与指代一致，避免指代对象错误
+- **判断题定义类例外**：润色判断题时，定义类（含属于/是指/定义/概念）可不强制【XX做法正确/错误】模板；行为/说法类仍应使用该模板
 - 地理和时间约束检查
 - **题型格式规范**：输出题目结构符合题型；括号统一为中文括号“（ ）”
 
@@ -231,7 +248,7 @@
 6. ✅ Writer节点能将确定的题型保存到state['current_question_type']
 7. ✅ Writer节点输出的final_json能通过Pydantic验证
 8. ✅ Writer节点能检查并修正地理和时间逻辑问题
-9. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内有空格
+9. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内为全角空格
 10. ✅ Writer节点在润色后完成格式硬修复与校验（括号位置/句号位置/答案格式）
 11. ✅ 判断题题干以括号结尾，选择题题干以“（ ）。 ”结尾（无多余空格）
 12. ✅ Writer节点对选项数量做强制规范（判断=2，单选=4，多选≥4）
@@ -242,6 +259,10 @@
 17. ✅ 语义覆盖允许改写但专有名词必须原文一致（来源：`房地产行业专有名词新.xlsx`）
 15. ✅ Writer 使用“上一级切片全集 + 相似切片”作为自检上下文
 18. ✅ Writer 仅对 `term_locks` 命中术语执行“原词锁定”，未命中术语可按语义改写
+19. ✅ Writer Validate 通过独立硬规则校验器输出结构化问题码
+20. ✅ Writer 能对硬规则问题做最小修复（不改题意）
+21. ✅ Writer 节点提示词包含“遣词造句与指代一致”要求
+22. ✅ Writer 节点判断题规范包含“定义类判断题例外”说明
 
 **关键测试点**:
 - **测试点4.1**: 难度值验证和调整 → 不在范围内的难度值应调整到范围中点
@@ -274,6 +295,12 @@
 - **测试点4.8**: 指定题型强制修改 → 当题型为具体类型时，Writer强制修改为指定题型
   - 断言: 如果`config['question_type'] == "单选题"`且draft为多选题，则`current_question_type == "单选题"`
   - 测试数据: config题型为"单选题"，draft为多选题
+- **测试点4.9**: 硬规则校验 → Writer Validate 输出结构化问题码
+  - 断言: 年份/表格/图片/单引号/兜底选项/数值升序/字数阈值命中时，`ValidationReport.issues` 含对应 issue_code
+  - 测试数据: 构造含年份/表格/图片/单引号/兜底选项/乱序数值/超长文本的样例题
+- **测试点4.10**: 硬规则最小修复 → Writer 仅做最小修复
+  - 断言: 修复后仍保持原考点与题意，不引入新前提
+  - 测试数据: 含年份或兜底选项的样例题
 - **测试点4.9**: 括号规范 → 判断/选择题括号格式必须为 `（ ）`
   - 断言: 题干占位括号为 `（ ）`，括号前后无空格
   - 测试数据: 含答案占位括号的题干
@@ -457,6 +484,54 @@
 
 ---
 
+### Task 5d: 解析质量细粒度检查（对齐离线 Judge）
+
+**任务描述**: 在 Critic 节点内补充与离线 `explanation_quality_agent` 对齐的解析质量细粒度信号，包含多选题解析逐项覆盖率、解析首段三要素和解析重写充分性检测，并将这些结构化信号纳入 `explanation_valid` 与总体通过与否的裁决逻辑。
+
+**实现要求**:
+- 文件: `exam_graph.py` - `critic_node()` 相关逻辑。
+- 多选题解析逐项覆盖率：
+  - 仅当 `current_question_type == "多选题"` 时启用。
+  - 从解析文本中识别每个选项（含正确与错误）是否被**单独点名或可唯一映射**，统计：
+    - `multi_option_coverage_rate: float`（0.0–1.0，小数保留两位）= “已覆盖选项数 / 实际非空选项数”。
+    - `missing_options: list[str]`，为未被逐项解释的选项字母列表（按升序）。
+  - 覆盖率 < 1.0 时，必须向 `quality_issues` 追加固定格式中文提示：
+    - `"多选解析逐项覆盖率不足：X.xx"` 与（若有缺失）`"多选解析未覆盖选项：B,E"`。
+- 解析首段结构三要素：
+  - 对解析第一段做结构化解析，判断是否同时包含：
+    - 目标题内容（即路由前三个标题；解析中不要写「目标题：」字样）。
+    - 掌握程度分级（`了解/熟悉/掌握/应用`，优先对齐 `kb_chunk['掌握程度']`）。
+    - 一条贴近教材原文的引用句。
+  - 将结果写入：
+    - `first_part_missing_target_title: bool`
+    - `first_part_missing_level: bool`
+    - `first_part_missing_textbook_raw: bool`
+    - `first_part_structured_issues: list[str]`
+  - 若任一 missing 标志为 True，则必须在 `first_part_structured_issues` 与 `quality_issues` 中给出对应中文说明，且 `explanation_valid` 不得简单置为 True。
+- 解析重写充分性检测：
+  - 在掌握教材原文片段的前提下，对解析文本与原文做相似度+结构比较，输出：
+    - `analysis_rewrite_sufficient: bool`
+    - `analysis_rewrite_issues: list[str]`
+  - 允许保留政策名、条文名、专有名词等术语，禁止大段逐字复用原文句子。
+  - 当检测到“长句/大段基本照搬教材，只做轻微替换”“解析只机械罗列条文，没有解释为什么答案正确/错误”等情况时，需将 `analysis_rewrite_sufficient` 设为 False，并在 `analysis_rewrite_issues` 中写明原因。
+  - 当 `analysis_rewrite_sufficient == False` 时，该问题必须至少被归类为 **major**，并影响 `explanation_valid` 与总体 `passed` 决策。
+
+**验收标准 (DoD)**:
+1. ✅ 多选题样例中，仅对部分选项进行了逐项解释时，`multi_option_coverage_rate` 与 `missing_options` 数值正确，且 `quality_issues` 中包含固定格式的中文提示。
+2. ✅ 解析首段缺少“目标题内容（路由前三个标题）”“掌握程度分级”或“教材原文引用”任意一项时，对应的 `first_part_missing_*` 标志和 `first_part_structured_issues` 能准确反映问题。
+3. ✅ 对“明显抄教材”的解析样例，`analysis_rewrite_sufficient == False` 且 `analysis_rewrite_issues` 给出清晰原因，并被判为 major；对“充分重写”的解析样例不会被误判为抄袭。
+4. ✅ `explanation_valid` 与最终 `critic_result.passed` 在逻辑上依赖上述三个维度：多选逐项覆盖率、首段三要素完整性与解析重写充分性，不再只有一个笼统布尔值。
+
+**关键测试点**（对应 TDD: TP5.18, TP5.19, TP5.20）:
+- 验证多选题解析只逐项覆盖部分选项时：
+  - 断言: `multi_option_coverage_rate` 正确、`missing_options` 包含全部未覆盖选项字母，`quality_issues` 中含指定格式中文提示。
+- 验证首段分别缺失不同要素时：
+  - 断言: 各 `first_part_missing_*` 标志与 `first_part_structured_issues` 精确对应实际缺失项。
+- 验证“抄教材” vs “充分重写”两类解析样例：
+  - 断言: 前者 `analysis_rewrite_sufficient == False` 且被判 major，后者为 True 且不影响通过；同时 `explanation_valid` 与总体 `passed` 随之变化。
+
+---
+
 ### Task 6: Fixer节点实现
 
 **任务描述**: 实现Fixer节点，根据Critic反馈的问题选择修复策略，修复题目和/或解析。
@@ -478,7 +553,7 @@
 5. ✅ Fixer节点修复时严格遵循难度约束
 6. ✅ Fixer节点能自动调整难度值到指定范围
 7. ✅ Fixer节点输出的fixed_json能通过Pydantic验证
-8. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内有空格
+8. ✅ 判断/选择题括号格式为中文括号“（ ）”，括号前后无空格、括号内为全角空格
 9. ✅ Fixer 节点修复后 `term_locks` 命中术语保持原词一致
 
 **关键测试点**:
@@ -799,6 +874,37 @@
 1. ✅ 附录公式表不再挂在原切片路径下
 2. ✅ 公式能按等号左侧名词归属到合理切片（无匹配则保留在附录切片）
 3. ✅ 生成结果包含独立“附录 计算公式汇总表”切片
+
+### Task 8.9: 教材切片路由 5 级与 5 级下 embedding 切片及合并（TDD: TP-SLICE-6, TP-SLICE-7, TP-SLICE-8）
+
+**任务描述**: 在 `generate_knowledge_slices.py` 中实现（1）路由最多 5 级：路径只取 path_stack[1:6]，第 6 级标题视为 5 级目录下的内容；（2）5 级目录下的内容通过 BGE embedding 再切片；（3）内容不长且关联度高时合并为一个切片。
+
+**实现要求**:
+- 文件: `generate_knowledge_slices.py`
+- **路径 5 级上限**：构建「完整路径」时仅使用 `path_stack[1:6]`（即 level 1～5）；遇到 level 6 标题时不启新切片，其段落/表格归入当前切片（当前切片路径为前 5 级）。
+- **5 级下 embedding 再切片**：对同一 5 级路径下的正文/表格分块，调用 BGE（与 `map_knowledge_to_questions.py` 同模型）计算块向量；按相似度或块边界划分子切片，子切片路径均为该 5 级路径。
+- **短且高关联合并**：同一 5 级路径下，若子块总长度低于配置阈值且块间 BGE 相似度高于配置阈值，则合并为单一切片输出。
+
+**验收标准 (DoD)**:
+1. ✅ 任意切片「完整路径」最多 5 段；第 6 级标题内容归入当前 5 级切片（TP-SLICE-6）
+2. ✅ 5 级路径下存在按 BGE 划分子切片的逻辑（TP-SLICE-7）
+3. ✅ 短且高关联合并规则生效：满足条件时输出单一切片（TP-SLICE-8）
+
+### Task 8.10: 短切片回退上一级合并（单切片长度 ≥ 200 字）
+
+**任务描述**: 切片完成后若某切片内容小于 200 字，则找到该路径的上一级下全部切片作废，在上一级维度重新合并为单一切片，保证单切片长度超过 200 字；重新切片以「上一级路径」作为切片路径与内容归属。
+
+**实现要求**:
+- 文件: `generate_knowledge_slices.py`
+- **内容长度统计**：以 context_before、context_after、tables、examples、formulas 等字符数之和作为切片内容长度。
+- **短切片判定**：内容长度 < 设定阈值（默认 200，可配置 `MIN_SLICE_CONTENT_CHARS`）则触发回退。
+- **上一级合并**：取该切片路径的上一级（去掉最后一段）；将该上一级下所有切片（路径等于上级或以其为前缀）合并为一个大切片，完整路径为上一级路径，结构化内容为上述切片内容合并。
+- **循环直至稳定**：合并后若仍存在短切片则继续向上一级合并，直到无短切片或已到根路径。
+
+**验收标准 (DoD)**:
+1. ✅ 存在内容长度 < 200 的切片时，该路径上一级下切片被合并为单一切片，路径为上一级路径
+2. ✅ 合并后新切片带 `metadata.merged_from_short_slices` 与 `merged_count`
+3. ✅ 可通过配置 `MIN_SLICE_CONTENT_CHARS` 调整阈值；循环合并直至无短切片或无法再合并
 
 ### Task 9: 计算器函数实现
 
@@ -1637,21 +1743,37 @@
 
 ## 11.1 SDDP 增量任务清单（教材生效前置条件）
 
-- [ ] TASK-34 | 教材“生效”按钮前置条件实现：仅当存在至少一个“映射核对完成 + 切片核对完成”的知识切片时允许点击生效；否则置灰禁用 | 关联 TDD ID: TP24.4, TP24.5 | 验收点: [前端按钮状态与条件一致，存在双核对完成切片时可点击，不存在时不可点击]
-- [ ] TASK-35 | 教材生效后端同口径拦截实现：即使绕过前端直接调用生效接口，也必须校验双核对完成条件 | 关联 TDD ID: TP24.6 | 验收点: [条件不满足时后端拒绝生效并返回失败，满足时允许生效]
-- [ ] TASK-36 | 映射核对审核状态口径对齐说明：Admin-Web 采用 pending/approved，Streamlit 采用 auto_pending/confirmed/rejected/remapped；两端批量提交语义保持一致 | 关联 TDD ID: TP25.6, TP25.7 | 验收点: [双端状态机边界清晰，批量提交后状态展示与各端口径一致]
-- [ ] TASK-37 | 映射核对中切片呈现逻辑对齐切片核对：统一 Markdown+Mermaid+图片链接注入与图片解析展示规则，确保同一切片跨页面呈现一致 | 关联 TDD ID: TP25.8, TP25.9 | 验收点: [同一切片在映射核对页与切片核对页展示一致，代码块不被错误注入链接，图片与解析展示一致]
+- [x] TASK-34 | 教材“生效”按钮前置条件实现：仅当存在至少一个“映射核对完成 + 切片核对完成”的知识切片时允许点击生效；否则置灰禁用 | 关联 TDD ID: TP24.4, TP24.5 | 验收点: [前端按钮状态与条件一致，存在双核对完成切片时可点击，不存在时不可点击]
+- [x] TASK-35 | 教材生效后端同口径拦截实现：即使绕过前端直接调用生效接口，也必须校验双核对完成条件 | 关联 TDD ID: TP24.6 | 验收点: [条件不满足时后端拒绝生效并返回失败，满足时允许生效]
+- [x] TASK-36 | 映射核对审核通过逻辑与切片一致：统一 pending/approved，批量提交语义与切片核对对齐 | 关联 TDD ID: TP25.6, TP25.7 | 验收点: [映射审核状态机与切片审核一致，任何非 pending/approved 状态均归一为 pending，批量提交与前端展示一致]
+- [x] TASK-37 | 映射核对中切片呈现逻辑对齐切片核对：统一 Markdown+Mermaid+图片链接注入与图片解析展示规则，确保同一切片跨页面呈现一致 | 关联 TDD ID: TP25.8, TP25.9 | 验收点: [同一切片在映射核对页与切片核对页展示一致，代码块不被错误注入链接，图片预览与解析展示一致]
 - [ ] TASK-38 | 教材上传文本入口与版本管理能力文档对齐：覆盖文本直传、参考题上传映射、重切片、重映射、下线、删除（含强制删除） | 关联 TDD ID: TP24.7, TP24.8 | 验收点: [各接口能力、入参和状态变更在文档中与实际代码一致]
 - [ ] TASK-39 | 出题异步任务接口文档对齐：补齐任务创建、列表、详情、进度字段与状态流转说明 | 关联 TDD ID: TP24.9, TP24.10 | 验收点: [任务接口说明与当前实现返回字段一致，可直接用于前后端联调]
 - [ ] TASK-40 | 代码执行安全说明对齐：将“5秒超时中断”改为“5秒执行时间参数（未强制中断）”并标注优化计划 | 关联 TDD ID: TP3.3, TP10.2, TP16.2 | 验收点: [文档不再声称已实现强制超时，测试点与当前代码一致]
+ - [ ] TASK-54 | 新建出题任务页面结果区初始化：当用户在 admin-web 中点击“新建出题任务”时，必须清空上一次任务的结果展示，仅在当前新建任务有结果后再填充 | 关联 TDD ID: TP24.11 | 验收点: [连续多次点击“新建出题任务”进入创建页时，结果区域初始始终为空，不出现历史任务的题目列表、错误或过程日志，仅展示本次任务生成的内容]
 
 ## 11.2 SDDP 增量任务清单（生成+作家解耦）
 
-- [ ] TASK-41 | 生成节点输出契约收敛：Specialist/Calculator 仅输出 DraftV1（question/options/answer/explanation），不再承担格式硬修与题型重写 | 关联 TDD ID: TP4.11 | 验收点: [生成节点输出结构稳定，DraftV1 字段完整，Normalize 前不发生格式修补]
-- [ ] TASK-42 | Writer 节点分层改造：在 writer 内部实现 Normalize（代码）→ Validate（混合）→ Polish（LLM）固定流水线 | 关联 TDD ID: TP4.11, TP4.12, TP4.13 | 验收点: [Normalize 不调 LLM，Validate 产出 ValidationReport，Polish 按 issue 列表定向修复]
-- [ ] TASK-43 | 统一问题码协议实现：引入 Issue/ValidationReport 结构与 issue_code 编码表，Writer 输出可供 Critic/Fixer 复用 | 关联 TDD ID: TP4.12, TP4.15 | 验收点: [issues 含 issue_code/severity/field/message/fix_hint，跨节点无需二次映射]
-- [ ] TASK-44 | Writer 修复轮次与透传机制：Writer 内部最多修复 2 轮，超限后透传 ValidationReport 给后续节点 | 关联 TDD ID: TP4.14 | 验收点: [超限后停止内部重试并透传结构化问题，不出现无限循环]
-- [ ] TASK-45 | Writer Prompt 去全量规范化：Polish 提示词仅包含 issue_code 与 fix_hint，不再重复内嵌整套出题规范 | 关联 TDD ID: TP4.13 | 验收点: [Polish prompt 明显缩短，修复前后 issue 数量可观测且下降]
+- [x] TASK-41 | 生成节点输出契约收敛：Specialist/Calculator 仅输出 DraftV1（question/options/answer/explanation），不再承担格式硬修与题型重写 | 关联 TDD ID: TP4.11 | 验收点: [生成节点输出结构稳定，DraftV1 字段完整，Normalize 前不发生格式修补]
+- [x] TASK-42 | Writer 节点分层改造：在 writer 内部实现 Normalize（代码）→ Validate（混合）→ Polish（LLM）固定流水线 | 关联 TDD ID: TP4.11, TP4.12, TP4.13 | 验收点: [Normalize 不调 LLM，Validate 产出 ValidationReport，Polish 按 issue 列表定向修复]
+- [x] TASK-43 | 统一问题码协议实现：引入 Issue/ValidationReport 结构与 issue_code 编码表，Writer 输出可供 Critic/Fixer 复用 | 关联 TDD ID: TP4.12, TP4.15 | 验收点: [issues 含 issue_code/severity/field/message/fix_hint，跨节点无需二次映射]
+- [x] TASK-44 | Writer 修复轮次与透传机制：Writer 内部最多修复 2 轮，超限后透传 ValidationReport 给后续节点 | 关联 TDD ID: TP4.14 | 验收点: [超限后停止内部重试并透传结构化问题，不出现无限循环]
+- [x] TASK-45 | Writer Prompt 去全量规范化：Polish 提示词仅包含 issue_code 与 fix_hint，不再重复内嵌整套出题规范 | 关联 TDD ID: TP4.13 | 验收点: [Polish prompt 明显缩短，修复前后 issue 数量可观测且下降]
+- [ ] TASK-46 | Writer 硬规则独立校验器接入：年份/表格/图片/单引号/兜底选项/数值升序/字数阈值统一由 Writer Validate 输出结构化问题码 | 关联 TDD ID: TP4.9, TP4.10 | 验收点: [生成节点不做硬规则细节，Writer 输出 issue_code 且可最小修复]
+- [ ] TASK-47 | 题干与选项组合可读性自检与复核：Writer 必须在输出前完成“选项逐一代入题干”的可读性自检，Critic 必须基于 candidate_sentences 做二次复核并将该维度纳入质量裁决 | 关联 TDD ID: TP4.18, TP5.17 | 验收点: [对于使用括号占位结构的题目，如存在任意选项代入后读起来明显别扭的句子，Writer 不得直接放行，Critic 在 quality_issues 中必须给出具体可读性问题与严重程度，相关问题最终能通过 Fixer 或重路由得到修复]
+- [ ] TASK-48 | Critic 支持“选项父子类层级冲突（疑似多解）”结构化检测：对单选/多选题选项中的父类/子类或上下位组合给出风险提示 | 关联 TDD ID: TP5.18, TP5.19 | 验收点: [critic_feedback 中新增 option_hierarchy_conflict_flag/option_hierarchy_conflict_pairs/option_hierarchy_conflict_message 字段；正例命中时 flag 为 True 且 pairs/文案信息完整，反例与题干已消解的边界场景下 flag 为 False 或仅弱提示，不影响其他质量维度裁决]
+- [ ] TASK-49 | 第三层泄题判定规则实现（概念题/实战题统一） | 关联 TDD ID: TP5.21, TP5.22, TP5.23, TP5.24 | 验收点: [rigor.leakage_still_invalid 仅在“关键表述同义 + 几乎无需理解即可唯一锁定”双条件满足时为 true，且必须输出题干片段与正确项片段两段证据；高重合但仍需理解/推理的题目不误判泄题，证据不全时自动改判为 false]
+- [ ] TASK-50 | Phase1 泄题弱信号过滤与告警（DeterministicFilter._check_leakage） | 关联 TDD ID: Task 14 & TP5.21–TP5.24 | 验收点: [仅在题干直接出现正确选项的高区分度关键词时输出“题干疑似泄题：出现与正确选项高度重合关键词”等 warning，不改变通过/不通过结论，不触发 reject；L3 rigor 模块在有 warning 但不满足双条件/双证据时仍输出 leakage_still_invalid == false]
+- [ ] TASK-51 | Critic 零缺陷通过规则落地：统一以问题清单是否为空作为 `critic_result.passed` 判定依据 | 关联 TDD ID: TP5.1–TP5.7, TP5.18–TP5.20 | 验收点: [任意存在 error / warning / issue（含 Writer / Critic / 代码级校验输出）时，Critic 一律返回 `passed = False`，只有当相关问题列表全部为空时才允许 `passed = True`，critical_decision 中 `"pass"` 分支仅在零缺陷情况下触发]
+- [ ] TASK-52 | 泄题命中强制重路由：在线链路中将 `leakage_still_invalid == true` 视为致命错误，直接走 Router 重新出题 | 关联 TDD ID: TP5.21–TP5.24 | 验收点: [当 Critic 输出 `leakage_still_invalid = true` 且证据字段 `stem_snippet`/`option_snippet` 均非空时，`critic_result.passed` 必为 False，`issue_type` 至少为 major，`critical_decision` 必然返回 `"reroute"` 而非 `"fix"`，该题不会进入题库或被 Fixer 在原题上修修补补]
+- [ ] TASK-53 | Critic 全失败分支统一递增 retry_count：确保包括题型不一致/模式不符/括号硬错误/材料缺失/可读性失败/重复题等所有提前返回分支也会更新 `retry_count`，严格触发 `retry_count >= 3` 时的 self_heal 机制 | 关联 TDD ID: TP7.2, TP7.5, TP9.1 | 验收点: [任意导致当前题目失败的 critic_node 分支都会在返回 payload 中写入 `retry_count = state['retry_count'] + 1`，集成测试中同一题在连续 3 次审核失败后必然进入 `self_heal` 分支，不再出现无限 Critic→Fixer/Router 循环]
+
+## 11.3 SDDP 增量任务清单（CPVQ 与单位经济）
+
+- [ ] TASK-55 | CPVQ 计算与落库：在 _build_qa_run_payload 的 batch_metrics 中新增 cpvq，saved_count>0 时为 total_cost/saved_count，否则为 null | 关联 TDD ID: TP31.1 | 验收点: [单次 QA Run 落盘后 batch_metrics 含 cpvq；saved_count>0 时 cpvq 为数值且等于 total_cost/saved_count，saved_count=0 时为 null]
+- [ ] TASK-56 | CPVQ 告警与阈值：QA 阈值支持 cpvq_max，_build_alerts_for_run 在 cpvq 超标时生成 batch_metric 告警并写入 qa_alerts | 关联 TDD ID: TP31.2 | 验收点: [thresholds 可配置 cpvq_max；saved_count>0 且 cpvq>cpvq_max 时产生告警且告警写入 qa_alerts.jsonl]
+- [ ] TASK-57 | 管理端展示 CPVQ：在任务详情或 QA Run 详情页与 avg_cost_per_question、saved_count、hard_pass_rate 并列展示 CPVQ | 关联 TDD ID: TP31.3, NFR6.4 | 验收点: [管理端至少一处展示 cpvq，与 batch_metrics 中 cpvq 一致；Run 详情接口返回含 cost_summary 与 batch_metrics.cpvq]
+- [ ] TASK-58 | 离线 Judge 题级 trace 落盘：每次调用 /qa/runs/<run_id>/run-judge 时，将每道题的 QuestionInput、solver_validation、calc_context 及关键决策字段按 JSONL 形式写入 data/<tenant>/audit/qa_traces.jsonl（含 run_id/question_id/index 字段） | 关联 TDD ID: TP25.3, TP31.3 | 验收点: [qa_traces.jsonl 每行包含 run_id、question_id、index、judge_input、solver_validation、decision、overall_score 等字段；同一 run 再次执行 Judge 时可通过 run_id+question_id 精确 grep 出该题最近一次 Judge 报告，用于问题定位与单位经济分析]
 
 ---
 

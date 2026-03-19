@@ -33,8 +33,8 @@ OUTPUT_PATH = "knowledge_question_mapping.json"
 
 # BGE semantic matching thresholds (per PRD FR2.1.1)
 TOP_K_RETRIEVAL = 20  # Number of candidates for BGE fallback retrieval
-BGE_AUTO_PASS_THRESHOLD = 0.75  # Score > 0.75: auto pass
-BGE_LLM_REVIEW_THRESHOLD = 0.5  # 0.5 < Score <= 0.75: LLM review
+BGE_AUTO_PASS_THRESHOLD = 0.8  # Score > 0.8: auto pass
+BGE_LLM_REVIEW_THRESHOLD = 0.5  # 0.5 < Score <= 0.8: LLM review
 BGE_MODEL_NAME = "BAAI/bge-small-zh-v1.5"  # BGE model name
 
 # LLM Rerank debug output (PRD FR2.1.1, TP12.13: fail loud, expose raw)
@@ -296,17 +296,33 @@ def get_question_content_for_embedding(row):
 _bge_model = None
 
 def get_bge_model():
-    """Get or initialize BGE model. Raises error if not available."""
+    """Get or initialize BGE model from a fixed local cache directory.
+
+    This version avoids any online download at runtime by always pointing
+    SentenceTransformer to ./models/bge-small-zh-v1.5 under the project root.
+    """
     global _bge_model
     if _bge_model is None:
         if not BGE_AVAILABLE:
-            raise RuntimeError("BGE embedding model is required but sentence-transformers is not installed!")
+            raise RuntimeError(
+                "BGE embedding model is required but sentence-transformers is not installed!"
+            )
         try:
-            print("Loading BGE model...")
-            _bge_model = SentenceTransformer(BGE_MODEL_NAME)
+            base_dir = os.path.dirname(os.path.abspath(__file__)) or "."
+            local_cache = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
+            print(f"Loading BGE model from local cache: {local_cache} ...")
+            _bge_model = SentenceTransformer(
+                BGE_MODEL_NAME,
+                cache_folder=local_cache,
+            )
             print("BGE model loaded successfully")
         except Exception as e:
-            raise RuntimeError(f"Failed to load BGE model: {e}. Please check your installation.")
+            raise RuntimeError(
+                "Failed to load BGE model from local cache. "
+                "Please ensure you have pre-downloaded 'BAAI/bge-small-zh-v1.5' "
+                "into ./models/bge-small-zh-v1.5. "
+                f"Original error: {e}"
+            )
     return _bge_model
 
 def compute_bge_similarity(text1, text2):
@@ -1124,7 +1140,7 @@ def find_matching_questions(kb_entry, kb_idx, questions_df,
             q_idx = candidate['question_index']
             bge_score = candidate['bge_score']
             
-            if bge_score > BGE_AUTO_PASS_THRESHOLD:  # Score > 0.75: auto pass
+            if bge_score > BGE_AUTO_PASS_THRESHOLD:  # Score > 0.8: auto pass
                 strategy4_matches.append({
                     'question_index': q_idx,
                     'confidence': round(bge_score, 3),
@@ -1135,7 +1151,7 @@ def find_matching_questions(kb_entry, kb_idx, questions_df,
                     },
                     'bge_score': bge_score
                 })
-            elif BGE_LLM_REVIEW_THRESHOLD < bge_score <= BGE_AUTO_PASS_THRESHOLD:  # 0.5 < Score <= 0.75: LLM review
+            elif BGE_LLM_REVIEW_THRESHOLD < bge_score <= BGE_AUTO_PASS_THRESHOLD:  # 0.5 < Score <= 0.8: LLM review
                 llm_candidates.append(candidate)
         
         # Only keep the highest score matches (N≤3, if multiple same score, keep all)
@@ -1485,6 +1501,8 @@ def find_matching_slices_for_question(
     candidates.sort(key=lambda x: x["bge_score"], reverse=True)
 
     auto = [c for c in candidates if c["bge_score"] > BGE_AUTO_PASS_THRESHOLD]
+
+    # High-score short-circuit: skip LLM when BGE is confidently high.
     if auto and not is_meta_conflict:
         best = auto[0]["bge_score"]
         keep = [c for c in auto if abs(c["bge_score"] - best) < 0.05][:3]
@@ -1493,16 +1511,12 @@ def find_matching_slices_for_question(
                 "reason": f"BGE语义向量检索自动通过（Score={round(c['bge_score'], 3)}）",
                 "bge_score": round(c["bge_score"], 3),
                 "meta_conflict": False,
+                "llm_skipped_by_high_score": True,
             })
             for c in keep
         ]
 
-    if is_meta_conflict:
-        # Hard gate: meta conflict questions cannot auto-pass by BGE.
-        # Force LLM review over top candidates.
-        llm_cands = candidates[:5]
-    else:
-        llm_cands = [c for c in candidates if BGE_LLM_REVIEW_THRESHOLD < c["bge_score"] <= BGE_AUTO_PASS_THRESHOLD][:5]
+    llm_cands = candidates[:5]
     if llm_cands and api_key:
         related_kb, _ = llm_rerank_slices_for_question(q_row, llm_cands, api_key, base_url, model_name)
         out = []
@@ -1522,27 +1536,6 @@ def find_matching_slices_for_question(
             }))
         if out:
             return out
-
-    # LLM fallback: no matches from strategies 1-4 and no standard LLM candidates
-    if api_key and candidates and not is_meta_conflict:
-        fallback = candidates[:5]
-        related_kb, _ = llm_rerank_slices_for_question(q_row, fallback, api_key, base_url, model_name)
-        out = []
-        for kb_idx in related_kb:
-            c = next((x for x in fallback if x["kb_idx"] == kb_idx), None)
-            if not c:
-                continue
-            bge = c["bge_score"]
-            conf = 0.80 + 0.10 * (bge - 0.5)
-            conf = min(0.90, max(0.0, conf))
-            out.append((kb_idx, round(conf, 3), "LLM_Logic", {
-                "reason": "LLM专家逻辑重排序",
-                "bge_score": round(bge, 3),
-                "bge_refined": True,
-                "llm_fallback": True,
-                "meta_conflict": False,
-            }))
-        return out
 
     # Meta-conflict fallback: keep one low-confidence candidate for manual review queue.
     if is_meta_conflict and candidates:

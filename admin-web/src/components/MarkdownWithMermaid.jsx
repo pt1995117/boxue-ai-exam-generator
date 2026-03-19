@@ -274,107 +274,191 @@ const shouldRenderMermaid = (code) => {
   return MERMAID_DIAGRAM_PREFIXES.some((prefix) => lower.startsWith(prefix));
 };
 
+const splitByHtmlTable = (text) => {
+  const raw = String(text || '');
+  const regex = /<table[\s\S]*?<\/table>/gi;
+  const parts = [];
+  let last = 0;
+  let match = null;
+  while ((match = regex.exec(raw)) !== null) {
+    if (match.index > last) {
+      parts.push({ type: 'md', content: raw.slice(last, match.index) });
+    }
+    parts.push({ type: 'html', content: match[0] });
+    last = match.index + match[0].length;
+  }
+  if (last < raw.length) {
+    parts.push({ type: 'md', content: raw.slice(last) });
+  }
+  return parts.filter((p) => String(p.content || '').trim());
+};
+
+const applyTableStyles = (html) => {
+  const applyInlineStyle = (source, tag, style) => {
+    const re = new RegExp(`<${tag}([^>]*)>`, 'gi');
+    return source.replace(re, (m, attrs) => {
+      const hasStyle = /style\s*=\s*["']([^"']*)["']/i.test(attrs);
+      if (hasStyle) {
+        return m.replace(/style\s*=\s*["']([^"']*)["']/i, (_sm, s) => `style="${s}; ${style}"`);
+      }
+      return `<${tag}${attrs} style="${style}">`;
+    });
+  };
+  let next = String(html || '');
+  next = applyInlineStyle(next, 'table', 'border-collapse:collapse;width:100%;min-width:560px;font-size:14px;');
+  next = applyInlineStyle(next, 'th', 'border:1px solid #d9d9d9;padding:8px 10px;background:#fafafa;font-weight:600;text-align:left;vertical-align:top;white-space:pre-wrap;');
+  next = applyInlineStyle(next, 'td', 'border:1px solid #e5e5e5;padding:8px 10px;text-align:left;vertical-align:top;white-space:pre-wrap;word-break:break-word;');
+  return next;
+};
+
+/**
+ * When true: do not parse Markdown (so ** and ### stay as literal text), but still
+ * render HTML <table> blocks as real tables. Use for slice content preview.
+ */
 export default function MarkdownWithMermaid({
   text,
   enableMermaid = true,
   disableStrikethrough = false,
+  plainText = false,
 }) {
   const content = String(text || '');
   if (!content) return <span>（空）</span>;
-  if (enableMermaid) ensureMermaid();
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        code({ inline, className, children, ...props }) {
-          const lang = String(className || '').replace('language-', '');
-          const rawCode = String(children || '').trim();
-          if (!inline && lang === 'mermaid') {
-            if (enableMermaid && shouldRenderMermaid(rawCode)) {
-              return <MermaidBlock code={rawCode} />;
-            }
+  const parts = splitByHtmlTable(content);
+  if (plainText) {
+    return (
+      <>
+        {parts.map((part, idx) => {
+          if (part.type === 'html') {
             return (
-              <pre className={className} {...props} style={{ overflowX: 'auto' }}>
-                <code>{children}</code>
-              </pre>
-            );
-          }
-          if (inline) {
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
+              <div
+                key={`html-${idx}`}
+                style={{ overflowX: 'auto' }}
+                dangerouslySetInnerHTML={{ __html: applyTableStyles(part.content) }}
+              />
             );
           }
           return (
-            <pre className={className} {...props} style={{ overflowX: 'auto' }}>
-              <code>{children}</code>
-            </pre>
-          );
-        },
-        table({ children }) {
-          return (
-            <div style={{ overflowX: 'auto' }}>
-              <table
-                style={{
-                  borderCollapse: 'collapse',
-                  width: '100%',
-                  minWidth: 560,
-                  fontSize: 14,
-                }}
-              >
-                {children}
-              </table>
+            <div
+              key={`txt-${idx}`}
+              style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+            >
+              {part.content}
             </div>
           );
-        },
-        th({ children }) {
+        })}
+      </>
+    );
+  }
+  if (enableMermaid) ensureMermaid();
+  return (
+    <>
+      {parts.map((part, idx) => {
+        if (part.type === 'html') {
           return (
-            <th
-              style={{
-                border: '1px solid #d9d9d9',
-                padding: '8px 10px',
-                background: '#fafafa',
-                fontWeight: 600,
-                textAlign: 'left',
-                verticalAlign: 'top',
-                whiteSpace: 'pre-wrap',
-              }}
-            >
-              {children}
-            </th>
+            <div
+              key={`html-${idx}`}
+              style={{ overflowX: 'auto' }}
+              dangerouslySetInnerHTML={{ __html: applyTableStyles(part.content) }}
+            />
           );
-        },
-        td({ children }) {
-          return (
-            <td
-              style={{
-                border: '1px solid #e5e5e5',
-                padding: '8px 10px',
-                textAlign: 'left',
-                verticalAlign: 'top',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-              }}
-            >
-              {children}
-            </td>
-          );
-        },
-        del({ children }) {
-          if (disableStrikethrough) return <span>{children}</span>;
-          return <del>{children}</del>;
-        },
-        a({ href, children }) {
-          return (
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          );
-        },
-      }}
-    >
-      {content}
-    </ReactMarkdown>
+        }
+        return (
+          <ReactMarkdown
+            key={`md-${idx}`}
+            remarkPlugins={[remarkGfm]}
+            components={{
+              code({ inline, className, children, ...props }) {
+                const lang = String(className || '').replace('language-', '');
+                const rawCode = String(children || '').trim();
+                if (!inline && lang === 'mermaid') {
+                  if (enableMermaid && shouldRenderMermaid(rawCode)) {
+                    return <MermaidBlock code={rawCode} />;
+                  }
+                  return (
+                    <pre className={className} {...props} style={{ overflowX: 'auto' }}>
+                      <code>{children}</code>
+                    </pre>
+                  );
+                }
+                if (inline) {
+                  return (
+                    <code className={className} {...props}>
+                      {children}
+                    </code>
+                  );
+                }
+                return (
+                  <pre className={className} {...props} style={{ overflowX: 'auto' }}>
+                    <code>{children}</code>
+                  </pre>
+                );
+              },
+              table({ children }) {
+                return (
+                  <div style={{ overflowX: 'auto' }}>
+                    <table
+                      style={{
+                        borderCollapse: 'collapse',
+                        width: '100%',
+                        minWidth: 560,
+                        fontSize: 14,
+                      }}
+                    >
+                      {children}
+                    </table>
+                  </div>
+                );
+              },
+              th({ children }) {
+                return (
+                  <th
+                    style={{
+                      border: '1px solid #d9d9d9',
+                      padding: '8px 10px',
+                      background: '#fafafa',
+                      fontWeight: 600,
+                      textAlign: 'left',
+                      verticalAlign: 'top',
+                      whiteSpace: 'pre-wrap',
+                    }}
+                  >
+                    {children}
+                  </th>
+                );
+              },
+              td({ children }) {
+                return (
+                  <td
+                    style={{
+                      border: '1px solid #e5e5e5',
+                      padding: '8px 10px',
+                      textAlign: 'left',
+                      verticalAlign: 'top',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {children}
+                  </td>
+                );
+              },
+              del({ children }) {
+                if (disableStrikethrough) return <span>{children}</span>;
+                return <del>{children}</del>;
+              },
+              a({ href, children }) {
+                return (
+                  <a href={href} target="_blank" rel="noopener noreferrer">
+                    {children}
+                  </a>
+                );
+              },
+            }}
+          >
+            {part.content}
+          </ReactMarkdown>
+        );
+      })}
+    </>
   );
 }
