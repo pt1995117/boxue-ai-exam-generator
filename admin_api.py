@@ -1284,6 +1284,273 @@ def _save_qa_thresholds(tenant_id: str, payload: dict[str, Any]) -> dict[str, An
     return merged
 
 
+def _default_qa_config() -> dict[str, Any]:
+    return {"baseline_run_id": "", "baseline_run_ids": []}
+
+
+def _load_qa_config(tenant_id: str) -> dict[str, Any]:
+    path = _qa_config_path(tenant_id)
+    defaults = _default_qa_config()
+    if not path.exists():
+        return defaults
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return defaults
+    if not isinstance(payload, dict):
+        return defaults
+    out = dict(defaults)
+    out.update(payload)
+    return out
+
+
+def _save_qa_config(tenant_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    merged = _load_qa_config(tenant_id)
+    if isinstance(payload, dict) and "baseline_run_id" in payload:
+        merged["baseline_run_id"] = str(payload.get("baseline_run_id", "")).strip()
+    if isinstance(payload, dict) and "baseline_run_ids" in payload:
+        raw_ids = payload.get("baseline_run_ids")
+        if isinstance(raw_ids, list):
+            merged["baseline_run_ids"] = [str(x).strip() for x in raw_ids if str(x).strip()]
+        elif raw_ids is None:
+            merged["baseline_run_ids"] = []
+        else:
+            txt = str(raw_ids).strip()
+            merged["baseline_run_ids"] = [x.strip() for x in txt.split(",") if x.strip()]
+    _qa_config_path(tenant_id).write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return merged
+
+
+def _load_qa_releases(tenant_id: str) -> list[dict[str, Any]]:
+    """Return releases newest first."""
+    path = _qa_releases_path(tenant_id)
+    if not path.exists():
+        return []
+    rows = _read_jsonl(path)
+    out = [r for r in rows if isinstance(r, dict)]
+    out.sort(key=lambda x: str(x.get("published_at", "")), reverse=True)
+    return out
+
+
+def _append_qa_release(tenant_id: str, release: dict[str, Any]) -> None:
+    _append_jsonl(_qa_releases_path(tenant_id), release)
+
+
+_GIT_CODE_EXTS = {
+    ".py", ".js", ".jsx", ".ts", ".tsx",
+    ".css", ".scss", ".less", ".html",
+    ".json", ".yml", ".yaml", ".toml", ".ini", ".cfg",
+    ".sql", ".sh", ".bash", ".zsh", ".command",
+    ".txt",
+}
+_GIT_CODE_FILENAMES = {"Dockerfile", "Makefile", "docker-compose.yml", "docker-compose.yaml"}
+_GIT_EXCLUDED_PREFIXES = (
+    "data/",
+    "admin-web/node_modules/",
+    "admin-web/dist/",
+    ".venv/",
+    "__pycache__/",
+    "tmp/",
+)
+_DEFAULT_RELEASE_GIT_REMOTE_URL = "https://git.lianjia.com/confucius/huaqiao_vibe/boxue-ai-exam-generator.git"
+_DEFAULT_RELEASE_GIT_USER_EMAIL = "panting047@ke.com"
+_DEFAULT_RELEASE_GIT_COMMIT_MESSAGE = "[紧急]fix"
+_DEFAULT_RELEASE_GIT_BRANCH = "main"
+_RELEASE_REMOTE_NAME = "release_sync_remote"
+
+
+def _is_code_path_for_release_commit(rel_path: str) -> bool:
+    p = str(rel_path or "").strip().replace("\\", "/")
+    if not p:
+        return False
+    if p.startswith("./"):
+        p = p[2:]
+    for prefix in _GIT_EXCLUDED_PREFIXES:
+        if p.startswith(prefix):
+            return False
+    name = Path(p).name
+    if name in _GIT_CODE_FILENAMES:
+        return True
+    return Path(p).suffix.lower() in _GIT_CODE_EXTS
+
+
+def _collect_changed_paths(repo_root: Path) -> list[str]:
+    tracked = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACMRTD", "HEAD"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    if tracked.returncode != 0:
+        raise RuntimeError((tracked.stderr or tracked.stdout or "git diff failed").strip())
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=8,
+    )
+    if untracked.returncode != 0:
+        raise RuntimeError((untracked.stderr or untracked.stdout or "git ls-files failed").strip())
+    out: set[str] = set()
+    for line in (tracked.stdout or "").splitlines():
+        p = line.strip()
+        if p:
+            out.add(p)
+    for line in (untracked.stdout or "").splitlines():
+        p = line.strip()
+        if p:
+            out.add(p)
+    return sorted(out)
+
+
+def _run_git_commit_for_release(
+    tenant_id: str,
+    version: str,
+    release_notes: str,
+    git_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Optionally commit code-only changes (exclude runtime data). Returns {ok, message, error}."""
+    try:
+        opts = git_options if isinstance(git_options, dict) else {}
+        remote_url = str(opts.get("remote_url", _DEFAULT_RELEASE_GIT_REMOTE_URL) or "").strip()
+        push_branch = str(opts.get("push_branch", _DEFAULT_RELEASE_GIT_BRANCH) or "main").strip() or "main"
+        commit_message = str(opts.get("commit_message", "") or "").strip()
+        user_email = str(opts.get("user_email", _DEFAULT_RELEASE_GIT_USER_EMAIL) or "").strip()
+        user_name = str(opts.get("user_name", "") or "").strip()
+        service_root = Path(__file__).resolve().parent
+        repo_probe = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=service_root,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        if repo_probe.returncode != 0:
+            return {
+                "ok": False,
+                "message": "not a git repo",
+                "error": (repo_probe.stderr or repo_probe.stdout or "").strip() or "git rev-parse failed",
+            }
+        repo_root_txt = str(repo_probe.stdout or "").strip()
+        if not repo_root_txt:
+            return {"ok": False, "message": "not a git repo", "error": "empty repo root"}
+        repo_root = Path(repo_root_txt)
+        if not (repo_root / ".git").exists():
+            return {"ok": False, "message": "not a git repo", "error": f"no .git under {repo_root}"}
+
+        changed_paths = _collect_changed_paths(repo_root)
+        code_paths = [p for p in changed_paths if _is_code_path_for_release_commit(p)]
+        if not code_paths:
+            return {
+                "ok": True,
+                "message": "no code changes to commit",
+                "checked_changed_files": len(changed_paths),
+                "remote_url": remote_url,
+                "push_branch": push_branch,
+            }
+
+        msg = commit_message or (f"Release {version}: {release_notes[:200]}" + ("..." if len(release_notes) > 200 else ""))
+        commit_env = os.environ.copy()
+        if user_email:
+            commit_env["GIT_AUTHOR_EMAIL"] = user_email
+            commit_env["GIT_COMMITTER_EMAIL"] = user_email
+        if user_name:
+            commit_env["GIT_AUTHOR_NAME"] = user_name
+            commit_env["GIT_COMMITTER_NAME"] = user_name
+        for i in range(0, len(code_paths), 200):
+            chunk = code_paths[i:i + 200]
+            r1 = subprocess.run(
+                ["git", "add", "-A", "--", *chunk],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if r1.returncode != 0:
+                return {"ok": False, "message": "git add failed", "error": (r1.stderr or r1.stdout or "").strip()}
+        r2 = subprocess.run(
+            ["git", "commit", "-m", msg, "--", *code_paths],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=commit_env,
+        )
+        if r2.returncode != 0:
+            if "nothing to commit" in (r2.stderr or r2.stdout or "").lower():
+                return {"ok": True, "message": "no changes to commit (already committed)"}
+            return {"ok": False, "message": "git commit failed", "error": (r2.stderr or r2.stdout or "").strip()}
+        push_result: dict[str, Any] = {"ok": True, "message": "skip push"}
+        if remote_url:
+            list_remote = subprocess.run(
+                ["git", "remote"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if list_remote.returncode != 0:
+                return {"ok": False, "message": "git remote list failed", "error": (list_remote.stderr or list_remote.stdout or "").strip()}
+            remotes = {x.strip() for x in (list_remote.stdout or "").splitlines() if x.strip()}
+            if _RELEASE_REMOTE_NAME in remotes:
+                set_url = subprocess.run(
+                    ["git", "remote", "set-url", _RELEASE_REMOTE_NAME, remote_url],
+                    cwd=repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if set_url.returncode != 0:
+                    return {"ok": False, "message": "git remote set-url failed", "error": (set_url.stderr or set_url.stdout or "").strip()}
+            else:
+                add_remote = subprocess.run(
+                    ["git", "remote", "add", _RELEASE_REMOTE_NAME, remote_url],
+                    cwd=repo_root,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if add_remote.returncode != 0:
+                    return {"ok": False, "message": "git remote add failed", "error": (add_remote.stderr or add_remote.stdout or "").strip()}
+            push_cmd = ["git", "push", _RELEASE_REMOTE_NAME, f"HEAD:{push_branch}"]
+            r3 = subprocess.run(
+                push_cmd,
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if r3.returncode != 0:
+                return {
+                    "ok": False,
+                    "message": "git push failed",
+                    "error": (r3.stderr or r3.stdout or "").strip(),
+                    "commit_message": msg,
+                    "remote_url": remote_url,
+                    "push_branch": push_branch,
+                }
+            push_result = {"ok": True, "message": "pushed", "remote_url": remote_url, "push_branch": push_branch}
+        return {
+            "ok": True,
+            "message": "committed_and_pushed" if push_result.get("ok") else "committed",
+            "commit_message": msg,
+            "committed_code_files": len(code_paths),
+            "checked_changed_files": len(changed_paths),
+            "remote_url": remote_url,
+            "push_branch": push_branch,
+            "push": push_result,
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": "timeout", "error": "git command timeout"}
+    except Exception as e:
+        return {"ok": False, "message": str(type(e).__name__), "error": str(e)}
+
+
 def _load_qa_pricing(tenant_id: str) -> dict[str, Any]:
     path = _qa_pricing_path(tenant_id)
     defaults = _default_qa_pricing(tenant_id)
@@ -5328,6 +5595,139 @@ def api_qa_thresholds_put(tenant_id: str):
     if not isinstance(body, dict):
         return _error("BAD_REQUEST", "请求体必须是 JSON 对象", 400)
     return _json_response(_save_qa_thresholds(tenant_id, body))
+
+
+@app.get('/api/<tenant_id>/qa/config')
+def api_qa_config_get(tenant_id: str):
+    """Return QA config (e.g. baseline_run_id for release comparison)."""
+    try:
+        _check_tenant_permission(tenant_id, "gen.read")
+    except PermissionError as e:
+        return _error(str(e), "无权限访问 QA 配置", 403)
+    return _json_response(_load_qa_config(tenant_id))
+
+
+@app.put('/api/<tenant_id>/qa/config')
+def api_qa_config_put(tenant_id: str):
+    """Update QA config (e.g. set baseline_run_id)."""
+    try:
+        _check_tenant_permission(tenant_id, "gen.create")
+    except PermissionError as e:
+        return _error(str(e), "无权限更新 QA 配置", 403)
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return _error("BAD_REQUEST", "请求体必须是 JSON 对象", 400)
+    return _json_response(_save_qa_config(tenant_id, body))
+
+
+@app.get('/api/<tenant_id>/qa/releases')
+def api_qa_releases_get(tenant_id: str):
+    """List manual releases (newest first). Used as baseline for quality comparison."""
+    try:
+        _check_tenant_permission(tenant_id, "gen.read")
+    except PermissionError as e:
+        return _error(str(e), "无权限访问发布记录", 403)
+    items = _load_qa_releases(tenant_id)
+    return _json_response({"items": items})
+
+
+@app.post('/api/<tenant_id>/qa/releases')
+def api_qa_releases_post(tenant_id: str):
+    """Publish a version: version number, release notes, run_ids (or run_id). Optional git commit trigger."""
+    try:
+        _check_tenant_permission(tenant_id, "gen.create")
+    except PermissionError as e:
+        return _error(str(e), "无权限发布版本", 403)
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return _error("BAD_REQUEST", "请求体必须是 JSON 对象", 400)
+    version = str(body.get("version", "")).strip()
+    release_notes = str(body.get("release_notes", "")).strip()
+    raw_run_ids = body.get("run_ids")
+    run_ids: list[str] = []
+    if isinstance(raw_run_ids, list):
+        run_ids = [str(x).strip() for x in raw_run_ids if str(x).strip()]
+    elif raw_run_ids is not None:
+        run_ids = [x.strip() for x in str(raw_run_ids).split(",") if x.strip()]
+    else:
+        rid = str(body.get("run_id", "")).strip()
+        if rid:
+            run_ids = [rid]
+    trigger_git_commit = bool(body.get("trigger_git_commit", False))
+    git_repo_url = str(body.get("git_repo_url", _DEFAULT_RELEASE_GIT_REMOTE_URL) or "").strip()
+    git_user_email = str(body.get("git_user_email", _DEFAULT_RELEASE_GIT_USER_EMAIL) or "").strip()
+    git_user_name = str(body.get("git_user_name", "") or "").strip()
+    git_commit_message = str(body.get("git_commit_message", _DEFAULT_RELEASE_GIT_COMMIT_MESSAGE) or "").strip()
+    git_push_branch = str(body.get("git_push_branch", _DEFAULT_RELEASE_GIT_BRANCH) or "").strip() or _DEFAULT_RELEASE_GIT_BRANCH
+    if not version:
+        return _error("BAD_REQUEST", "version 必填", 400)
+    if not run_ids:
+        return _error("BAD_REQUEST", "run_ids 必填（至少 1 个）", 400)
+    if len(set(run_ids)) != len(run_ids):
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for rid in run_ids:
+            if rid in seen:
+                continue
+            seen.add(rid)
+            deduped.append(rid)
+        run_ids = deduped
+    runs_by_id = {str(x.get("run_id", "")): x for x in _read_jsonl(_qa_runs_path(tenant_id)) if isinstance(x, dict)}
+    selected_runs: list[dict[str, Any]] = []
+    for rid in run_ids:
+        run = runs_by_id.get(rid)
+        if not isinstance(run, dict):
+            return _error("RUN_NOT_FOUND", f"该 run_id 不存在: {rid}", 404)
+        bm = run.get("batch_metrics") if isinstance(run.get("batch_metrics"), dict) else {}
+        saved_count = int(bm.get("saved_count", 0) or 0)
+        if saved_count <= 0:
+            return _error(
+                "RELEASE_PREREQ",
+                f"发布版本前所选 run 须有落库题目（saved_count>0）: {rid}",
+                400,
+            )
+        has_judge = (
+            bm.get("judge_pass_rate") is not None
+            or bm.get("judge_pass_count") is not None
+            or any(bool(q.get("offline_judge")) for q in (run.get("questions") or []) if isinstance(q, dict))
+        )
+        if not has_judge:
+            return _error(
+                "RELEASE_PREREQ",
+                f"发布版本前所选 run 的落库题目须已跑过离线 Judge: {rid}",
+                400,
+            )
+        selected_runs.append(run)
+    system_user = _get_system_user()
+    published_at = datetime.now(timezone.utc).isoformat()
+    primary_run_id = run_ids[0]
+    release = {
+        "version": version,
+        "release_notes": release_notes,
+        "run_id": primary_run_id,
+        "run_ids": run_ids,
+        "published_at": published_at,
+        "published_by": system_user,
+    }
+    with QA_PERSIST_LOCK:
+        _append_qa_release(tenant_id, release)
+    suggested_commit_message = f"Release {version}: {release_notes[:200]}" + ("..." if len(release_notes) > 200 else "")
+    out = {"release": release, "suggested_commit_message": suggested_commit_message}
+    if trigger_git_commit:
+        git_result = _run_git_commit_for_release(
+            tenant_id,
+            version,
+            release_notes,
+            git_options={
+                "remote_url": git_repo_url,
+                "user_email": git_user_email,
+                "user_name": git_user_name,
+                "commit_message": git_commit_message,
+                "push_branch": git_push_branch,
+            },
+        )
+        out["git"] = git_result
+    return _json_response(out)
 
 
 @app.get('/api/<tenant_id>/qa/pricing')
