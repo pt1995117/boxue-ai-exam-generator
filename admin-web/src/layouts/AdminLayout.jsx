@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { Breadcrumb, Button, Input, Layout, Menu, Select, Space, Typography, message } from 'antd';
-import { FileSearchOutlined, LinkOutlined, DashboardOutlined, UploadOutlined, RobotOutlined, DatabaseOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined, BookOutlined, LineChartOutlined, TagOutlined, OrderedListOutlined } from '@ant-design/icons';
+import { FileSearchOutlined, LinkOutlined, DashboardOutlined, UploadOutlined, RobotOutlined, DatabaseOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined, BookOutlined, LineChartOutlined, TagOutlined, OrderedListOutlined, KeyOutlined } from '@ant-design/icons';
 import { getAuthToken, getSystemUser, listTenants, setAuthToken, setSystemUser } from '../services/api';
 import { getGlobalTenantId, setGlobalTenantId } from '../services/tenantScope';
 
@@ -18,6 +18,7 @@ const items = [
   { key: '/version-management', icon: <TagOutlined />, label: <Link to="/version-management">版本管理</Link> },
   { key: '/question-bank', icon: <DatabaseOutlined />, label: <Link to="/question-bank">题库</Link> },
   { key: '/city-admin', icon: <TeamOutlined />, label: <Link to="/city-admin">城市管理</Link> },
+  { key: '/global-key-config', icon: <KeyOutlined />, label: <Link to="/global-key-config">全局Key配置</Link> },
 ];
 
 export default function AdminLayout() {
@@ -42,6 +43,7 @@ export default function AdminLayout() {
     '/version-management': '版本管理',
     '/question-bank': '题库',
     '/city-admin': '城市管理',
+    '/global-key-config': '全局Key配置',
   };
   const currentName = routeNameMap[location.pathname] || '页面';
   const breadcrumbItems = [

@@ -9,6 +9,7 @@ import AIGeneratePage from './pages/AIGeneratePage';
 import AIGenerateTaskDetailPage from './pages/AIGenerateTaskDetailPage';
 import QuestionBankPage from './pages/QuestionBankPage';
 import CityAdminPage from './pages/CityAdminPage';
+import GlobalKeyConfigPage from './pages/GlobalKeyConfigPage';
 import QualityEvaluationPage from './pages/QualityEvaluationPage';
 import VersionManagementPage from './pages/VersionManagementPage';
 import JudgeTaskPage from './pages/JudgeTaskPage';
@@ -30,6 +31,7 @@ export default function App() {
         <Route path="version-management" element={<VersionManagementPage />} />
         <Route path="question-bank" element={<QuestionBankPage />} />
         <Route path="city-admin" element={<CityAdminPage />} />
+        <Route path="global-key-config" element={<GlobalKeyConfigPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

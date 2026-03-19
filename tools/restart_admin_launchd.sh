@@ -21,8 +21,19 @@ FRONTEND_PLIST="${HOME}/Library/LaunchAgents/${FRONTEND_LABEL}.plist"
 
 BACKEND_LOG="/tmp/admin_api_8600.log"
 FRONTEND_LOG="/tmp/admin_web_8531.log"
+KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
 
 mkdir -p "${HOME}/Library/LaunchAgents"
+
+ensure_key_file_exists() {
+  if [[ ! -f "${KEY_FILE}" ]]; then
+    echo "WARN: 缺少 ${KEY_FILE}，将自动创建空文件。可在管理后台【全局Key配置】中填写。"
+    : > "${KEY_FILE}"
+  fi
+  chmod 600 "${KEY_FILE}" 2>/dev/null || true
+}
+
+ensure_key_file_exists
 
 cat > "${BACKEND_PLIST}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

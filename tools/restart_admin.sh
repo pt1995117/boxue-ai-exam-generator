@@ -18,6 +18,15 @@ BACKEND_LOG="/tmp/admin_api_8600.log"
 FRONTEND_LOG="/tmp/admin_web_8522.log"
 BACKEND_PID_FILE="/tmp/admin_api_8600.pid"
 FRONTEND_PID_FILE="/tmp/admin_web_8522.pid"
+KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
+
+ensure_key_file_exists() {
+  if [[ ! -f "${KEY_FILE}" ]]; then
+    echo "WARN: 缺少 ${KEY_FILE}，将自动创建空文件。可在管理后台【全局Key配置】中填写。"
+    : > "${KEY_FILE}"
+  fi
+  chmod 600 "${KEY_FILE}" 2>/dev/null || true
+}
 
 kill_port() {
   local port="$1"
@@ -96,6 +105,7 @@ listening_pid() {
 }
 
 echo "Restarting services in ${ROOT_DIR}"
+ensure_key_file_exists
 kill_port "${BACKEND_PORT}"
 kill_port "${FRONTEND_PORT}"
 if ! wait_for_port_free "${BACKEND_PORT}"; then

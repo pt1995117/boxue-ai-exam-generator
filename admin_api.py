@@ -65,6 +65,93 @@ ALLOWED_ORIGINS = set(
     ).split(",")
     if x.strip()
 )
+PRIMARY_KEY_FILE = Path(__file__).resolve().parent / "填写您的Key.txt"
+_KEY_PLACEHOLDER_MARKERS = ("请将您的Key", "在这里填写", "your_key", "YOUR_KEY")
+
+
+def _load_primary_key_config() -> dict[str, str]:
+    cfg: dict[str, str] = {}
+    if not PRIMARY_KEY_FILE.exists():
+        return cfg
+    try:
+        for line in PRIMARY_KEY_FILE.read_text(encoding="utf-8").splitlines():
+            raw = str(line).strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            k, v = raw.split("=", 1)
+            key = str(k).strip()
+            val = str(v).strip()
+            if key:
+                cfg[key] = val
+    except Exception:
+        return {}
+    return cfg
+
+
+def _is_usable_secret(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    for marker in _KEY_PLACEHOLDER_MARKERS:
+        if marker in text:
+            return False
+    return True
+
+
+def _autoload_primary_key_env(*, override: bool = False) -> dict[str, str]:
+    cfg = _load_primary_key_config()
+    if not cfg:
+        return {}
+    for k, v in cfg.items():
+        if _is_usable_secret(v) and (override or not os.environ.get(k)):
+            os.environ[k] = str(v).strip()
+    return cfg
+
+
+def _resolve_generation_llm_from_primary_key() -> tuple[str, str, str]:
+    cfg = _autoload_primary_key_env(override=True)
+    api_key = ""
+    base_url = "https://openapi-ait.ke.com/v1"
+    model_name = "deepseek-v3.2"
+    for prefix in ("AIT", "OPENAI", "DEEPSEEK", "CRITIC"):
+        key = str(cfg.get(f"{prefix}_API_KEY", "")).strip()
+        if not _is_usable_secret(key):
+            continue
+        api_key = key
+        candidate_base = str(cfg.get(f"{prefix}_BASE_URL", "")).strip()
+        candidate_model = str(cfg.get(f"{prefix}_MODEL", "")).strip()
+        if candidate_base and "http" in candidate_base:
+            base_url = candidate_base
+        if candidate_model:
+            model_name = candidate_model
+        break
+    return api_key, base_url, model_name
+
+
+def _save_primary_key_config_text(content: str) -> dict[str, Any]:
+    normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    if normalized and not normalized.endswith("\n"):
+        normalized += "\n"
+    PRIMARY_KEY_FILE.write_text(normalized, encoding="utf-8")
+    try:
+        os.chmod(PRIMARY_KEY_FILE, 0o600)
+    except Exception:
+        pass
+    cfg = _autoload_primary_key_env(override=True)
+    return {
+        "path": str(PRIMARY_KEY_FILE),
+        "exists": PRIMARY_KEY_FILE.exists(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "line_count": len(normalized.splitlines()) if normalized else 0,
+        "has_ait_api_key": _is_usable_secret(cfg.get("AIT_API_KEY", "")),
+        "has_openai_api_key": _is_usable_secret(cfg.get("OPENAI_API_KEY", "")),
+        "has_deepseek_api_key": _is_usable_secret(cfg.get("DEEPSEEK_API_KEY", "")),
+        "has_critic_api_key": _is_usable_secret(cfg.get("CRITIC_API_KEY", "")),
+    }
+
+
+# Auto-load once at process startup so all requests can directly use env/config.
+_autoload_primary_key_env(override=False)
 
 
 @app.get("/")
@@ -3071,17 +3158,12 @@ def _default_qa_thresholds() -> dict[str, Any]:
 
 
 def _configured_models_from_key_file() -> list[str]:
-    cfg_path = Path("填写您的Key.txt")
-    if not cfg_path.exists():
-        return []
     models: list[str] = []
+    cfg = _load_primary_key_config()
+    if not cfg:
+        return models
     try:
-        for line in cfg_path.read_text(encoding="utf-8").splitlines():
-            raw = str(line).strip()
-            if not raw or raw.startswith("#") or "=" not in raw:
-                continue
-            key, value = raw.split("=", 1)
-            name = str(key).strip()
+        for name, value in cfg.items():
             model = str(value).strip()
             if name not in {"OPENAI_MODEL", "DEEPSEEK_MODEL", "CRITIC_MODEL", "CODE_GEN_MODEL", "IMAGE_MODEL"}:
                 continue
@@ -3516,17 +3598,12 @@ def _get_offline_judge_llm() -> tuple[Any | None, str | None]:
         from src.llm import build_llm
     except Exception as e:
         return None, f"无法加载 Judge 模块: {e!s}"
-    cfg_path = Path(__file__).resolve().parent / "填写您的Key.txt"
     ait_keys = ("AIT_API_KEY", "AIT_BASE_URL", "AIT_MODEL", "AIT_MAX_TOKENS", "AIT_JUDGE_MODEL")
-    if cfg_path.exists():
-        for line in cfg_path.read_text(encoding="utf-8").splitlines():
-            if "=" not in line or line.strip().startswith("#"):
-                continue
-            k, v = line.split("=", 1)
-            k, v = k.strip(), v.strip()
-            if not v or "请将您的Key" in v or "在这里填写" in v:
-                continue
-            if k in ait_keys and not os.environ.get(k):
+    cfg = _autoload_primary_key_env(override=True)
+    if cfg:
+        for k in ait_keys:
+            v = str(cfg.get(k, "")).strip()
+            if _is_usable_secret(v) and not os.environ.get(k):
                 os.environ[k] = v
     try:
         judge_model = os.getenv("AIT_JUDGE_MODEL") or os.getenv("JUDGE_MODEL", "gpt-5.2")
@@ -4431,6 +4508,58 @@ def api_meta():
             },
         }
     )
+
+
+@app.get('/api/admin/key-config')
+@app.get('/api/platform/key-config')
+def api_admin_key_config_get():
+    try:
+        _require_platform_admin()
+    except PermissionError as e:
+        return _error(str(e), "仅平台管理员可管理全局 Key 配置", 403)
+    exists = PRIMARY_KEY_FILE.exists()
+    content = PRIMARY_KEY_FILE.read_text(encoding="utf-8") if exists else ""
+    cfg = _load_primary_key_config()
+    return _json_response(
+        {
+            "path": str(PRIMARY_KEY_FILE),
+            "exists": exists,
+            "content": content,
+            "line_count": len(content.splitlines()) if content else 0,
+            "updated_at": datetime.fromtimestamp(PRIMARY_KEY_FILE.stat().st_mtime, timezone.utc).isoformat()
+            if exists else "",
+            "has_ait_api_key": _is_usable_secret(cfg.get("AIT_API_KEY", "")),
+            "has_openai_api_key": _is_usable_secret(cfg.get("OPENAI_API_KEY", "")),
+            "has_deepseek_api_key": _is_usable_secret(cfg.get("DEEPSEEK_API_KEY", "")),
+            "has_critic_api_key": _is_usable_secret(cfg.get("CRITIC_API_KEY", "")),
+            "note": "该配置为平台全局配置，所有城市共用。",
+        }
+    )
+
+
+@app.put('/api/admin/key-config')
+@app.put('/api/platform/key-config')
+def api_admin_key_config_put():
+    try:
+        _require_platform_admin()
+    except PermissionError as e:
+        return _error(str(e), "仅平台管理员可管理全局 Key 配置", 403)
+    body = request.get_json(silent=True) or {}
+    content = body.get("content")
+    if content is None:
+        items = body.get("items")
+        if isinstance(items, dict):
+            lines: list[str] = []
+            for k, v in items.items():
+                key = str(k or "").strip()
+                if not key:
+                    continue
+                lines.append(f"{key}={str(v or '').strip()}")
+            content = "\n".join(lines)
+        else:
+            content = ""
+    result = _save_primary_key_config_text(str(content))
+    return _json_response({"ok": True, "item": result})
 
 
 @app.get('/api/admin/cities')
@@ -6601,35 +6730,7 @@ def api_generate_questions(tenant_id: str):
     candidate_ids = [sid for sid in candidate_ids if 0 <= sid < len(retriever.kb_data)]
     if not candidate_ids:
         return _error("NO_VALID_SLICES", "审核记录与当前切片版本不一致，请重新审核切片后再出题", 400)
-    cfg_path = Path("填写您的Key.txt")
-    api_key = ""
-    base_url = "https://openapi-ait.ke.com/v1"
-    model_name = "deepseek-v3.2"
-    if cfg_path.exists():
-        cfg: dict[str, str] = {}
-        for line in cfg_path.read_text(encoding="utf-8").splitlines():
-            if "=" not in line or line.strip().startswith("#"):
-                continue
-            k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip()
-
-        def _usable_key(v: str) -> bool:
-            return bool(v) and "请将您的Key" not in v
-
-        # Keep provider triplet consistent: API_KEY/BASE_URL/MODEL must come from the same prefix.
-        # Priority should prefer AIT in current deployment.
-        for prefix in ("AIT", "OPENAI", "DEEPSEEK", "CRITIC"):
-            key = str(cfg.get(f"{prefix}_API_KEY", "")).strip()
-            if not _usable_key(key):
-                continue
-            api_key = key
-            candidate_base = str(cfg.get(f"{prefix}_BASE_URL", "")).strip()
-            candidate_model = str(cfg.get(f"{prefix}_MODEL", "")).strip()
-            if candidate_base and "http" in candidate_base:
-                base_url = candidate_base
-            if candidate_model:
-                model_name = candidate_model
-            break
+    api_key, base_url, model_name = _resolve_generation_llm_from_primary_key()
     if not api_key:
         return _error("NO_API_KEY", "未配置可用 API Key，请检查 填写您的Key.txt", 400)
 
@@ -7117,33 +7218,7 @@ def api_generate_questions_stream(tenant_id: str):
     if not candidate_ids:
         return _error("NO_VALID_SLICES", "审核记录与当前切片版本不一致，请重新审核切片后再出题", 400)
 
-    cfg_path = Path("填写您的Key.txt")
-    api_key = ""
-    base_url = "https://openapi-ait.ke.com/v1"
-    model_name = "deepseek-v3.2"
-    if cfg_path.exists():
-        cfg: dict[str, str] = {}
-        for line in cfg_path.read_text(encoding="utf-8").splitlines():
-            if "=" not in line or line.strip().startswith("#"):
-                continue
-            k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip()
-
-        def _usable_key(v: str) -> bool:
-            return bool(v) and "请将您的Key" not in v
-
-        for prefix in ("AIT", "OPENAI", "DEEPSEEK", "CRITIC"):
-            key = str(cfg.get(f"{prefix}_API_KEY", "")).strip()
-            if not _usable_key(key):
-                continue
-            api_key = key
-            candidate_base = str(cfg.get(f"{prefix}_BASE_URL", "")).strip()
-            candidate_model = str(cfg.get(f"{prefix}_MODEL", "")).strip()
-            if candidate_base and "http" in candidate_base:
-                base_url = candidate_base
-            if candidate_model:
-                model_name = candidate_model
-            break
+    api_key, base_url, model_name = _resolve_generation_llm_from_primary_key()
     if not api_key:
         return _error("NO_API_KEY", "未配置可用 API Key，请检查 填写您的Key.txt", 400)
 

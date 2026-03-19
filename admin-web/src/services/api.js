@@ -345,3 +345,9 @@ export const deleteAdminUser = (payload) =>
 
 export const batchBindAdminUsers = (payload) =>
   client.post('/admin/users/batch-bind', payload).then((r) => r.data);
+
+export const getAdminKeyConfig = () =>
+  client.get('/admin/key-config').then((r) => r.data);
+
+export const updateAdminKeyConfig = (payload) =>
+  client.put('/admin/key-config', payload).then((r) => r.data);

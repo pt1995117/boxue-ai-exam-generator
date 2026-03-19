@@ -2,6 +2,7 @@ import os
 import json
 import pandas as pd
 import random
+from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
 from pydantic import BaseModel, Field, ValidationError
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -16,8 +17,8 @@ from tenants_config import (
     resolve_tenant_from_env,
 )
 
-# Load environment variables
-config_path = "填写您的Key.txt"
+# Load environment variables from the single primary key file.
+config_path = str(Path(__file__).resolve().parent / "填写您的Key.txt")
 config = {}
 if os.path.exists(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:
