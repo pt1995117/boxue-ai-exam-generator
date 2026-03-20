@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 import threading
 from copy import deepcopy
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import pandas as pd
 from flask import Flask, Response, g, jsonify, request, send_file, stream_with_context
@@ -67,7 +68,107 @@ ALLOWED_ORIGINS = set(
     if x.strip()
 )
 
+PRIMARY_KEY_FILE = Path(__file__).resolve().parent / "填写您的Key.txt"
+_KEY_PLACEHOLDER_MARKERS = ("请将您的Key", "在这里填写", "your_key", "YOUR_KEY")
 
+
+def _load_primary_key_config() -> dict[str, str]:
+    cfg: dict[str, str] = {}
+    if not PRIMARY_KEY_FILE.exists():
+        return cfg
+    try:
+        for line in PRIMARY_KEY_FILE.read_text(encoding="utf-8").splitlines():
+            raw = str(line).strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            k, v = raw.split("=", 1)
+            key = str(k).strip()
+            val = str(v).strip()
+            if key:
+                cfg[key] = val
+    except Exception:
+        return {}
+    return cfg
+
+
+def _is_usable_secret(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    for marker in _KEY_PLACEHOLDER_MARKERS:
+        if marker in text:
+            return False
+    return True
+
+
+def _autoload_primary_key_env(*, override: bool = False) -> dict[str, str]:
+    cfg = _load_primary_key_config()
+    if not cfg:
+        return {}
+    for k, v in cfg.items():
+        if _is_usable_secret(v) and (override or not os.environ.get(k)):
+            os.environ[k] = str(v).strip()
+    return cfg
+
+
+def _resolve_generation_llm_from_primary_key() -> tuple[str, str, str]:
+    cfg = _autoload_primary_key_env(override=True)
+    api_key = ""
+    base_url = "https://openapi-ait.ke.com/v1"
+    model_name = "deepseek-v3.2"
+    for prefix in ("AIT", "OPENAI", "DEEPSEEK", "CRITIC"):
+        key = str(cfg.get(f"{prefix}_API_KEY", "")).strip()
+        if not _is_usable_secret(key):
+            continue
+        api_key = key
+        candidate_base = str(cfg.get(f"{prefix}_BASE_URL", "")).strip()
+        candidate_model = str(cfg.get(f"{prefix}_MODEL", "")).strip()
+        if candidate_base and "http" in candidate_base:
+            base_url = candidate_base
+        if candidate_model:
+            model_name = candidate_model
+        break
+    return api_key, base_url, model_name
+
+
+def _save_primary_key_config_text(content: str) -> dict[str, Any]:
+    normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    if normalized and not normalized.endswith("\n"):
+        normalized += "\n"
+    PRIMARY_KEY_FILE.write_text(normalized, encoding="utf-8")
+    try:
+        os.chmod(PRIMARY_KEY_FILE, 0o600)
+    except Exception:
+        pass
+    cfg = _autoload_primary_key_env(override=True)
+    return {
+        "path": str(PRIMARY_KEY_FILE),
+        "exists": PRIMARY_KEY_FILE.exists(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "line_count": len(normalized.splitlines()) if normalized else 0,
+        "has_ait_api_key": _is_usable_secret(cfg.get("AIT_API_KEY", "")),
+        "has_openai_api_key": _is_usable_secret(cfg.get("OPENAI_API_KEY", "")),
+        "has_deepseek_api_key": _is_usable_secret(cfg.get("DEEPSEEK_API_KEY", "")),
+        "has_critic_api_key": _is_usable_secret(cfg.get("CRITIC_API_KEY", "")),
+        "has_git_username": _is_usable_secret(cfg.get("GIT_USERNAME", "")),
+        "has_git_token": _is_usable_secret(cfg.get("GIT_TOKEN", "")) or _is_usable_secret(cfg.get("GIT_PASSWORD", "")),
+    }
+
+
+# Auto-load once at process startup so all requests can directly use env/config.
+_autoload_primary_key_env(override=False)
+
+
+@app.get("/")
+def root_status():
+    """简单健康检查/本地调试入口，不做认证。"""
+    return _json_response(
+        {
+            "ok": True,
+            "message": "exam-admin-api is running",
+            "hint": "业务接口请通过 /api/... 访问，前端会自动带上 X-System-User / Authorization 头。",
+        }
+    )
 def _json_response(payload: dict[str, Any], status: int = 200):
     resp = jsonify(payload)
     resp.status_code = status
@@ -1350,11 +1451,65 @@ _GIT_EXCLUDED_PREFIXES = (
     "__pycache__/",
     "tmp/",
 )
-_DEFAULT_RELEASE_GIT_REMOTE_URL = "https://git.lianjia.com/confucius/huaqiao_vibe/boxue-ai-exam-generator.git"
+_DEFAULT_RELEASE_GIT_REMOTE_URL = "git@git.lianjia.com:confucius/huaqiao_vibe/boxue-ai-exam-generator.git"
 _DEFAULT_RELEASE_GIT_USER_EMAIL = "panting047@ke.com"
 _DEFAULT_RELEASE_GIT_COMMIT_MESSAGE = "[紧急]fix"
 _DEFAULT_RELEASE_GIT_BRANCH = "main"
 _RELEASE_REMOTE_NAME = "release_sync_remote"
+
+
+def _sanitize_git_remote_url(remote_url: str) -> str:
+    txt = str(remote_url or "").strip()
+    if not txt:
+        return ""
+    try:
+        u = urlsplit(txt)
+    except Exception:
+        return txt
+    if u.scheme not in {"http", "https"}:
+        return txt
+    netloc = u.netloc
+    if "@" not in netloc:
+        return txt
+    host = netloc.split("@", 1)[1]
+    return urlunsplit((u.scheme, host, u.path, u.query, u.fragment))
+
+
+def _inject_http_auth_to_remote_url(remote_url: str, username: str, token: str) -> str:
+    txt = str(remote_url or "").strip()
+    user = str(username or "").strip()
+    secret = str(token or "").strip()
+    if not txt or not user or not secret:
+        return txt
+    try:
+        u = urlsplit(txt)
+    except Exception:
+        return txt
+    if u.scheme not in {"http", "https"}:
+        return txt
+    if "@" in u.netloc:
+        return txt
+    auth = f"{quote(user, safe='')}:{quote(secret, safe='')}@{u.netloc}"
+    return urlunsplit((u.scheme, auth, u.path, u.query, u.fragment))
+
+
+def _maybe_convert_lianjia_https_to_ssh(remote_url: str) -> str:
+    txt = str(remote_url or "").strip()
+    if not txt:
+        return txt
+    try:
+        u = urlsplit(txt)
+    except Exception:
+        return txt
+    if u.scheme not in {"http", "https"}:
+        return txt
+    host = str(u.hostname or "").strip().lower()
+    if host != "git.lianjia.com":
+        return txt
+    path = str(u.path or "").strip().lstrip("/")
+    if not path:
+        return txt
+    return f"git@git.lianjia.com:{path}"
 
 
 def _is_code_path_for_release_commit(rel_path: str) -> bool:
@@ -1412,11 +1567,46 @@ def _run_git_commit_for_release(
     """Optionally commit code-only changes (exclude runtime data). Returns {ok, message, error}."""
     try:
         opts = git_options if isinstance(git_options, dict) else {}
-        remote_url = str(opts.get("remote_url", _DEFAULT_RELEASE_GIT_REMOTE_URL) or "").strip()
+        cfg = _autoload_primary_key_env(override=True)
+        remote_url = str(
+            opts.get("remote_url")
+            or cfg.get("GIT_REPO_URL")
+            or os.getenv("GIT_REPO_URL")
+            or _DEFAULT_RELEASE_GIT_REMOTE_URL
+        ).strip()
         push_branch = str(opts.get("push_branch", _DEFAULT_RELEASE_GIT_BRANCH) or "main").strip() or "main"
         commit_message = str(opts.get("commit_message", "") or "").strip()
-        user_email = str(opts.get("user_email", _DEFAULT_RELEASE_GIT_USER_EMAIL) or "").strip()
-        user_name = str(opts.get("user_name", "") or "").strip()
+        user_email = str(
+            opts.get("user_email")
+            or cfg.get("GIT_USER_EMAIL")
+            or os.getenv("GIT_USER_EMAIL")
+            or _DEFAULT_RELEASE_GIT_USER_EMAIL
+        ).strip()
+        user_name = str(
+            opts.get("user_name")
+            or cfg.get("GIT_USER_NAME")
+            or os.getenv("GIT_USER_NAME")
+            or ""
+        ).strip()
+        git_username = str(
+            opts.get("git_username")
+            or cfg.get("GIT_USERNAME")
+            or os.getenv("GIT_USERNAME")
+            or ""
+        ).strip()
+        git_token = str(
+            opts.get("git_token")
+            or cfg.get("GIT_TOKEN")
+            or os.getenv("GIT_TOKEN")
+            or cfg.get("GIT_PASSWORD")
+            or os.getenv("GIT_PASSWORD")
+            or ""
+        ).strip()
+        if remote_url and remote_url.startswith("https://") and "git.lianjia.com/" in remote_url and not git_username:
+            # 在未提供 https 凭证时，优先切到 SSH，避免非交互环境下卡在用户名输入。
+            remote_url = _maybe_convert_lianjia_https_to_ssh(remote_url)
+        remote_url_for_git = _inject_http_auth_to_remote_url(remote_url, git_username, git_token)
+        display_remote_url = _sanitize_git_remote_url(remote_url)
         service_root = Path(__file__).resolve().parent
         repo_probe = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -1445,7 +1635,7 @@ def _run_git_commit_for_release(
                 "ok": True,
                 "message": "no code changes to commit",
                 "checked_changed_files": len(changed_paths),
-                "remote_url": remote_url,
+                "remote_url": display_remote_url,
                 "push_branch": push_branch,
             }
 
@@ -1494,7 +1684,7 @@ def _run_git_commit_for_release(
             remotes = {x.strip() for x in (list_remote.stdout or "").splitlines() if x.strip()}
             if _RELEASE_REMOTE_NAME in remotes:
                 set_url = subprocess.run(
-                    ["git", "remote", "set-url", _RELEASE_REMOTE_NAME, remote_url],
+                    ["git", "remote", "set-url", _RELEASE_REMOTE_NAME, remote_url_for_git],
                     cwd=repo_root,
                     capture_output=True,
                     text=True,
@@ -1504,7 +1694,7 @@ def _run_git_commit_for_release(
                     return {"ok": False, "message": "git remote set-url failed", "error": (set_url.stderr or set_url.stdout or "").strip()}
             else:
                 add_remote = subprocess.run(
-                    ["git", "remote", "add", _RELEASE_REMOTE_NAME, remote_url],
+                    ["git", "remote", "add", _RELEASE_REMOTE_NAME, remote_url_for_git],
                     cwd=repo_root,
                     capture_output=True,
                     text=True,
@@ -1519,24 +1709,58 @@ def _run_git_commit_for_release(
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
             )
             if r3.returncode != 0:
+                err_text = (r3.stderr or r3.stdout or "").strip()
+                lowered = err_text.lower()
+                if "non-fast-forward" in lowered or "[rejected]" in lowered:
+                    fallback_branch = f"auto-release/{tenant_id}/{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+                    r3b = subprocess.run(
+                        ["git", "push", _RELEASE_REMOTE_NAME, f"HEAD:{fallback_branch}"],
+                        cwd=repo_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                    )
+                    if r3b.returncode == 0:
+                        push_result = {
+                            "ok": True,
+                            "message": "pushed_to_fallback_branch",
+                            "remote_url": display_remote_url,
+                            "push_branch": fallback_branch,
+                            "requested_push_branch": push_branch,
+                            "warning": f"目标分支 {push_branch} 非 fast-forward，已回退推送到 {fallback_branch}",
+                        }
+                        return {
+                            "ok": True,
+                            "message": "committed_and_pushed_fallback_branch",
+                            "commit_message": msg,
+                            "committed_code_files": len(code_paths),
+                            "checked_changed_files": len(changed_paths),
+                            "remote_url": display_remote_url,
+                            "push_branch": fallback_branch,
+                            "requested_push_branch": push_branch,
+                            "push": push_result,
+                            "warning": push_result["warning"],
+                        }
                 return {
                     "ok": False,
                     "message": "git push failed",
-                    "error": (r3.stderr or r3.stdout or "").strip(),
+                    "error": err_text,
                     "commit_message": msg,
-                    "remote_url": remote_url,
+                    "remote_url": display_remote_url,
                     "push_branch": push_branch,
                 }
-            push_result = {"ok": True, "message": "pushed", "remote_url": remote_url, "push_branch": push_branch}
+            push_result = {"ok": True, "message": "pushed", "remote_url": display_remote_url, "push_branch": push_branch}
         return {
             "ok": True,
             "message": "committed_and_pushed" if push_result.get("ok") else "committed",
             "commit_message": msg,
             "committed_code_files": len(code_paths),
             "checked_changed_files": len(changed_paths),
-            "remote_url": remote_url,
+            "remote_url": display_remote_url,
             "push_branch": push_branch,
             "push": push_result,
         }
@@ -2060,8 +2284,58 @@ def api_meta():
             },
         }
     )
+@app.get('/api/admin/key-config')
+@app.get('/api/platform/key-config')
+def api_admin_key_config_get():
+    try:
+        _require_platform_admin()
+    except PermissionError as e:
+        return _error(str(e), "仅平台管理员可管理全局 Key 配置", 403)
+    exists = PRIMARY_KEY_FILE.exists()
+    content = PRIMARY_KEY_FILE.read_text(encoding="utf-8") if exists else ""
+    cfg = _load_primary_key_config()
+    return _json_response(
+        {
+            "path": str(PRIMARY_KEY_FILE),
+            "exists": exists,
+            "content": content,
+            "line_count": len(content.splitlines()) if content else 0,
+            "updated_at": datetime.fromtimestamp(PRIMARY_KEY_FILE.stat().st_mtime, timezone.utc).isoformat()
+            if exists else "",
+            "has_ait_api_key": _is_usable_secret(cfg.get("AIT_API_KEY", "")),
+            "has_openai_api_key": _is_usable_secret(cfg.get("OPENAI_API_KEY", "")),
+            "has_deepseek_api_key": _is_usable_secret(cfg.get("DEEPSEEK_API_KEY", "")),
+            "has_critic_api_key": _is_usable_secret(cfg.get("CRITIC_API_KEY", "")),
+            "has_git_username": _is_usable_secret(cfg.get("GIT_USERNAME", "")),
+            "has_git_token": _is_usable_secret(cfg.get("GIT_TOKEN", "")) or _is_usable_secret(cfg.get("GIT_PASSWORD", "")),
+            "note": "该配置为平台全局配置，所有城市共用。",
+        }
+    )
 
 
+@app.put('/api/admin/key-config')
+@app.put('/api/platform/key-config')
+def api_admin_key_config_put():
+    try:
+        _require_platform_admin()
+    except PermissionError as e:
+        return _error(str(e), "仅平台管理员可管理全局 Key 配置", 403)
+    body = request.get_json(silent=True) or {}
+    content = body.get("content")
+    if content is None:
+        items = body.get("items")
+        if isinstance(items, dict):
+            lines: list[str] = []
+            for k, v in items.items():
+                key = str(k or "").strip()
+                if not key:
+                    continue
+                lines.append(f"{key}={str(v or '').strip()}")
+            content = "\n".join(lines)
+        else:
+            content = ""
+    result = _save_primary_key_config_text(str(content))
+    return _json_response({"ok": True, "item": result})
 @app.get('/api/admin/cities')
 @app.get('/api/platform/cities')
 def api_admin_cities():
@@ -5652,6 +5926,8 @@ def api_qa_releases_post(tenant_id: str):
     git_repo_url = str(body.get("git_repo_url", _DEFAULT_RELEASE_GIT_REMOTE_URL) or "").strip()
     git_user_email = str(body.get("git_user_email", _DEFAULT_RELEASE_GIT_USER_EMAIL) or "").strip()
     git_user_name = str(body.get("git_user_name", "") or "").strip()
+    git_username = str(body.get("git_username", "") or "").strip()
+    git_token = str(body.get("git_token", "") or "").strip()
     git_commit_message = str(body.get("git_commit_message", _DEFAULT_RELEASE_GIT_COMMIT_MESSAGE) or "").strip()
     git_push_branch = str(body.get("git_push_branch", _DEFAULT_RELEASE_GIT_BRANCH) or "").strip() or _DEFAULT_RELEASE_GIT_BRANCH
     if not version:
@@ -5715,6 +5991,8 @@ def api_qa_releases_post(tenant_id: str):
                 "remote_url": git_repo_url,
                 "user_email": git_user_email,
                 "user_name": git_user_name,
+                "git_username": git_username,
+                "git_token": git_token,
                 "commit_message": git_commit_message,
                 "push_branch": git_push_branch,
             },
@@ -5724,9 +6002,11 @@ def api_qa_releases_post(tenant_id: str):
             "ok": bool(git_result.get("ok", False)),
             "message": str(git_result.get("message", "") or ""),
             "error": str(git_result.get("error", "") or ""),
+            "warning": str(git_result.get("warning", "") or ""),
             "commit_message": str(git_result.get("commit_message", "") or git_commit_message),
             "remote_url": str(git_result.get("remote_url", "") or git_repo_url),
             "push_branch": str(git_result.get("push_branch", "") or git_push_branch),
+            "requested_push_branch": str(git_result.get("requested_push_branch", "") or git_push_branch),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
     with QA_PERSIST_LOCK:
