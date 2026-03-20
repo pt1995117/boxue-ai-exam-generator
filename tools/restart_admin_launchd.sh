@@ -191,7 +191,7 @@ if ! wait_for_listen "${BACKEND_PORT}"; then
   exit 1
 fi
 
-if ! wait_for_http_ok "http://127.0.0.1:${BACKEND_PORT}/api/tenants" "X-System-User: admin"; then
+if ! wait_for_http_ok "http://127.0.0.1:${BACKEND_PORT}/"; then
   echo "ERROR: Backend HTTP check failed, see ${BACKEND_LOG}"
   tail -n 80 "${BACKEND_LOG}" || true
   exit 1

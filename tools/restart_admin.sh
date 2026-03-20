@@ -92,10 +92,17 @@ wait_for_listen() {
 
 wait_for_http_ok() {
   local url="$1"
+  local header="${2:-}"
   local retries=20
   while (( retries > 0 )); do
-    if curl -s -m 1 -H "X-System-User: admin" "${url}" >/dev/null 2>&1; then
-      return 0
+    if [[ -n "${header}" ]]; then
+      if curl -s -m 1 -H "${header}" "${url}" >/dev/null 2>&1; then
+        return 0
+      fi
+    else
+      if curl -s -m 1 "${url}" >/dev/null 2>&1; then
+        return 0
+      fi
     fi
     sleep 0.2
     retries=$((retries - 1))
@@ -145,7 +152,7 @@ if ! wait_for_listen "${BACKEND_PORT}"; then
   tail -n 80 "${BACKEND_LOG}" || true
   exit 1
 fi
-if ! wait_for_http_ok "http://127.0.0.1:${BACKEND_PORT}/api/tenants"; then
+if ! wait_for_http_ok "http://127.0.0.1:${BACKEND_PORT}/"; then
   echo "ERROR: Backend HTTP check failed, see ${BACKEND_LOG}"
   tail -n 80 "${BACKEND_LOG}" || true
   exit 1
