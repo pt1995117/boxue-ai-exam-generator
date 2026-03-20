@@ -5704,8 +5704,6 @@ def api_qa_releases_post(tenant_id: str):
         "published_at": published_at,
         "published_by": system_user,
     }
-    with QA_PERSIST_LOCK:
-        _append_qa_release(tenant_id, release)
     suggested_commit_message = f"Release {version}: {release_notes[:200]}" + ("..." if len(release_notes) > 200 else "")
     out = {"release": release, "suggested_commit_message": suggested_commit_message}
     if trigger_git_commit:
@@ -5722,6 +5720,17 @@ def api_qa_releases_post(tenant_id: str):
             },
         )
         out["git"] = git_result
+        release["git"] = {
+            "ok": bool(git_result.get("ok", False)),
+            "message": str(git_result.get("message", "") or ""),
+            "error": str(git_result.get("error", "") or ""),
+            "commit_message": str(git_result.get("commit_message", "") or git_commit_message),
+            "remote_url": str(git_result.get("remote_url", "") or git_repo_url),
+            "push_branch": str(git_result.get("push_branch", "") or git_push_branch),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    with QA_PERSIST_LOCK:
+        _append_qa_release(tenant_id, release)
     return _json_response(out)
 
 

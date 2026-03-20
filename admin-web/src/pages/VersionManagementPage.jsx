@@ -235,6 +235,18 @@ export default function VersionManagementPage() {
             },
             { title: '发布时间', dataIndex: 'published_at', width: 220 },
             { title: '发布人', dataIndex: 'published_by', width: 120 },
+            {
+              title: 'Git结果',
+              dataIndex: 'git',
+              width: 260,
+              render: (_, r) => {
+                const g = r?.git || {};
+                const ok = g?.ok;
+                if (ok === true) return <Text type="success">成功：{g?.commit_message || '-'}</Text>;
+                if (ok === false) return <Text type="danger">失败：{g?.error || g?.message || '-'}</Text>;
+                return '未执行';
+              },
+            },
           ]}
         />
         {lastRelease && (
