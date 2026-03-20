@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,9 +9,9 @@ BACKEND_PORT=8600
 FRONTEND_PORT=8521
 
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-NPM_BIN="$(whence -p npm || true)"
+NPM_BIN="$(command -v npm || true)"
 if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="$(whence -p python3 || true)"
+  PYTHON_BIN="$(command -v python3 || true)"
 fi
 if [[ -z "${PYTHON_BIN}" ]]; then PYTHON_BIN="/usr/bin/python3"; fi
 if [[ -z "${NPM_BIN}" ]]; then NPM_BIN="/usr/bin/npm"; fi

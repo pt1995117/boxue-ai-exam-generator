@@ -1,14 +1,14 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_PORT=8600
 FRONTEND_PORT=8522
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-NPM_BIN="$(whence -p npm || true)"
+NPM_BIN="$(command -v npm || true)"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="$(whence -p python3 || true)"
+  PYTHON_BIN="$(command -v python3 || true)"
 fi
 if [[ -z "${PYTHON_BIN}" ]]; then
   PYTHON_BIN="/usr/bin/python3"
@@ -22,6 +22,20 @@ FRONTEND_LOG="/tmp/admin_web_8522.log"
 BACKEND_PID_FILE="/tmp/admin_api_8600.pid"
 FRONTEND_PID_FILE="/tmp/admin_web_8522.pid"
 KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
+
+stop_launchd_services_if_any() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return 0
+  fi
+  if ! command -v launchctl >/dev/null 2>&1; then
+    return 0
+  fi
+  local uid_num gui_domain
+  uid_num="$(id -u)"
+  gui_domain="gui/${uid_num}"
+  launchctl bootout "${gui_domain}/com.boxue.admin_api" >/dev/null 2>&1 || true
+  launchctl bootout "${gui_domain}/com.boxue.admin_web" >/dev/null 2>&1 || true
+}
 
 ensure_key_file_exists() {
   if [[ ! -f "${KEY_FILE}" ]]; then
@@ -109,6 +123,7 @@ listening_pid() {
 
 echo "Restarting services in ${ROOT_DIR}"
 ensure_key_file_exists
+stop_launchd_services_if_any
 kill_port "${BACKEND_PORT}"
 kill_port "${FRONTEND_PORT}"
 if ! wait_for_port_free "${BACKEND_PORT}"; then
