@@ -79,7 +79,7 @@ def resolve_tenant_kb_path(tenant_id: str, fallback: str = "bot_knowledge_base.j
 
 def resolve_tenant_history_path(tenant_id: str, fallback: str = "存量房买卖母卷ABCD.xls") -> Path:
     tenant_materials = ensure_tenant_dirs(tenant_id) / "materials"
-    for name in ("history_questions.xlsx", "history_questions.xls"):
+    for name in ("history_questions.xlsx", "history_questions.xls", "history_questions.docx", "history_questions.txt", "history_questions.md"):
         tenant_candidate = tenant_materials / name
         if tenant_candidate.exists():
             return tenant_candidate

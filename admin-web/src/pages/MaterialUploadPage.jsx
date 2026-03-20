@@ -443,10 +443,10 @@ export default function MaterialUploadPage() {
                         fileList={referenceFileList}
                         beforeUpload={() => false}
                         onChange={({ fileList: next }) => setReferenceFileList(next.slice(-1))}
-                        accept=".xlsx,.xls"
+                        accept=".xlsx,.xls,.docx,.txt,.md"
                       >
                         <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                        <p className="ant-upload-text">拖拽参考题库表格到这里，或点击上传</p>
+                        <p className="ant-upload-text">拖拽参考题文件到这里，或点击上传</p>
                       </Upload.Dragger>
                       <Button type="primary" loading={mappingLoading} onClick={onUploadReferenceAndMap}>
                         上传参考题并生成映射

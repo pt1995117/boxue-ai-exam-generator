@@ -15,6 +15,7 @@ from tenants_config import (
     tenant_mapping_review_path,
     resolve_tenant_from_env,
 )
+from reference_loader import load_reference_questions
 
 # Load environment variables
 config_path = "填写您的Key.txt"
@@ -134,12 +135,19 @@ class KnowledgeRetriever:
                 self.kb_data.append(item)
         
         print("Loading Historical Questions...")
-        self.history_df = pd.read_excel(history_path)
-        
-        print("Indexing Historical Questions...")
-        self.vectorizer = TfidfVectorizer()
-        self.history_corpus = (self.history_df['题干'].astype(str) + " " + self.history_df['考点'].astype(str)).tolist()
-        self.tfidf_matrix = self.vectorizer.fit_transform(self.history_corpus)
+        self.history_df = load_reference_questions(history_path)
+        self.vectorizer: Optional[TfidfVectorizer] = None
+        self.history_corpus: List[str] = []
+        self.tfidf_matrix = None
+        if not self.history_df.empty:
+            print("Indexing Historical Questions...")
+            self.vectorizer = TfidfVectorizer()
+            self.history_corpus = (
+                self.history_df['题干'].astype(str) + " " + self.history_df['考点'].astype(str)
+            ).tolist()
+            self.tfidf_matrix = self.vectorizer.fit_transform(self.history_corpus)
+        else:
+            print(f"Warning: no usable reference questions loaded from {history_path}. Generation will continue without mother questions.")
 
         # Index KB slices for related-slice retrieval
         self.kb_vectorizer = TfidfVectorizer()
@@ -232,6 +240,8 @@ class KnowledgeRetriever:
         return self._get_question_type(row) == question_type
 
     def get_similar_examples(self, query_text, k=3, question_type=None):
+        if self.history_df.empty or self.vectorizer is None or self.tfidf_matrix is None:
+            return []
         query_vec = self.vectorizer.transform([query_text])
         similarities = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
         # Get more candidates to account for filtering
@@ -263,6 +273,8 @@ class KnowledgeRetriever:
         """Check if text is highly similar to existing history questions."""
         if not text:
             return False, None, None
+        if self.history_df.empty or self.vectorizer is None or self.tfidf_matrix is None:
+            return False, None, None
         try:
             query_vec = self.vectorizer.transform([text])
             similarities = cosine_similarity(query_vec, self.tfidf_matrix).flatten()
@@ -280,6 +292,8 @@ class KnowledgeRetriever:
     
     def get_examples_by_knowledge_point(self, kb_chunk, k=3, question_type=None):
         """Get examples that match this knowledge point."""
+        if self.history_df.empty:
+            return []
         path = kb_chunk['完整路径']
 
         # Find questions mapped to this KB path

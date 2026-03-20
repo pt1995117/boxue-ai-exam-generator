@@ -49,6 +49,7 @@ from tenants_config import (
 from tenant_context import get_accessible_tenants, assert_tenant_access, enforce_permission, load_acl, save_acl
 from exam_factory import KnowledgeRetriever, set_active_tenant
 from exam_graph import app as graph_app, mark_unstable, summarize_llm_trace
+from reference_loader import load_reference_questions
 
 app = Flask(__name__)
 init_observability("exam-admin-api")
@@ -680,17 +681,11 @@ def _load_history_rows(tenant_id: str) -> dict[int, dict[str, Any]]:
     rows: dict[int, dict[str, Any]] = {}
     if Path(history_path).exists():
         try:
-            df = pd.read_excel(history_path)
+            df = load_reference_questions(history_path)
             for idx, row in df.iterrows():
                 stem = str(row.get("题干", "")).strip()
                 ans = str(row.get("正确答案", "")).strip()
                 exp = str(row.get("解析", "")).strip()
-                if not stem and "题目" in row:
-                    stem = str(row.get("题目", "")).strip()
-                if not ans and "答案" in row:
-                    ans = str(row.get("答案", "")).strip()
-                if not exp and "分析" in row:
-                    exp = str(row.get("分析", "")).strip()
                 rows[int(idx)] = {
                     "题干": stem,
                     "正确答案": ans,
@@ -756,7 +751,7 @@ def _material_history_copy_path(tenant_id: str, material_version_id: str, suffix
 
 
 def _resolve_history_path_for_material(tenant_id: str, material_version_id: str) -> Path:
-    for ext in (".xlsx", ".xls"):
+    for ext in (".xlsx", ".xls", ".docx", ".txt", ".md"):
         p = _material_history_copy_path(tenant_id, material_version_id, ext)
         if p.exists():
             return p
@@ -795,7 +790,7 @@ def _resolve_docx_from_material_record(record: dict[str, Any]) -> Path | None:
 
 
 def _resolve_reference_file_for_material(tenant_id: str, material_version_id: str) -> Path | None:
-    for ext in (".xlsx", ".xls"):
+    for ext in (".xlsx", ".xls", ".docx", ".txt", ".md"):
         p = _material_history_copy_path(tenant_id, material_version_id, ext)
         if p.exists():
             return p
@@ -3468,10 +3463,10 @@ def api_upload_reference_and_map(tenant_id: str, material_version_id: str):
         return _error("MATERIAL_NOT_FOUND", "教材版本不存在", 404)
     source_file = request.files.get("file")
     if source_file is None:
-        return _error("BAD_REQUEST", "请上传参考题表格（xlsx/xls）", 400)
+        return _error("BAD_REQUEST", "请上传参考题文件（xlsx/xls/docx/txt/md）", 400)
     suffix = Path(source_file.filename or "").suffix.lower()
-    if suffix not in {".xlsx", ".xls"}:
-        return _error("BAD_REQUEST", "参考题仅支持 xlsx/xls", 400)
+    if suffix not in {".xlsx", ".xls", ".docx", ".txt", ".md"}:
+        return _error("BAD_REQUEST", "参考题仅支持 xlsx/xls/docx/txt/md", 400)
 
     ref_dir = _material_reference_dir(tenant_id)
     orig_name = _safe_filename(source_file.filename or f"reference{suffix}")
