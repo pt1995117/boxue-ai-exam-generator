@@ -98,6 +98,22 @@ export const listQaRuns = (tenantId, params) =>
 export const getQaRunDetail = (tenantId, runId) =>
   client.get(`/${tenantId}/qa/runs/${encodeURIComponent(runId)}`).then((r) => r.data);
 
+/** Run offline Judge on this run (optional question_ids for selected questions). */
+export const runQaJudge = (tenantId, runId, body = {}) =>
+  client.post(`/${tenantId}/qa/runs/${encodeURIComponent(runId)}/run-judge`, body, { timeout: 300000 }).then((r) => r.data);
+
+export const createJudgeTask = (tenantId, payload) =>
+  client.post(`/${tenantId}/judge/tasks`, payload).then((r) => r.data);
+
+export const listJudgeTasks = (tenantId, params) =>
+  client.get(`/${tenantId}/judge/tasks`, { params }).then((r) => r.data);
+
+export const getJudgeTask = (tenantId, taskId) =>
+  client.get(`/${tenantId}/judge/tasks/${encodeURIComponent(taskId)}`).then((r) => r.data);
+
+export const cancelJudgeTask = (tenantId, taskId) =>
+  client.post(`/${tenantId}/judge/tasks/${encodeURIComponent(taskId)}/cancel`).then((r) => r.data);
+
 export const listQaLlmCalls = (tenantId, params) =>
   client.get(`/${tenantId}/qa/llm-calls`, { params }).then((r) => r.data);
 
@@ -112,6 +128,18 @@ export const getQaThresholds = (tenantId) =>
 
 export const updateQaThresholds = (tenantId, payload) =>
   client.put(`/${tenantId}/qa/thresholds`, payload).then((r) => r.data);
+
+export const getQaConfig = (tenantId) =>
+  client.get(`/${tenantId}/qa/config`).then((r) => r.data);
+
+export const updateQaConfig = (tenantId, payload) =>
+  client.put(`/${tenantId}/qa/config`, payload).then((r) => r.data);
+
+export const getQaReleases = (tenantId) =>
+  client.get(`/${tenantId}/qa/releases`).then((r) => r.data);
+
+export const createQaRelease = (tenantId, payload) =>
+  client.post(`/${tenantId}/qa/releases`, payload).then((r) => r.data);
 
 export const getQaPricing = (tenantId) =>
   client.get(`/${tenantId}/qa/pricing`).then((r) => r.data);
@@ -133,6 +161,9 @@ export const getQaOpsWeekly = (tenantId, params) =>
 
 export const listMaterials = (tenantId) =>
   client.get(`/${tenantId}/materials`).then((r) => r.data);
+
+export const getMaterialMappingJob = (tenantId, materialVersionId) =>
+  client.get(`/${tenantId}/materials/${encodeURIComponent(materialVersionId)}/mapping-job`).then((r) => r.data);
 
 export const setMaterialEffective = (tenantId, materialVersionId) =>
   client.post(`/${tenantId}/materials/effective`, { material_version_id: materialVersionId }).then((r) => r.data);
@@ -189,6 +220,22 @@ export const listGenerateTasks = (tenantId, params) =>
 
 export const getGenerateTask = (tenantId, taskId) =>
   client.get(`/${tenantId}/generate/tasks/${encodeURIComponent(taskId)}`).then((r) => r.data);
+
+/** Request cancel of a running or pending task. */
+export const cancelGenerateTask = (tenantId, taskId) =>
+  client.post(`/${tenantId}/generate/tasks/${encodeURIComponent(taskId)}/cancel`).then((r) => r.data);
+
+export const listGenerateTemplates = (tenantId) =>
+  client.get(`/${tenantId}/generate/templates`).then((r) => r.data);
+
+export const createGenerateTemplate = (tenantId, payload) =>
+  client.post(`/${tenantId}/generate/templates`, payload).then((r) => r.data);
+
+export const updateGenerateTemplate = (tenantId, templateId, payload) =>
+  client.put(`/${tenantId}/generate/templates/${encodeURIComponent(templateId)}`, payload).then((r) => r.data);
+
+export const deleteGenerateTemplate = (tenantId, templateId) =>
+  client.delete(`/${tenantId}/generate/templates/${encodeURIComponent(templateId)}`).then((r) => r.data);
 
 const parseSseChunk = (raw) => {
   const lines = String(raw || '').split('\n');
@@ -310,3 +357,9 @@ export const deleteAdminUser = (payload) =>
 
 export const batchBindAdminUsers = (payload) =>
   client.post('/admin/users/batch-bind', payload).then((r) => r.data);
+
+export const getAdminKeyConfig = () =>
+  client.get('/admin/key-config').then((r) => r.data);
+
+export const updateAdminKeyConfig = (payload) =>
+  client.put('/admin/key-config', payload).then((r) => r.data);

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/zsh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -9,9 +9,9 @@ BACKEND_PORT=8600
 FRONTEND_PORT=8521
 
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-NPM_BIN="$(command -v npm || true)"
+NPM_BIN="$(whence -p npm || true)"
 if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="$(command -v python3 || true)"
+  PYTHON_BIN="$(whence -p python3 || true)"
 fi
 if [[ -z "${PYTHON_BIN}" ]]; then PYTHON_BIN="/usr/bin/python3"; fi
 if [[ -z "${NPM_BIN}" ]]; then NPM_BIN="/usr/bin/npm"; fi
@@ -191,7 +191,7 @@ if ! wait_for_listen "${BACKEND_PORT}"; then
   exit 1
 fi
 
-if ! wait_for_http_ok "http://127.0.0.1:${BACKEND_PORT}/"; then
+if ! wait_for_http_ok "http://127.0.0.1:${BACKEND_PORT}/api/tenants" "X-System-User: admin"; then
   echo "ERROR: Backend HTTP check failed, see ${BACKEND_LOG}"
   tail -n 80 "${BACKEND_LOG}" || true
   exit 1

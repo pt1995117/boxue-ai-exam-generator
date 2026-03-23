@@ -65,6 +65,10 @@ def tenant_material_registry_path(tenant_id: str) -> Path:
     return ensure_tenant_dirs(tenant_id) / "materials" / "registry.json"
 
 
+def tenant_generation_template_path(tenant_id: str) -> Path:
+    return ensure_tenant_dirs(tenant_id) / "materials" / "generation_templates.json"
+
+
 def tenant_audit_log_path(tenant_id: str) -> Path:
     return ensure_tenant_dirs(tenant_id) / "audit" / "audit_log.jsonl"
 

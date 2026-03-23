@@ -2,6 +2,7 @@ import os
 import json
 import pandas as pd
 import random
+from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Any
 from pydantic import BaseModel, Field, ValidationError
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -17,8 +18,8 @@ from tenants_config import (
 )
 from reference_loader import load_reference_questions
 
-# Load environment variables
-config_path = "填写您的Key.txt"
+# Load environment variables from the single primary key file.
+config_path = str(Path(__file__).resolve().parent / "填写您的Key.txt")
 config = {}
 if os.path.exists(config_path):
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -52,7 +53,7 @@ CRITIC_MODEL = config.get("CRITIC_MODEL") or os.getenv("CRITIC_MODEL") or MODEL_
 CRITIC_PROVIDER = config.get("CRITIC_PROVIDER", "ait").lower() or os.getenv("CRITIC_PROVIDER", "ait").lower()
 
 # Code generation model configuration (for dynamic code generation)
-CODE_GEN_MODEL = config.get("CODE_GEN_MODEL") or os.getenv("CODE_GEN_MODEL", "doubao-seed-1.8")
+CODE_GEN_MODEL = config.get("CODE_GEN_MODEL") or os.getenv("CODE_GEN_MODEL", "gpt-5.3-codex")
 CODE_GEN_API_KEY = config.get("CODE_GEN_API_KEY") or os.getenv("CODE_GEN_API_KEY") or API_KEY
 CODE_GEN_BASE_URL = config.get("CODE_GEN_BASE_URL") or os.getenv("CODE_GEN_BASE_URL") or BASE_URL
 CODE_GEN_PROVIDER = config.get("CODE_GEN_PROVIDER", "ait").lower() or os.getenv("CODE_GEN_PROVIDER", "ait").lower()
@@ -237,7 +238,36 @@ class KnowledgeRetriever:
     
     def _matches_question_type(self, row, question_type):
         """检查题目是否匹配指定类型。"""
+        if not question_type or str(question_type).strip() in {"随机", "auto", "AUTO"}:
+            return True
         return self._get_question_type(row) == question_type
+
+    def get_preferred_question_types_by_knowledge_point(self, kb_chunk):
+        """
+        获取某知识切片关联母题的题型优先列表（按出现频次降序）。
+        仅统计已确认映射中的可用母题。
+        """
+        if not isinstance(kb_chunk, dict):
+            return []
+        path = kb_chunk.get('完整路径')
+        if not path or path not in self.kb_to_questions:
+            return []
+        counts = {"单选题": 0, "多选题": 0, "判断题": 0}
+        for entry in self.kb_to_questions.get(path, []):
+            try:
+                q_idx = int(entry.get("q_idx"))
+            except (TypeError, ValueError):
+                continue
+            if q_idx < 0 or q_idx >= len(self.history_df):
+                continue
+            row = self.history_df.iloc[q_idx]
+            if not self._is_valid_example(row):
+                continue
+            q_type = self._get_question_type(row)
+            if q_type in counts:
+                counts[q_type] += 1
+        ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        return [q_type for q_type, cnt in ranked if cnt > 0]
 
     def get_similar_examples(self, query_text, k=3, question_type=None):
         if self.history_df.empty or self.vectorizer is None or self.tfidf_matrix is None:
@@ -256,7 +286,7 @@ class KnowledgeRetriever:
             if not self._is_valid_example(row):
                 continue
             # Skip if question type doesn't match
-            if question_type and not self._matches_question_type(row, question_type):
+            if not self._matches_question_type(row, question_type):
                 continue
             examples.append({
                 "题干": row['题干'],
@@ -319,7 +349,7 @@ class KnowledgeRetriever:
                 if not self._is_valid_example(row):
                     continue
                 # Skip if question type doesn't match
-                if question_type and not self._matches_question_type(row, question_type):
+                if not self._matches_question_type(row, question_type):
                     continue
                 examples.append({
                     "题干": row['题干'],

@@ -5,6 +5,7 @@ import {
   DatabaseOutlined,
   FileSearchOutlined,
   LinkOutlined,
+  ProfileOutlined,
   RobotOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
@@ -92,6 +93,7 @@ export default function DashboardPage() {
     { key: '/slice-review', label: '切片核对', desc: '处理待审核切片', icon: <FileSearchOutlined /> },
     { key: '/mapping-review', label: '映射确认', desc: '确认题目映射关系', icon: <LinkOutlined /> },
     { key: '/ai-generate', label: 'AI出题', desc: '按已审切片生成题目', icon: <RobotOutlined /> },
+    { key: '/generate-templates', label: '出题模板', desc: '配置固定题量与路由占比', icon: <ProfileOutlined /> },
     { key: '/question-bank', label: '题库', desc: '查看与抽检题目', icon: <DatabaseOutlined /> },
   ];
 

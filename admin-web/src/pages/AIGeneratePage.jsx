@@ -24,12 +24,14 @@ import {
 import { useNavigate } from 'react-router-dom';
 import {
   addBankQuestions,
+  cancelGenerateTask,
   createGenerateTask,
   getGenerateTask,
   getSliceImageUrl,
   getSlicePathTree,
   getSlices,
   listGenerateTasks,
+  listGenerateTemplates,
   listMaterials,
 } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
@@ -38,6 +40,7 @@ import QuestionDetailView from '../components/QuestionDetailView';
 
 export default function AIGeneratePage() {
   const AUTO_SAVE_PASSED_QUESTIONS = true;
+  const [createForm] = Form.useForm();
   const [pageMode, setPageMode] = useState('tasks'); // tasks | create
   const navigate = useNavigate();
   const [tenantId, setTenantId] = useState(getGlobalTenantId());
@@ -48,6 +51,7 @@ export default function AIGeneratePage() {
   const [selectedGeneratedKeys, setSelectedGeneratedKeys] = useState([]);
   const [savingToBank, setSavingToBank] = useState(false);
   const [savingSingleKeys, setSavingSingleKeys] = useState([]);
+  const [cancellingTaskId, setCancellingTaskId] = useState('');
   const [errors, setErrors] = useState([]);
   const [stats, setStats] = useState({ generated_count: 0, saved_count: 0 });
   const [viewQuestionOpen, setViewQuestionOpen] = useState(false);
@@ -60,8 +64,15 @@ export default function AIGeneratePage() {
   const [taskQueryStatus, setTaskQueryStatus] = useState('');
   const [taskQueryMaterial, setTaskQueryMaterial] = useState('');
   const [activeTaskId, setActiveTaskId] = useState('');
+  const activeTaskIdRef = React.useRef(activeTaskId);
+  React.useEffect(() => {
+    activeTaskIdRef.current = activeTaskId;
+  }, [activeTaskId]);
   const [materials, setMaterials] = useState([]);
+  const [templates, setTemplates] = useState([]);
   const [materialVersionId, setMaterialVersionId] = useState('');
+  const [generateBy, setGenerateBy] = useState('manual'); // manual | template
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [approvedSlices, setApprovedSlices] = useState([]);
   const [materialSliceTotal, setMaterialSliceTotal] = useState(0);
   const [pathTreeOptions, setPathTreeOptions] = useState([]);
@@ -71,6 +82,8 @@ export default function AIGeneratePage() {
   const [appliedPathNodes, setAppliedPathNodes] = useState([]);
   const [appliedSliceKeyword, setAppliedSliceKeyword] = useState('');
   const [appliedSelectedMastery, setAppliedSelectedMastery] = useState([]);
+  const [selectedCalcSliceFilter, setSelectedCalcSliceFilter] = useState(''); // '' | 'yes' | 'no'
+  const [appliedCalcSliceFilter, setAppliedCalcSliceFilter] = useState('');
   const [hasQueried, setHasQueried] = useState(false);
   const [selectedSliceKeys, setSelectedSliceKeys] = useState([]);
   const [sliceContentPage, setSliceContentPage] = useState(1);
@@ -80,36 +93,58 @@ export default function AIGeneratePage() {
   const [genScopeMode, setGenScopeMode] = useState('custom');
   const [traceDetailMode, setTraceDetailMode] = useState('concise');
   const ALL_NODE_PREFIX = '__ALL__::';
-  const conciseTraceKeywords = [
+  // Concise mode: only these step messages are shown (one line per key event)
+  const CONCISE_STEP_MESSAGES = new Set([
     '开始出题',
-    '路由',
-    '初稿',
-    '定稿',
+    '路由完成',
+    '初稿题干',
     '题干要点',
+    '作家润色完成',
     '题目结果',
-    '审核',
-    '必改项',
-    '修复',
-    '计算结果',
-    '稳定性预警',
+    '定稿题干',
+    '审核通过',
+    '审核驳回',
+    '审核动作',
+    '审核问题清单',
+    '执行修复',
     '题目生成成功',
-  ];
+    '未经过 critic 审核',
+    'critic 未通过，题目未保存',
+    '未产出 final_json',
+    '出题异常',
+    '稳定性预警',
+  ]);
+  const NODE_LABELS = { router: '路由', specialist: '初稿', writer: '作家', critic: '审核', fixer: '修复', calculator: '计算', system: '系统' };
+  const CONCISE_DETAIL_MAX_LEN = 80;
   const getVisibleSteps = (steps) => {
-    const all = Array.isArray(steps) ? steps : [];
-    if (traceDetailMode === 'full') return all;
-    return all.filter((step) => {
-      const msg = String(step?.message || '');
-      const detail = String(step?.detail || '');
-      if (step?.level === 'error' || step?.level === 'warning' || step?.level === 'success') return true;
-      if (conciseTraceKeywords.some((kw) => msg.includes(kw))) return true;
-      if (conciseTraceKeywords.some((kw) => detail.includes(kw))) return true;
-      return false;
-    });
+    const list = Array.isArray(steps) ? steps : [];
+    if (traceDetailMode !== 'concise') return list;
+    const filtered = list.filter((s) => CONCISE_STEP_MESSAGES.has(String(s?.message || '').trim()));
+    // Never show empty: if filter removed everything (e.g. during early stream), show full list
+    return filtered.length > 0 ? filtered : list;
   };
   const splitOptionLines = (detail) => {
     const raw = String(detail || '').trim();
     if (!raw) return [];
     return raw.split(/\s*\|\s*/).map((x) => String(x || '').trim()).filter(Boolean);
+  };
+  const getRunIds = (steps) => {
+    const list = Array.isArray(steps) ? steps : [];
+    const runIds = [];
+    let inferredRun = 0;
+    let routerSeen = false;
+    list.forEach((step) => {
+      if (step && typeof step.run_id === 'number' && step.run_id >= 0) {
+        runIds.push(step.run_id);
+      } else {
+        runIds.push(inferredRun);
+      }
+      if (step?.node === 'router') {
+        if (routerSeen) inferredRun += 1;
+        else routerSeen = true;
+      }
+    });
+    return runIds;
   };
   const stripOptionPrefix = (line) => String(line || '').replace(/^\s*[A-Ha-h][\.\、\s]+/, '').trim();
   const normalizeOptionLine = (line, idx) => {
@@ -122,13 +157,25 @@ export default function AIGeneratePage() {
     const detail = String(step?.detail || '');
     if (!msg) return null;
     const phase = msg.startsWith('初稿') ? '初稿' : (msg.startsWith('定稿') ? '定稿' : '题目');
-    if (msg.includes('题干')) return { phase, field: 'stem', detail };
-    if (msg.includes('选项')) return { phase, field: 'options', detail };
-    if (msg.includes('解析')) return { phase, field: 'explanation', detail };
-    if (msg === '题目结果') return { phase, field: 'result', detail };
+    const phaseRank = phase === '定稿' ? 2 : phase === '初稿' ? 1 : 0;
+    if (msg.includes('题干')) return { phase, phaseRank, field: 'stem', detail };
+    if (msg.includes('选项')) return { phase, phaseRank, field: 'options', detail };
+    if (msg.includes('解析')) return { phase, phaseRank, field: 'explanation', detail };
+    if (msg === '题目结果') return { phase, phaseRank, field: 'result', detail };
     return null;
   };
+  const truncateDetail = (text, maxLen) => {
+    const s = String(text || '').trim();
+    if (!s || maxLen <= 0) return s;
+    const firstLine = s.split(/\r?\n/)[0] || '';
+    if (firstLine.length <= maxLen) return firstLine;
+    return `${firstLine.slice(0, maxLen)}…`;
+  };
   const renderNormalStep = (item, step, idx) => {
+    const concise = traceDetailMode === 'concise';
+    const detail = step.detail
+      ? (concise ? truncateDetail(step.detail, CONCISE_DETAIL_MAX_LEN) : step.detail)
+      : '';
     const nodeColor = (
       step.level === 'success'
         ? 'green'
@@ -142,19 +189,34 @@ export default function AIGeneratePage() {
       <Space key={`${item.index}_${step.seq || idx}`} size={8} wrap>
         <Tag color={nodeColor}>{step.node || 'system'}</Tag>
         <Typography.Text>{step.message}</Typography.Text>
-        {step.detail ? (
-          <Typography.Paragraph type="secondary" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
-            {step.detail}
-          </Typography.Paragraph>
+        {detail ? (
+          <Typography.Text type="secondary" style={{ whiteSpace: 'pre-wrap' }}>
+            {detail}
+          </Typography.Text>
         ) : null}
       </Space>
     );
   };
   const renderQuestionGroup = (item, group, idx) => {
+    const concise = traceDetailMode === 'concise';
+    const nodeLabel = NODE_LABELS[group.node] || group.node || '';
+    const phaseTitle = nodeLabel ? `${nodeLabel}（${group.phase}）` : group.phase;
+    if (concise) {
+      const stemShort = group.stem ? truncateDetail(group.stem, 50) : '';
+      const result = group.result || '';
+      return (
+        <div key={`${item.index}_qg_${group.node}_${idx}`} style={{ marginBottom: 4 }}>
+          <Typography.Text type="secondary">
+            {phaseTitle}：{stemShort}
+            {result ? ` | ${result}` : ''}
+          </Typography.Text>
+        </div>
+      );
+    }
     const optionLines = splitOptionLines(group.options || '').map((line, i) => normalizeOptionLine(line, i));
     return (
       <div
-        key={`${item.index}_qg_${group.phase}_${idx}`}
+        key={`${item.index}_qg_${group.node}_${idx}`}
         style={{
           border: '1px solid #e5e6eb',
           borderRadius: 8,
@@ -162,7 +224,7 @@ export default function AIGeneratePage() {
           background: '#fafcff',
         }}
       >
-        <Typography.Text strong>{group.phase}</Typography.Text>
+        <Typography.Text strong>{phaseTitle}</Typography.Text>
         {group.stem ? (
           <Typography.Paragraph style={{ margin: '8px 0 0 0', whiteSpace: 'pre-wrap' }}>
             {group.stem}
@@ -171,7 +233,7 @@ export default function AIGeneratePage() {
         {optionLines.length > 0 ? (
           <Space direction="vertical" size={4} style={{ width: '100%', marginTop: 6 }}>
             {optionLines.map((line, i) => (
-              <Typography.Text key={`${item.index}_qg_${group.phase}_opt_${i}`}>{line}</Typography.Text>
+              <Typography.Text key={`${item.index}_qg_${group.node}_opt_${i}`}>{line}</Typography.Text>
             ))}
           </Space>
         ) : null}
@@ -190,38 +252,79 @@ export default function AIGeneratePage() {
   };
   const renderTraceEntries = (item) => {
     const steps = getVisibleSteps(item.steps);
-    const rows = [];
+    const runIds = getRunIds(steps);
     const groupByKey = new Map();
+    const firstQuestionIdxByKey = new Map();
     steps.forEach((step, idx) => {
       const parsed = parseQuestionStep(step);
-      if (!parsed) {
-        rows.push({ type: 'normal', step, idx });
-        return;
-      }
-      const key = `${step?.node || 'system'}|${parsed.phase}`;
+      if (!parsed) return;
+      const node = step?.node || 'system';
+      const runId = runIds[idx];
+      const key = `${node}_${runId}`;
+      if (!firstQuestionIdxByKey.has(key)) firstQuestionIdxByKey.set(key, idx);
       let group = groupByKey.get(key);
       if (!group) {
         group = {
-          node: step?.node || 'system',
-          phase: parsed.phase,
+          node,
+          runId,
           stem: '',
+          stemRank: -1,
           options: '',
+          optionsRank: -1,
           explanation: '',
+          explanationRank: -1,
           result: '',
         };
         groupByKey.set(key, group);
-        rows.push({ type: 'question_group', group });
       }
-      if (parsed.field === 'stem') group.stem = parsed.detail;
-      if (parsed.field === 'options') group.options = parsed.detail;
-      if (parsed.field === 'explanation') group.explanation = parsed.detail;
+      const r = parsed.phaseRank;
+      if (parsed.field === 'stem' && r >= group.stemRank) {
+        group.stem = parsed.detail;
+        group.stemRank = r;
+      }
+      if (parsed.field === 'options' && r >= group.optionsRank) {
+        group.options = parsed.detail;
+        group.optionsRank = r;
+      }
+      if (parsed.field === 'explanation' && r >= group.explanationRank) {
+        group.explanation = parsed.detail;
+        group.explanationRank = r;
+      }
       if (parsed.field === 'result') group.result = parsed.detail;
     });
-    return rows.map((row, i) => (
+    const orderedRows = [];
+    steps.forEach((step, idx) => {
+      const parsed = parseQuestionStep(step);
+      const node = step?.node || 'system';
+      const runId = runIds[idx];
+      const key = `${node}_${runId}`;
+      if (!parsed) {
+        orderedRows.push({ type: 'normal', step, idx });
+        return;
+      }
+      const firstIdx = firstQuestionIdxByKey.get(key);
+      if (firstIdx !== idx) {
+        return;
+      }
+      const g = groupByKey.get(key);
+      if (!g || (!g.stem && !g.options && !g.explanation && !g.result)) return;
+      orderedRows.push({
+        type: 'question_group',
+        group: {
+          node: g.node,
+          phase: g.stemRank >= 2 ? '定稿' : g.stemRank >= 1 ? '初稿' : '题目',
+          stem: g.stem,
+          options: g.options,
+          explanation: g.explanation,
+          result: g.result,
+        },
+      });
+    });
+    return orderedRows.map((row, i) =>
       row.type === 'normal'
         ? renderNormalStep(item, row.step, row.idx)
         : renderQuestionGroup(item, row.group, i)
-    ));
+    );
   };
   const approvedSliceById = useMemo(() => {
     const m = new Map();
@@ -253,7 +356,17 @@ export default function AIGeneratePage() {
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
     const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
-    return `${name}${m?.status === 'effective' ? '（当前生效）' : ''}`;
+    return `${name}${m?.status === 'effective' ? '（生效）' : ''}`;
+  };
+  const buildTemplateTaskName = (template) => {
+    const base = String(template?.name || '模板出题').trim() || '模板出题';
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mi = String(now.getMinutes()).padStart(2, '0');
+    return `${base}-${yyyy}${mm}${dd}-${hh}${mi}`;
   };
   const formatTime = (value) => {
     const s = String(value || '').trim();
@@ -261,33 +374,50 @@ export default function AIGeneratePage() {
     return s.replace('T', ' ').replace(/\.\d+\+\d{2}:\d{2}$/, '');
   };
   const isTaskRunning = (status) => ['pending', 'running'].includes(String(status || ''));
-  const applyTaskDetail = (task) => {
+  // When expectedTaskId is given, only apply if it still matches current active task (avoids overwriting with stale task after new task creation)
+  // Normalize legacy task-timeout errors (task-level timeout has been removed)
+  const normalizeTaskErrors = (rawErrors) => {
+    const list = Array.isArray(rawErrors) ? rawErrors : [];
+    return list.map((e) => {
+      const s = String(e || '').trim();
+      if (/任务执行超时|task\s*execution\s*timeout/i.test(s)) {
+        return '任务执行失败（当前版本已取消任务执行时间限制；该错误可能来自历史任务记录）';
+      }
+      return s;
+    });
+  };
+  const applyTaskDetail = (task, expectedTaskId) => {
     const t = task && typeof task === 'object' ? task : {};
+    const taskId = String(t.task_id || '');
+    if (expectedTaskId != null && expectedTaskId !== '' && (taskId !== String(expectedTaskId) || activeTaskIdRef.current !== String(expectedTaskId))) {
+      return;
+    }
     setLoading(isTaskRunning(t.status));
     const items = Array.isArray(t.items) ? t.items : [];
     setRows(items.map((item, idx) => ({ ...item, _gen_key: `${String(t.task_id || 'task')}_${idx}` })));
     setRunTrace(Array.isArray(t.process_trace) ? t.process_trace : []);
-    setErrors(Array.isArray(t.errors) ? t.errors : []);
+    setErrors(normalizeTaskErrors(t.errors));
     setStats({
       generated_count: Number(t.generated_count || 0),
       saved_count: Number(t.saved_count || 0),
     });
   };
-  const loadTaskList = async (tid, keepActive = true) => {
+  // skipSetActiveWhenEmpty: when true, only refresh taskItems; do not set activeTaskId when it is '' (used in create-mode "new task" flow to avoid showing history)
+  const loadTaskList = async (tid, keepActive = true, skipSetActiveWhenEmpty = false) => {
     if (!tid) return [];
     const res = await listGenerateTasks(tid, { limit: 100 });
     const items = Array.isArray(res?.items) ? res.items : [];
     setTaskItems(items);
     if (!items.length) {
-      if (!keepActive) setActiveTaskId('');
+      if (!keepActive && !skipSetActiveWhenEmpty) setActiveTaskId('');
       return [];
     }
-    if (!keepActive || !activeTaskId) {
+    if (!skipSetActiveWhenEmpty && (!keepActive || !activeTaskId)) {
       setActiveTaskId(String(items[0].task_id || ''));
       return items;
     }
     const hasActive = items.some((x) => String(x?.task_id || '') === String(activeTaskId));
-    if (!hasActive) setActiveTaskId(String(items[0].task_id || ''));
+    if (!skipSetActiveWhenEmpty && !hasActive) setActiveTaskId(String(items[0].task_id || ''));
     return items;
   };
 
@@ -305,6 +435,10 @@ export default function AIGeneratePage() {
       return true;
     });
   }, [taskItems, taskQueryKeyword, taskQueryMaterial, taskQueryStatus]);
+  const selectedTemplate = useMemo(
+    () => (templates || []).find((item) => String(item?.template_id || '') === String(selectedTemplateId || '')) || null,
+    [templates, selectedTemplateId],
+  );
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
 
@@ -317,12 +451,23 @@ export default function AIGeneratePage() {
     setRunTrace([]);
     setTaskItems([]);
     setActiveTaskId('');
+    setTemplates([]);
+    setGenerateBy('manual');
+    setSelectedTemplateId('');
     setSelectedGeneratedKeys([]);
     setErrors([]);
     setStats({ generated_count: 0, saved_count: 0 });
     setShowSlicePanel(false);
     setAutoSelectAllOnNextFilter(false);
+    createForm.setFieldsValue({
+      task_name: '',
+      num_questions: 1,
+      question_type: '单选题',
+      generation_mode: '随机',
+      difficulty: '随机',
+    });
     loadMaterials(tenantId);
+    loadTemplates(tenantId);
     loadTaskList(tenantId, false).catch(() => setTaskItems([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
@@ -330,13 +475,14 @@ export default function AIGeneratePage() {
   useEffect(() => {
     if (!tenantId || !activeTaskId) return undefined;
     if (pageMode !== 'create') return undefined;
+    const pollingTaskId = activeTaskId;
     let cancelled = false;
     const tick = async () => {
       try {
-        const res = await getGenerateTask(tenantId, activeTaskId);
+        const res = await getGenerateTask(tenantId, pollingTaskId);
         if (cancelled) return;
         const task = res?.task || {};
-        applyTaskDetail(task);
+        applyTaskDetail(task, pollingTaskId);
         if (isTaskRunning(task?.status)) {
           setTimeout(tick, 1200);
         } else {
@@ -356,11 +502,12 @@ export default function AIGeneratePage() {
   useEffect(() => {
     if (!tenantId) return undefined;
     const timer = setInterval(() => {
-      loadTaskList(tenantId, true).catch(() => {});
+      // In create mode with no active task (new-task flow), only refresh list; do not set activeTaskId to avoid showing previous task's result
+      const skipSetActive = pageMode === 'create' && !activeTaskId;
+      loadTaskList(tenantId, true, skipSetActive).catch(() => {});
     }, 5000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantId]);
+  }, [tenantId, pageMode, activeTaskId]);
 
   const loadPathTree = async (tid, mid) => {
     if (!tid) return;
@@ -415,10 +562,9 @@ export default function AIGeneratePage() {
     try {
       const res = await listMaterials(tid);
       const items = res.items || [];
-      const activeItems = items.filter((x) => String(x?.status || '') !== 'archived');
-      setMaterials(activeItems);
-      const effective = activeItems.find((x) => x.status === 'effective');
-      const chosen = (effective || activeItems[0] || {}).material_version_id || '';
+      const effectiveItems = items.filter((x) => String(x?.status || '') === 'effective');
+      setMaterials(effectiveItems);
+      const chosen = (effectiveItems[0] || {}).material_version_id || '';
       setMaterialVersionId(chosen);
       if (!chosen) {
         setApprovedSlices([]);
@@ -436,6 +582,17 @@ export default function AIGeneratePage() {
       setMaterialSliceTotal(0);
       setPathTreeOptions([]);
       message.error(e?.response?.data?.error?.message || '加载教材版本失败');
+    }
+  };
+
+  const loadTemplates = async (tid) => {
+    if (!tid) return;
+    try {
+      const res = await listGenerateTemplates(tid);
+      setTemplates(res?.items || []);
+    } catch (e) {
+      setTemplates([]);
+      message.error(e?.response?.data?.error?.message || '加载出题模板失败');
     }
   };
 
@@ -485,21 +642,34 @@ export default function AIGeneratePage() {
         return;
       }
       const candidateIds = selectedSliceKeys.map((x) => Number(x)).filter((x) => Number.isFinite(x));
-      if (!candidateIds.length) {
+      if (generateBy === 'manual' && !candidateIds.length) {
         message.warning('请先在左侧勾选至少一个知识切片');
         setLoading(false);
         return;
       }
+      if (generateBy === 'template' && !selectedTemplate) {
+        message.warning('请选择出题模板');
+        setLoading(false);
+        return;
+      }
+      const templateMaterialVersionId = String(selectedTemplate?.material_version_id || '');
       const payload = {
         task_name: taskName,
         gen_scope_mode: genScopeMode,
-        num_questions: genScopeMode === 'per_slice' ? candidateIds.length : (values.num_questions || 1),
+        num_questions: generateBy === 'template'
+          ? Number(selectedTemplate?.question_count || 1)
+          : (genScopeMode === 'per_slice' ? candidateIds.length : (values.num_questions || 1)),
         question_type: values.question_type || '单选题',
-        generation_mode: values.generation_mode || '灵活',
+        generation_mode: values.generation_mode || '随机',
         difficulty: values.difficulty || '随机',
+        enable_offline_judge: false,
         save_to_bank: AUTO_SAVE_PASSED_QUESTIONS,
-        slice_ids: candidateIds,
-        material_version_id: materialVersionId || undefined,
+        slice_ids: generateBy === 'template' ? [] : candidateIds,
+        material_version_id: generateBy === 'template'
+          ? (templateMaterialVersionId || undefined)
+          : (materialVersionId || undefined),
+        template_id: generateBy === 'template' ? String(selectedTemplate?.template_id || '') : undefined,
+        template_name: generateBy === 'template' ? String(selectedTemplate?.name || '') : undefined,
       };
       const res = await createGenerateTask(tenantId, payload);
       const task = res?.task || {};
@@ -584,6 +754,7 @@ export default function AIGeneratePage() {
     setAppliedPathNodes(selectedPathNodes || []);
     setAppliedSliceKeyword(sliceKeyword || '');
     setAppliedSelectedMastery(selectedMastery || []);
+    setAppliedCalcSliceFilter(selectedCalcSliceFilter || '');
   };
 
   const onQueryFilters = async () => {
@@ -610,9 +781,15 @@ export default function AIGeneratePage() {
   const selectedMasteryForFilter = appliedSelectedMastery.includes(ALL_MASTERY_VALUE)
     ? []
     : appliedSelectedMastery;
-  const finalSlices = chapterFiltered.filter((s) => (
-    !selectedMasteryForFilter.length ? true : selectedMasteryForFilter.includes(s.mastery)
-  ));
+  const calcSliceFilter = appliedCalcSliceFilter || '';
+  const finalSlices = chapterFiltered
+    .filter((s) => (!selectedMasteryForFilter.length ? true : selectedMasteryForFilter.includes(s.mastery)))
+    .filter((s) => {
+      const isCalc = Boolean(s && s.is_calculation_slice);
+      if (!calcSliceFilter) return true;
+      return calcSliceFilter === 'yes' ? isCalc : !isCalc;
+    });
+  const hasAnyCalcSliceInApproved = (approvedSlices || []).some((s) => Boolean(s && s.is_calculation_slice));
   const contentPageSize = 6;
   const pagedContentSlices = finalSlices.slice(
     Math.max(0, (sliceContentPage - 1) * contentPageSize),
@@ -638,7 +815,12 @@ export default function AIGeneratePage() {
     if (materialSliceTotal === 0) return '当前教材还没有生成切片，请先到「资源上传」上传教材并生成切片。';
     if (approvedSlices.length === 0) return '当前教材已有切片，但还没有审核通过（approved）的切片，请先到「切片核对」完成审核。';
     if (chapterFiltered.length === 0) return '当前路径/关键词筛选后没有命中切片，请放宽筛选条件后再试。';
-    if (finalSlices.length === 0) return '当前掌握程度筛选后没有可出题切片，请调整掌握程度条件。';
+    if (finalSlices.length === 0) {
+      if (appliedCalcSliceFilter === 'yes' && !hasAnyCalcSliceInApproved) {
+        return '当前返回的切片中没有任何一条被标记为计算题。请先选「全部」确认有可出题切片；若后端刚更新过，请重启后端后再试。';
+      }
+      return '当前掌握程度或计算题切片筛选后没有可出题切片，请调整筛选条件。';
+    }
     return '';
   })();
 
@@ -712,9 +894,11 @@ export default function AIGeneratePage() {
           ? 'green'
           : status === 'failed'
             ? 'red'
-            : status === 'running'
-              ? 'blue'
-              : 'gold';
+            : status === 'cancelled'
+              ? 'default'
+              : status === 'running'
+                ? 'blue'
+                : 'gold';
         return <Tag color={color}>{status || '-'}</Tag>;
       },
     },
@@ -749,7 +933,7 @@ export default function AIGeneratePage() {
           size="small"
           onClick={() => navigate(`/ai-generate/tasks/${encodeURIComponent(String(r?.task_id || ''))}`)}
         >
-          查看
+          出题过程
         </Button>
       ),
     },
@@ -771,6 +955,8 @@ export default function AIGeneratePage() {
     || errors.length > 0
     || (stats.generated_count || 0) > 0
     || (stats.saved_count || 0) > 0;
+  // In create mode, only show result area when there is an active run (avoid showing previous run as "history")
+  const showResultInCreateMode = hasGenerationSession && (loading || !!activeTaskId);
   return (
     <>
       {pageMode === 'tasks' && (
@@ -795,6 +981,7 @@ export default function AIGeneratePage() {
                     { label: 'running', value: 'running' },
                     { label: 'completed', value: 'completed' },
                     { label: 'failed', value: 'failed' },
+                    { label: 'cancelled', value: 'cancelled' },
                   ]}
                 />
                 <Select
@@ -810,7 +997,30 @@ export default function AIGeneratePage() {
               </Space>
               <Space wrap>
                 <Button onClick={() => loadTaskList(tenantId, true)}>刷新列表</Button>
-                <Button type="primary" onClick={() => setPageMode('create')}>新建出题任务</Button>
+                <Button
+                  type="primary"
+                  onClick={() => {
+                    // Reset generation session when starting a brand new task
+                    setPageMode('create');
+                    setActiveTaskId('');
+                    setRows([]);
+                    setRunTrace([]);
+                    setSelectedGeneratedKeys([]);
+                    setErrors([]);
+                    setStats({ generated_count: 0, saved_count: 0 });
+                    setGenerateBy('manual');
+                    setSelectedTemplateId('');
+                    createForm.setFieldsValue({
+                      task_name: '',
+                      num_questions: 1,
+                      question_type: '单选题',
+                      generation_mode: '随机',
+                      difficulty: '随机',
+                    });
+                  }}
+                >
+                  新建出题任务
+                </Button>
               </Space>
             </div>
           </Card>
@@ -840,6 +1050,80 @@ export default function AIGeneratePage() {
           }
           style={{ marginBottom: 12 }}
         />
+        <Space wrap style={{ width: '100%', marginBottom: 12, justifyContent: 'space-between' }}>
+          <Space wrap>
+            <Typography.Text style={{ color: 'rgba(0, 0, 0, 0.88)', fontWeight: 500 }}>出题方式：</Typography.Text>
+            <Segmented
+              value={generateBy}
+              onChange={(value) => setGenerateBy(String(value || 'manual'))}
+              options={[
+                { label: '手动选切片', value: 'manual' },
+                { label: '按模板出题', value: 'template' },
+              ]}
+            />
+          </Space>
+          <Button onClick={() => navigate('/generate-templates')}>去配置模板</Button>
+        </Space>
+        {generateBy === 'template' ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Select
+              value={selectedTemplateId || undefined}
+              placeholder="选择出题模板"
+              style={{ width: 420 }}
+              onChange={(value) => {
+                const nextId = String(value || '');
+                setSelectedTemplateId(nextId);
+                const target = (templates || []).find((item) => String(item?.template_id || '') === nextId);
+                if (!target) return;
+                setMaterialVersionId(String(target.material_version_id || ''));
+                createForm.setFieldValue('num_questions', Number(target.question_count || 1));
+                const currentTaskName = String(createForm.getFieldValue('task_name') || '').trim();
+                if (!currentTaskName) {
+                  createForm.setFieldValue('task_name', buildTemplateTaskName(target));
+                }
+              }}
+              options={(templates || []).map((item) => ({
+                label: `${item.name}｜${item.material_version_id}｜${item.question_count}题`,
+                value: item.template_id,
+              }))}
+            />
+            {selectedTemplate ? (
+              <>
+                <Alert
+                  type="success"
+                  showIcon
+                  message={`${selectedTemplate.name}｜题量 ${selectedTemplate.question_count} 题`}
+                  description={`教材：${selectedTemplate.material_version_id}；掌握比例 ${Number(selectedTemplate?.mastery_ratio?.掌握 || 0)}:${Number(selectedTemplate?.mastery_ratio?.熟悉 || 0)}:${Number(selectedTemplate?.mastery_ratio?.了解 || 0)}；路由 ${Number(selectedTemplate?.route_rules?.length || 0)} 条`}
+                />
+                <Card size="small" title="快捷开始">
+                  <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
+                    <Space wrap>
+                      <Input
+                        value={String(selectedTemplate?.material_version_id || '')}
+                        readOnly
+                        style={{ width: 240 }}
+                        addonBefore="教材"
+                      />
+                      <Typography.Text type="secondary">
+                        出题会直接使用模板绑定教材。
+                      </Typography.Text>
+                    </Space>
+                    <Button
+                      type="primary"
+                      loading={taskLoading}
+                      disabled={!selectedTemplate}
+                      onClick={() => createForm.submit()}
+                    >
+                      开始出题
+                    </Button>
+                  </Space>
+                </Card>
+              </>
+            ) : (
+              <Alert type="warning" showIcon message="请选择一个出题模板。若还没有模板，请先去“出题模板”页面配置。" />
+            )}
+          </Space>
+        ) : (
         <Space wrap style={{ width: '100%' }}>
           <Typography.Text style={{ color: 'rgba(0, 0, 0, 0.88)', fontWeight: 500 }}>切片范围：</Typography.Text>
           <Select
@@ -912,15 +1196,29 @@ export default function AIGeneratePage() {
               setSelectedMastery(next);
             }}
           />
+          <Select
+            value={selectedCalcSliceFilter || undefined}
+            allowClear
+            placeholder="计算题切片"
+            style={{ width: 140 }}
+            options={[
+              { label: '全部', value: '' },
+              { label: '仅计算题', value: 'yes' },
+              { label: '仅非计算题', value: 'no' },
+            ]}
+            onChange={(v) => setSelectedCalcSliceFilter(v || '')}
+          />
           <Button type="primary" onClick={onQueryFilters}>查询</Button>
           <Button
             onClick={() => {
               setSelectedPathNodes([]);
               setSliceKeyword('');
               setSelectedMastery([]);
+              setSelectedCalcSliceFilter('');
               setAppliedPathNodes([]);
               setAppliedSliceKeyword('');
               setAppliedSelectedMastery([]);
+              setAppliedCalcSliceFilter('');
               setHasQueried(false);
               setSelectedSliceKeys([]);
               setRows([]);
@@ -953,7 +1251,8 @@ export default function AIGeneratePage() {
             <Typography.Text type="secondary">条</Typography.Text>
           </Space>
         </Space>
-        {finalSlices.length === 0 && (
+        )}
+        {generateBy === 'manual' && finalSlices.length === 0 && (
           <Alert
             style={{ marginTop: 10 }}
             type="warning"
@@ -961,7 +1260,7 @@ export default function AIGeneratePage() {
             message={zeroReason}
           />
         )}
-        {approvedSlices.length > 0 && pathTreeOptions.length === 0 && (
+        {generateBy === 'manual' && approvedSlices.length > 0 && pathTreeOptions.length === 0 && (
           <Alert
             style={{ marginTop: 10 }}
             type="warning"
@@ -972,9 +1271,9 @@ export default function AIGeneratePage() {
       </Card>
       )}
 
-      {pageMode === 'create' && hasQueried && (
+      {pageMode === 'create' && (
         <Row gutter={12}>
-          {showSlicePanel && (
+          {generateBy === 'manual' && hasQueried && showSlicePanel && (
             <Col xs={24} lg={11}>
               <Card
                 title={`出题知识切片（当前筛选 ${finalSlices.length} 条）`}
@@ -1064,9 +1363,9 @@ export default function AIGeneratePage() {
               </Card>
             </Col>
           )}
-          <Col xs={24} lg={showSlicePanel ? 13 : 24}>
+          <Col xs={24} lg={generateBy === 'manual' && hasQueried && showSlicePanel ? 13 : 24}>
             <Card style={{ marginBottom: 12 }} title="出题设置">
-              <Form layout="inline" onFinish={onSubmit}>
+              <Form form={createForm} layout="inline" onFinish={onSubmit}>
                 <Form.Item
                   name="task_name"
                   label="任务名称"
@@ -1079,6 +1378,7 @@ export default function AIGeneratePage() {
                     value={genScopeMode}
                     style={{ width: 180 }}
                     onChange={setGenScopeMode}
+                    disabled={generateBy === 'template'}
                     options={[
                       { label: '自定义题量', value: 'custom' },
                       { label: '每个知识点各出一题', value: 'per_slice' },
@@ -1086,7 +1386,11 @@ export default function AIGeneratePage() {
                   />
                 </Form.Item>
                 <Form.Item name="num_questions" initialValue={1} label="题量">
-                  <InputNumber min={1} max={200} disabled={genScopeMode === 'per_slice'} />
+                  <InputNumber
+                    min={1}
+                    max={200}
+                    disabled={generateBy === 'template' || genScopeMode === 'per_slice'}
+                  />
                 </Form.Item>
                 <Form.Item name="question_type" initialValue="单选题" label="题型">
                   <Select
@@ -1099,8 +1403,15 @@ export default function AIGeneratePage() {
                     ]}
                   />
                 </Form.Item>
-                <Form.Item name="generation_mode" initialValue="灵活" label="模式">
-                  <Select style={{ width: 120 }} options={[{ label: '灵活', value: '灵活' }, { label: '严谨', value: '严谨' }]} />
+                <Form.Item name="generation_mode" initialValue="随机" label="筛选条件">
+                  <Select
+                    style={{ width: 220 }}
+                    options={[
+                      { label: '基础概念/理解记忆', value: '基础概念/理解记忆' },
+                      { label: '实战应用/推演', value: '实战应用/推演' },
+                      { label: '随机', value: '随机' },
+                    ]}
+                  />
                 </Form.Item>
                 <Form.Item name="difficulty" initialValue="随机" label="难度">
                   <Select
@@ -1118,7 +1429,9 @@ export default function AIGeneratePage() {
                     type="primary"
                     htmlType="submit"
                     loading={taskLoading}
-                    disabled={!finalSlices.length || !selectedSliceKeys.length}
+                    disabled={generateBy === 'template'
+                      ? !selectedTemplate
+                      : (!finalSlices.length || !selectedSliceKeys.length)}
                   >
                     开始出题
                   </Button>
@@ -1126,11 +1439,34 @@ export default function AIGeneratePage() {
               </Form>
             </Card>
 
-            {hasGenerationSession && (
+            {showResultInCreateMode && (
               <Card
                 title={loading ? '出题过程' : `结果：生成 ${stats.generated_count} 题，已入库 ${stats.saved_count} 题`}
                 extra={(
                   <Space>
+                    {loading && activeTaskId && (
+                      <Button
+                        danger
+                        size="small"
+                        loading={cancellingTaskId === activeTaskId}
+                        disabled={!!cancellingTaskId}
+                        onClick={async () => {
+                          if (!tenantId || !activeTaskId) return;
+                          setCancellingTaskId(activeTaskId);
+                          try {
+                            const res = await cancelGenerateTask(tenantId, activeTaskId);
+                            message.success(res?.message || '已请求取消');
+                            loadTaskList(tenantId, true).catch(() => {});
+                          } catch (e) {
+                            message.error(e?.response?.data?.error?.message || e?.message || '取消失败');
+                          } finally {
+                            setCancellingTaskId('');
+                          }
+                        }}
+                      >
+                        取消任务
+                      </Button>
+                    )}
                     <Segmented
                       size="small"
                       value={traceDetailMode}
@@ -1154,21 +1490,47 @@ export default function AIGeneratePage() {
                   runTrace.length === 0 ? (
                     <Typography.Text type="secondary">正在启动出题流程，请稍候...</Typography.Text>
                   ) : (
-                    <Collapse
+                    <>
+                      {(() => {
+                        const lastItem = runTrace[runTrace.length - 1];
+                        const steps = lastItem?.steps || [];
+                        const hasWriterDone = steps.some((s) => s?.message === '作家润色完成' || (s?.detail && String(s.detail).includes('进入 critic')));
+                        const hasCriticDone = steps.some((s) => s?.node === 'critic' && (s?.message === '审核通过' || s?.message === '审核驳回'));
+                        if (hasWriterDone && !hasCriticDone) {
+                          return (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message="Critic 审核中"
+                              description="当前正在执行审核（可读性检查 + 质量验证，可能含计算题代码校验），通常需 1～3 分钟，请勿关闭页面。若使用推理模型（如 deepseek-reasoner）可能更久。"
+                              style={{ marginBottom: 12 }}
+                            />
+                          );
+                        }
+                        return null;
+                      })()}
+                      <Collapse
                       items={runTrace.map((item) => ({
                         key: String(item.index),
                         label: `第 ${item.index} 题 | 切片 ${item.slice_id} | 耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`,
                         children: (
                           <Space direction="vertical" style={{ width: '100%' }} size={4}>
                             <Typography.Text type="secondary">{item.slice_path || '（无路径）'}</Typography.Text>
-                            <div style={{ maxHeight: 320, overflow: 'auto' }}>
-                              <MarkdownWithMermaid text={buildTraceSliceMarkdown(item)} />
-                            </div>
+                            {traceDetailMode === 'full' ? (
+                              <div style={{ maxHeight: 320, overflow: 'auto' }}>
+                                <MarkdownWithMermaid text={buildTraceSliceMarkdown(item)} />
+                              </div>
+                            ) : (
+                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                （过程详细时可查看切片内容）
+                              </Typography.Text>
+                            )}
                             {renderTraceEntries(item)}
                           </Space>
                         ),
                       }))}
                     />
+                    </>
                   )
                 ) : (
                   <Space direction="vertical" style={{ width: '100%' }} size={12}>
@@ -1180,9 +1542,15 @@ export default function AIGeneratePage() {
                           children: (
                             <Space direction="vertical" style={{ width: '100%' }} size={4}>
                               <Typography.Text type="secondary">{item.slice_path || '（无路径）'}</Typography.Text>
-                              <div style={{ maxHeight: 320, overflow: 'auto' }}>
-                                <MarkdownWithMermaid text={buildTraceSliceMarkdown(item)} />
-                              </div>
+                              {traceDetailMode === 'full' ? (
+                                <div style={{ maxHeight: 320, overflow: 'auto' }}>
+                                  <MarkdownWithMermaid text={buildTraceSliceMarkdown(item)} />
+                                </div>
+                              ) : (
+                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                                  （过程详细时可查看切片内容）
+                                </Typography.Text>
+                              )}
                               {renderTraceEntries(item)}
                             </Space>
                           ),
