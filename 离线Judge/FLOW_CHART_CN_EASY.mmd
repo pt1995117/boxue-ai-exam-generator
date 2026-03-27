@@ -1,0 +1,38 @@
+flowchart TD
+    A[开始: 读取题目数据] --> B[调用 run_judge 初始化状态]
+    B --> D[第1层 盲答校验\nlayer1_blind_solver 判断是否唯一可解]
+
+    D -->|ambiguity_flag = true\n多解/无解/歧义| Z[汇总节点 node_aggregate]
+    D -->|ambiguity_flag = false| E[第2层 知识边界守门\nlayer2_knowledge_gate]
+
+    E -->|命中超纲或约束漂移| Z
+    E -->|通过| C[第3层并行分支0\n基础校验非门禁\n代码硬规则与LLM语义校验]
+    E -->|通过| F1G{第3层并行分支A\n题面综合质检提示词路由\nassessment_type?}
+    E -->|通过| F2[第3层并行分支B\n教学复盘评估\n解析质量 + 教学价值]
+    E -->|is_calculation=true| F3[第3层并行分支C 可选\n计算专项评估\n计算干扰项与复杂度]
+
+    F1G -->|实战应用/推演| F1P[分支A1 practical提示词\nlayer3_surface_quality_practical.md]
+    F1G -->|基础概念/理解记忆| F1C[分支A2 concept提示词\nlayer3_surface_quality_concept.md]
+
+    C --> Z
+    F1P --> Z
+    F1C --> Z
+    F2 --> Z
+    F3 --> Z
+
+    Z --> H{最终决策}
+    H -->|致命信号命中\n如盲答歧义/超纲冲突/泄题等| I[REJECT]
+    H -->|无致命但有风险信号\n含第3层质量评估问题等| J[REVIEW]
+    H -->|各维度通过| K[PASS]
+
+    I --> L[输出 JudgeReport\n分数/原因/维度结果/可执行建议]
+    J --> L
+    K --> L
+
+    classDef layer fill:#eaf4ff,stroke:#2b6cb0,stroke-width:1px,color:#1a202c;
+    classDef decision fill:#fff7e6,stroke:#b7791f,stroke-width:1px,color:#1a202c;
+    classDef endbox fill:#e6fffa,stroke:#2c7a7b,stroke-width:1px,color:#1a202c;
+
+    class C,D,E,F1P,F1C,F2,F3,Z layer;
+    class F1G,H,I,J,K decision;
+    class L endbox;

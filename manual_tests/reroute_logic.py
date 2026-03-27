@@ -37,21 +37,55 @@ print(f"   输出: '{decision}'")
 print(f"   预期: 'fix'")
 print(f"   结果: {'✅ PASS' if decision == 'fix' else '❌ FAIL'}")
 
-# 场景 3: 严重问题（答案错误）→ 应该触发 reroute
+# 场景 3: 严重问题（首次驳回）→ 先走 Fixer，不直接 reroute
 state_major = {
     'critic_result': {
         'passed': False,
         'issue_type': 'major',
         'reason': '答案不一致 (批评家: B vs 生成者: A)'
     },
-    'retry_count': 1
+    'retry_count': 1,
+    'final_json': {}  # no _was_fixed => not yet fixed
 }
 decision = critical_decision(state_major)
-print(f"\n✅ 场景 3 - 严重问题（答案错误）:")
-print(f"   输入: issue_type = 'major', retry_count = 1")
+print(f"\n✅ 场景 3 - 严重问题（首次驳回，未经过 Fixer）:")
+print(f"   输入: issue_type = 'major', final_json 无 _was_fixed")
 print(f"   输出: '{decision}'")
+print(f"   预期: 'fix'（失败一律先走 Fixer）")
+print(f"   结果: {'✅ PASS' if decision == 'fix' else '❌ FAIL'}")
+
+# 场景 3b: 严重问题（Fixer 修复后仍 major）→ 触发 reroute
+state_major_after_fix = {
+    'critic_result': {
+        'passed': False,
+        'issue_type': 'major',
+        'reason': '修复后答案仍不一致'
+    },
+    'retry_count': 1,
+    'final_json': {'_was_fixed': True, '题干': '...'}  # Fixer 已修过
+}
+decision_reroute = critical_decision(state_major_after_fix)
+print(f"\n✅ 场景 3b - 严重问题（Fixer 修复后仍 major）:")
+print(f"   输入: issue_type = 'major', final_json._was_fixed = True")
+print(f"   输出: '{decision_reroute}'")
 print(f"   预期: 'reroute' ⭐")
-print(f"   结果: {'✅ PASS - 会触发重路由！' if decision == 'reroute' else '❌ FAIL'}")
+print(f"   结果: {'✅ PASS - 会触发重路由！' if decision_reroute == 'reroute' else '❌ FAIL'}")
+
+# 场景 3c: 泄题已并入质量把关，不再单独触发 reroute；首次不通过先走 Fixer
+state_major_first = {
+    'critic_result': {
+        'passed': False,
+        'issue_type': 'major',
+    },
+    'retry_count': 0,
+    'final_json': {},
+}
+decision_major_first = critical_decision(state_major_first)
+print(f"\n✅ 场景 3c - 严重问题（首次）→ 先走 Fixer:")
+print(f"   输入: passed=False, issue_type='major', 未修复过")
+print(f"   输出: '{decision_major_first}'")
+print(f"   预期: 'fix'")
+print(f"   结果: {'✅ PASS' if decision_major_first == 'fix' else '❌ FAIL'}")
 
 # 场景 4: 超限自愈
 state_heal = {
@@ -81,14 +115,14 @@ compiled_graph = app
 
 # 检查图的节点
 print("\n节点列表:")
-nodes = ['router', 'specialist', 'finance', 'writer', 'critic', 'fixer']
+nodes = ['router', 'specialist', 'calculator', 'writer', 'critic', 'fixer']
 for node in nodes:
     print(f"  ✅ {node}")
 
 # 验证关键边
 print("\n关键边连接:")
 print("  1. specialist → writer: ✅")
-print("  2. finance → writer: ✅")
+print("  2. calculator → writer: ✅")
 print("  3. writer → critic: ✅")
 print("  4. fixer → critic: ✅ (Fixer 循环)")
 print("  5. critic → router (reroute): ⭐ (需验证)")
@@ -132,32 +166,33 @@ print("    → 验证: 答案 A vs B ❌")
 print("    → 状态: critic_result={'passed': False, 'issue_type': 'major'}")
 print("    → retry_count: 0 → 1")
 
-# 第5步: critical_decision
-mock_state = {
+# 第5步: critical_decision (after Fixer, still major → reroute)
+mock_state_after_fix = {
     'critic_result': {
         'passed': False,
         'issue_type': 'major',
         'reason': '答案不一致'
     },
-    'retry_count': 1
+    'retry_count': 1,
+    'final_json': {'_was_fixed': True}
 }
-decision = critical_decision(mock_state)
+decision_flow = critical_decision(mock_state_after_fix)
 print(f"\n  Step 5: critical_decision()")
-print(f"    → 输入: issue_type='major', retry_count=1")
-print(f"    → 输出: '{decision}'")
+print(f"    → 输入: issue_type='major', retry_count=1, final_json._was_fixed=True")
+print(f"    → 输出: '{decision_flow}'")
 
-if decision == 'reroute':
+if decision_flow == 'reroute':
     print(f"    ✅ 成功触发重路由！")
     
     # 第6步: 回到 Router
     print(f"\n  Step 6: Router (retry_count=1) ⭐")
     print(f"    → 检测到重路由 (retry_count > 0)")
-    print(f"    → 清理旧状态: draft=None, final_json=None")
+    print(f"    → 清理旧状态: draft=None, final_json=None, execution_result=None, generated_code=None, tool_usage=None")
     print(f"    → 重新分析知识点")
     print(f"    → 可能决策: GeneralAgent (换一个专家)")
     
     # 第7步: 新的 Agent
-    print(f"\n  Step 7: GeneralAgent (第2次生成)")
+    print(f"\n  Step 7: Specialist/Calculator (第2次生成)")
     print(f"    → 重新生成题目")
     
     # 第8步: Writer
@@ -169,7 +204,7 @@ if decision == 'reroute':
     print(f"    → 如果通过 → END")
     print(f"    → 如果仍有问题 → 继续循环")
 else:
-    print(f"    ❌ 未触发重路由，decision = '{decision}'")
+    print(f"    ❌ 未触发重路由，decision = '{decision_flow}'")
 
 print("\n" + "="*70)
 print("测试总结")
@@ -181,7 +216,9 @@ all_pass = True
 test_results = {
     "critical_decision('pass')": critical_decision({'critic_result': {'passed': True}, 'retry_count': 0}) == 'pass',
     "critical_decision('fix')": critical_decision({'critic_result': {'passed': False, 'issue_type': 'minor'}, 'retry_count': 1}) == 'fix',
-    "critical_decision('reroute')": critical_decision({'critic_result': {'passed': False, 'issue_type': 'major'}, 'retry_count': 1}) == 'reroute',
+    "critical_decision('fix' first-time major)": critical_decision({'critic_result': {'passed': False, 'issue_type': 'major'}, 'retry_count': 1, 'final_json': {}}) == 'fix',
+    "critical_decision('reroute' after fix still major)": critical_decision({'critic_result': {'passed': False, 'issue_type': 'major'}, 'retry_count': 1, 'final_json': {'_was_fixed': True}}) == 'reroute',
+    "critical_decision('fix' first-time major)": critical_decision({'critic_result': {'passed': False, 'issue_type': 'major'}, 'retry_count': 0}) == 'fix',
     "critical_decision('self_heal')": critical_decision({'critic_result': {'passed': False, 'issue_type': 'minor'}, 'retry_count': 3}) == 'self_heal',
 }
 

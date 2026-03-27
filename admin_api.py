@@ -15,6 +15,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from copy import deepcopy
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -44,14 +45,22 @@ from tenants_config import (
     tenant_audit_log_path,
     tenant_generation_template_path,
     tenant_mapping_path,
+    tenant_mapping_review_path,
     tenant_root,
     tenant_slices_dir,
     tenant_bank_path,
     upsert_tenant,
 )
 from tenant_context import get_accessible_tenants, assert_tenant_access, enforce_permission, load_acl, save_acl
-from exam_factory import KnowledgeRetriever, set_active_tenant
-from exam_graph import app as graph_app, mark_unstable, summarize_llm_trace, detect_router_high_risk_slice
+from exam_factory import KnowledgeRetriever, build_knowledge_retriever
+from exam_graph import (
+    app as graph_app,
+    call_llm,
+    detect_router_high_risk_slice,
+    mark_unstable,
+    parse_json_from_response,
+    summarize_llm_trace,
+)
 from reference_loader import load_reference_questions
 
 app = Flask(__name__)
@@ -545,6 +554,7 @@ def _build_generation_template_plan(
         route_idx = unit_index_by_prefix.get(path_prefix, 0)
         return (fractional, score, scarcity, -route_idx)
 
+    greedy_dead_end_error = ""
     while any(v > 0 for v in row_remaining.values()):
         progressed = False
         for mastery in GEN_TEMPLATE_MASTERIES:
@@ -558,15 +568,152 @@ def _build_generation_template_plan(
                         continue
                     candidates.append((_alloc_priority(path_prefix, mastery), path_prefix))
                 if not candidates:
-                    raise ValueError(f"全局需要 {col_remaining.get(mastery, 0)} 道“{mastery}”题，但可用路由切片不足，无法满足模板占比")
+                    greedy_dead_end_error = (
+                        f"全局需要 {col_remaining.get(mastery, 0)} 道“{mastery}”题，但可用路由切片不足，无法满足模板占比"
+                    )
+                    break
                 candidates.sort(reverse=True)
                 chosen_path = candidates[0][1]
                 allocation[(chosen_path, mastery)] += 1
                 row_remaining[chosen_path] -= 1
                 col_remaining[mastery] -= 1
                 progressed = True
+            if greedy_dead_end_error:
+                break
+        if greedy_dead_end_error:
+            break
         if not progressed:
             break
+
+    unresolved_rows = [path for path, remain in row_remaining.items() if remain > 0]
+    unresolved_cols = [mastery for mastery, remain in col_remaining.items() if remain > 0]
+    if unresolved_rows and unresolved_cols:
+        remaining_units = [
+            {
+                "unit_prefix": str(unit.get("unit_prefix", "")),
+                "count": int(unit.get("count", 0) or 0),
+            }
+            for unit in plan_units
+            if int(unit.get("count", 0) or 0) > 0
+        ]
+        remaining_units.sort(
+            key=lambda unit: (
+                sum(
+                    1
+                    for mastery in GEN_TEMPLATE_MASTERIES
+                    if plan_unit_available_by_mastery.get(str(unit.get("unit_prefix", "")), {}).get(mastery, 0) > 0
+                ),
+                int(unit.get("count", 0) or 0),
+                unit_index_by_prefix.get(str(unit.get("unit_prefix", "")), 0),
+            )
+        )
+
+        def _remaining_capacity(start_idx: int) -> dict[str, int]:
+            capacity = {mastery: 0 for mastery in GEN_TEMPLATE_MASTERIES}
+            for unit in remaining_units[start_idx:]:
+                path_prefix = str(unit.get("unit_prefix", ""))
+                route_count = int(unit.get("count", 0) or 0)
+                for mastery in GEN_TEMPLATE_MASTERIES:
+                    if plan_unit_available_by_mastery.get(path_prefix, {}).get(mastery, 0) > 0:
+                        capacity[mastery] += route_count
+            return capacity
+
+        def _iter_unit_assignments(path_prefix: str, route_count: int, remaining_cols: dict[str, int]):
+            max_first = min(
+                route_count,
+                int(remaining_cols.get(GEN_TEMPLATE_MASTERIES[0], 0) or 0),
+            )
+            for first_count in range(max_first, -1, -1):
+                if (
+                    first_count > 0
+                    and plan_unit_available_by_mastery.get(path_prefix, {}).get(GEN_TEMPLATE_MASTERIES[0], 0) <= 0
+                ):
+                    continue
+                max_second = min(
+                    route_count - first_count,
+                    int(remaining_cols.get(GEN_TEMPLATE_MASTERIES[1], 0) or 0),
+                )
+                for second_count in range(max_second, -1, -1):
+                    if (
+                        second_count > 0
+                        and plan_unit_available_by_mastery.get(path_prefix, {}).get(GEN_TEMPLATE_MASTERIES[1], 0) <= 0
+                    ):
+                        continue
+                    third_count = route_count - first_count - second_count
+                    if third_count < 0:
+                        continue
+                    if third_count > int(remaining_cols.get(GEN_TEMPLATE_MASTERIES[2], 0) or 0):
+                        continue
+                    if (
+                        third_count > 0
+                        and plan_unit_available_by_mastery.get(path_prefix, {}).get(GEN_TEMPLATE_MASTERIES[2], 0) <= 0
+                    ):
+                        continue
+                    yield {
+                        GEN_TEMPLATE_MASTERIES[0]: first_count,
+                        GEN_TEMPLATE_MASTERIES[1]: second_count,
+                        GEN_TEMPLATE_MASTERIES[2]: third_count,
+                    }
+
+        repair_assignment: dict[str, dict[str, int]] = {}
+
+        def _search_remaining(unit_idx: int, remaining_cols: dict[str, int]) -> bool:
+            if unit_idx >= len(remaining_units):
+                return all(int(remaining_cols.get(mastery, 0) or 0) == 0 for mastery in GEN_TEMPLATE_MASTERIES)
+            capacity = _remaining_capacity(unit_idx)
+            if any(int(remaining_cols.get(mastery, 0) or 0) > capacity.get(mastery, 0) for mastery in GEN_TEMPLATE_MASTERIES):
+                return False
+            unit = remaining_units[unit_idx]
+            path_prefix = str(unit.get("unit_prefix", ""))
+            route_count = int(unit.get("count", 0) or 0)
+            target_scores = {
+                mastery: float(cell_scores.get((path_prefix, mastery), 0.0))
+                for mastery in GEN_TEMPLATE_MASTERIES
+            }
+            assignments = list(_iter_unit_assignments(path_prefix, route_count, remaining_cols))
+            assignments.sort(
+                key=lambda item: (
+                    sum(1 for mastery in GEN_TEMPLATE_MASTERIES if int(item.get(mastery, 0) or 0) > 0),
+                    -sum(abs(int(item.get(mastery, 0) or 0) - target_scores.get(mastery, 0.0)) for mastery in GEN_TEMPLATE_MASTERIES),
+                )
+            )
+            for unit_assignment in assignments:
+                next_cols = {
+                    mastery: int(remaining_cols.get(mastery, 0) or 0) - int(unit_assignment.get(mastery, 0) or 0)
+                    for mastery in GEN_TEMPLATE_MASTERIES
+                }
+                if any(v < 0 for v in next_cols.values()):
+                    continue
+                repair_assignment[path_prefix] = unit_assignment
+                if _search_remaining(unit_idx + 1, next_cols):
+                    return True
+                repair_assignment.pop(path_prefix, None)
+            return False
+
+        if _search_remaining(
+            0,
+            {mastery: int(count or 0) for mastery, count in zip(GEN_TEMPLATE_MASTERIES, mastery_counts_global)},
+        ):
+            allocation = {
+                (str(unit.get("unit_prefix", "")), mastery): 0
+                for unit in plan_units
+                for mastery in GEN_TEMPLATE_MASTERIES
+            }
+            row_remaining = {
+                str(unit.get("unit_prefix", "")): int(unit.get("count", 0) or 0)
+                for unit in plan_units
+            }
+            col_remaining = {
+                mastery: int(count or 0) for mastery, count in zip(GEN_TEMPLATE_MASTERIES, mastery_counts_global)
+            }
+            for path_prefix, unit_assignment in repair_assignment.items():
+                for mastery in GEN_TEMPLATE_MASTERIES:
+                    assigned = int(unit_assignment.get(mastery, 0) or 0)
+                    if assigned <= 0:
+                        continue
+                    allocation[(path_prefix, mastery)] += assigned
+                    row_remaining[path_prefix] -= assigned
+                    col_remaining[mastery] -= assigned
 
     unresolved_rows = [path for path, remain in row_remaining.items() if remain > 0]
     unresolved_cols = [mastery for mastery, remain in col_remaining.items() if remain > 0]
@@ -576,7 +723,7 @@ def _build_generation_template_plan(
             details.append("路由剩余未分配: " + ", ".join(f"{path}={row_remaining[path]}" for path in unresolved_rows))
         if unresolved_cols:
             details.append("掌握程度剩余未分配: " + ", ".join(f"{mastery}={col_remaining[mastery]}" for mastery in unresolved_cols))
-        raise ValueError("；".join(details) or "模板切片分配失败")
+        raise ValueError("；".join(details) or greedy_dead_end_error or "模板切片分配失败")
 
     for route in route_summaries:
         path_prefix = str(route.get("path_prefix", ""))
@@ -584,7 +731,7 @@ def _build_generation_template_plan(
             mastery = str(mastery_item.get("mastery", ""))
             mastery_item["count"] = int(allocation.get((path_prefix, mastery), 0) or 0)
 
-    planned_slice_ids: list[int] = []
+    planned_slots: list[dict[str, Any]] = []
     for unit in plan_units:
         path_prefix = str(unit.get("unit_prefix", ""))
         for mastery in GEN_TEMPLATE_MASTERIES:
@@ -594,10 +741,19 @@ def _build_generation_template_plan(
             bucket = list(slice_buckets.get((path_prefix, mastery), []))
             random.shuffle(bucket)
             for idx in range(count):
-                planned_slice_ids.append(int(bucket[idx % len(bucket)]["slice_id"]))
-    random.shuffle(planned_slice_ids)
+                chosen = bucket[idx % len(bucket)]
+                planned_slots.append(
+                    {
+                        "slice_id": int(chosen["slice_id"]),
+                        "route_prefix": path_prefix,
+                        "mastery": mastery,
+                    }
+                )
+    random.shuffle(planned_slots)
+    planned_slice_ids = [int(slot.get("slice_id")) for slot in planned_slots if str(slot.get("slice_id", "")).isdigit()]
     return {
         "planned_slice_ids": planned_slice_ids,
+        "planned_slots": planned_slots,
         "route_breakdown": route_summaries,
         "mastery_ratio": mastery_ratio,
         "mastery_counts": {
@@ -1072,7 +1228,13 @@ def _extract_question_parts(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize question payload from draft/final formats."""
     if not isinstance(payload, dict):
         return {"stem": "", "options": [], "answer": "", "explanation": ""}
-    stem = str(payload.get("题干", "") or payload.get("question", "")).strip()
+    stem = str(
+        payload.get("题干", "")
+        or payload.get("question", "")
+        or payload.get("stem", "")
+        or payload.get("题目", "")
+        or payload.get("question_stem", "")
+    ).strip()
     answer = str(payload.get("正确答案", "") or payload.get("answer", "")).strip()
     explanation = str(payload.get("解析", "") or payload.get("explanation", "")).strip()
     options: list[str] = []
@@ -1214,6 +1376,31 @@ def _attach_mother_question_full_to_question_payload(q_json: dict[str, Any], mot
     q_json["参考母题全文"] = "\n\n".join(blocks)
 
 
+_SLICE_TEXT_INDEX_CACHE: dict[str, dict[str, str]] = {}
+
+
+def _get_slice_text_index(tenant_id: str, material_version_id: str) -> dict[str, str]:
+    mid = str(material_version_id or "").strip()
+    if not mid:
+        return {}
+    cache_key = f"{tenant_id}:{mid}"
+    cached = _SLICE_TEXT_INDEX_CACHE.get(cache_key)
+    if isinstance(cached, dict):
+        return cached
+    kb_file = _resolve_slice_file_for_material(tenant_id, mid)
+    kb_items = _load_kb_items_from_file(kb_file) if kb_file else []
+    out: dict[str, str] = {}
+    for item in kb_items:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("完整路径", "") or "").strip()
+        if not path or path in out:
+            continue
+        out[path] = _extract_slice_text(item)
+    _SLICE_TEXT_INDEX_CACHE[cache_key] = out
+    return out
+
+
 def _normalize_related_slice_paths(raw_value: Any, *, limit: int = 20) -> list[str]:
     """Normalize related slice paths from list/json/newline text."""
     rows: list[str] = []
@@ -1332,6 +1519,69 @@ def _attach_related_slices_to_question_payload(q_json: dict[str, Any], related_p
     q_json["关联切片路径"] = paths
     q_json["关联切片数量"] = len(paths)
     q_json["关联切片路径文本"] = "\n".join(paths)
+
+
+def _attach_preview_context_to_question_payload(
+    q_json: dict[str, Any],
+    *,
+    tenant_id: str,
+    material_version_id: str,
+    question_trace: dict[str, Any],
+    source_path: str = "",
+    source_slice_id: Any = None,
+    mother_questions: list[str] | None = None,
+    mother_full_questions: list[dict[str, Any]] | None = None,
+) -> None:
+    """Attach full preview context so task detail can render failed/unsaved questions with slice and mother data."""
+    if not isinstance(q_json, dict):
+        return
+    trace = question_trace if isinstance(question_trace, dict) else {}
+    resolved_source_path = str(source_path or trace.get("slice_path") or q_json.get("来源路径") or "").strip()
+    resolved_source_slice_id = (
+        source_slice_id
+        if source_slice_id not in (None, "")
+        else trace.get("slice_id", q_json.get("来源切片ID"))
+    )
+    resolved_material_version_id = str(material_version_id or q_json.get("教材版本ID") or "").strip()
+    source_slice_text = str(
+        trace.get("slice_content")
+        or q_json.get("切片原文")
+        or q_json.get("来源切片原文")
+        or ""
+    ).strip()
+
+    if resolved_source_path:
+        q_json["来源路径"] = resolved_source_path
+    if resolved_source_slice_id not in (None, ""):
+        q_json["来源切片ID"] = resolved_source_slice_id
+    if resolved_material_version_id:
+        q_json["教材版本ID"] = resolved_material_version_id
+
+    related_paths, _reference_paths = _extract_related_reference_slices(trace, q_json, None)
+    _attach_related_slices_to_question_payload(q_json, related_paths)
+    _attach_mother_questions_to_question_payload(q_json, mother_questions or [])
+    _attach_mother_question_full_to_question_payload(q_json, mother_full_questions or [])
+
+    if not source_slice_text and resolved_source_path and resolved_material_version_id:
+        source_slice_text = str(_get_slice_text_index(tenant_id, resolved_material_version_id).get(resolved_source_path, "") or "").strip()
+    if source_slice_text:
+        q_json["切片原文"] = source_slice_text
+        q_json["来源切片原文"] = source_slice_text
+
+    all_slice_paths: list[str] = []
+    for raw_path in [resolved_source_path] + related_paths:
+        path = str(raw_path or "").strip()
+        if path and path not in all_slice_paths:
+            all_slice_paths.append(path)
+    q_json["全部切片路径"] = "\n".join(all_slice_paths)
+
+    slice_text_index = _get_slice_text_index(tenant_id, resolved_material_version_id) if resolved_material_version_id else {}
+    all_slice_blocks: list[str] = []
+    for path in all_slice_paths:
+        block_text = source_slice_text if (path == resolved_source_path and source_slice_text) else str(slice_text_index.get(path, "") or "").strip()
+        all_slice_blocks.append(f"【{path}】\n{block_text if block_text else '（未找到该切片原文）'}")
+    if all_slice_blocks:
+        q_json["全部切片原文"] = "\n\n".join(all_slice_blocks)
 
 
 def _is_noisy_log(node_name: str, text: str) -> bool:
@@ -1511,6 +1761,12 @@ def _infer_solution_by_error_key(
     missing_conditions: list[str],
 ) -> str:
     ft = set(str(x) for x in (fail_types or []) if str(x))
+    if error_key == "process:reroute_round_limit":
+        return "减少单题 reroute 轮次，优先让 specialist 直接拿到上一轮 critic 的必改项，避免重复兜圈。"
+    if error_key == "process:question_elapsed_timeout":
+        return "缩短单题链路，优先排查卡住节点和过长 prompt，避免单题执行时间持续超限。"
+    if error_key == "critic:per_question_loop_fused":
+        return "单题在 critic/fixer 间反复循环，需收紧修复目标或直接改写题目，而不是继续原地修补。"
     if missing_conditions or "reverse_solve_fail" in ft:
         return "题干需补齐判题必要条件（如主贷人/限购/多子女/房龄口径），并确保只有一条可推导路径。"
     if "grounding_fail" in ft:
@@ -1525,6 +1781,8 @@ def _infer_solution_by_error_key(
         return "确保所有题目必须经过 critic 节点并返回判定结果，再进入保存分支。"
     if error_key == "no_final_json":
         return "检查 writer/fixer 是否稳定产出 final_json，并在失败时直接重生而非空结果返回。"
+    if error_key == "storage:append_bank_item_failed":
+        return "题目已生成成功但落库失败，需检查题库文件路径、写入权限和 payload 可序列化性。"
     return "根据失败日志补齐约束并做前置校验，减少同类错误反复重试。"
 
 
@@ -1596,6 +1854,360 @@ def _classify_generation_attempt_error(
         "basis_paths": basis_paths,
         "solution": solution,
     }
+
+
+def _build_process_control_attempt_error(
+    *,
+    error_key: str,
+    error_text: str,
+    question_trace: dict[str, Any],
+) -> dict[str, Any]:
+    critic_result = question_trace.get("critic_result") if isinstance(question_trace.get("critic_result"), dict) else {}
+    fail_types = [str(x) for x in (critic_result.get("fail_types") or []) if str(x).strip()]
+    missing_conditions = [str(x) for x in (critic_result.get("missing_conditions") or []) if str(x).strip()]
+    basis_paths = [str(x) for x in (critic_result.get("basis_paths") or []) if str(x).strip()]
+    reason = str(error_text or "").strip()
+    return {
+        "error_key": error_key,
+        "category": "process_control",
+        "reason": reason,
+        "evidence": reason or "流程控制中止",
+        "fail_types": fail_types,
+        "missing_conditions": missing_conditions,
+        "basis_paths": basis_paths,
+        "solution": _infer_solution_by_error_key(
+            error_key=error_key,
+            fail_types=fail_types,
+            reason=reason,
+            missing_conditions=missing_conditions,
+        ),
+    }
+
+
+def _build_abort_attempt_error(
+    *,
+    abort_reason: str,
+    question_trace: dict[str, Any],
+) -> dict[str, Any]:
+    reason = str(abort_reason or "").strip()
+    if reason.startswith("超出单题重路由轮次上限"):
+        return _build_process_control_attempt_error(
+            error_key="process:reroute_round_limit",
+            error_text=reason,
+            question_trace=question_trace,
+        )
+    if reason.startswith("超出单题耗时上限"):
+        return _build_process_control_attempt_error(
+            error_key="process:question_elapsed_timeout",
+            error_text=reason,
+            question_trace=question_trace,
+        )
+    if "critic->fixer循环超过3次" in reason:
+        return _build_process_control_attempt_error(
+            error_key="critic:per_question_loop_fused",
+            error_text=reason,
+            question_trace=question_trace,
+        )
+    return _build_process_control_attempt_error(
+        error_key="process:aborted",
+        error_text=reason or "单题流程被中止",
+        question_trace=question_trace,
+    )
+
+
+def _should_skip_fuse_for_error(*, error_key: str, target_question_count: int) -> bool:
+    key = str(error_key or "").strip()
+    count = int(target_question_count or 0)
+    # 单题循环熔断用于“跳过坏题继续跑”，不应再触发整任务级熔断。
+    if key == "critic:per_question_loop_fused":
+        return True
+    # 大批量任务中，writer质量类问题可通过后续题目/重试自愈，不应过早熔断整任务。
+    return key == "critic:writer_quality_family" and count >= 100
+
+
+def _summarize_trace_fail_levels(process_trace: list[dict[str, Any]]) -> tuple[int, int]:
+    """Return (hard_failed_count, soft_warning_count) at question level."""
+    hard_failed = 0
+    soft_warn = 0
+    for row in (process_trace or []):
+        if not isinstance(row, dict):
+            continue
+        cr = row.get("critic_result") if isinstance(row.get("critic_result"), dict) else {}
+        if not cr:
+            continue
+        passed = bool(cr.get("passed", False))
+        if passed:
+            soft_quality_only = bool(cr.get("soft_quality_only"))
+            soft_issues = [str(x) for x in (cr.get("soft_quality_issues") or []) if str(x).strip()]
+            if soft_quality_only or soft_issues:
+                soft_warn += 1
+        else:
+            hard_failed += 1
+    return hard_failed, soft_warn
+
+
+def _should_soft_pass_on_format_only_fuse(critic_result: dict[str, Any]) -> bool:
+    return _is_abort_whitelist_pass(critic_result)
+
+
+_CRITIC_ABORT_WHITELIST_FAIL_TYPES = {
+    "format_fail",
+    "format_bracket",
+    "readability_fail",
+    "explanation_fail",
+    "quality_fail",
+    "condition_overload",
+    "difficulty_out_of_range",
+    "focus_overload",
+    "term_lock_fail",
+    "name_semantic_issue",
+    "writer_issue",
+    "critic_schema_incomplete",
+}
+
+
+def _extract_critic_issue_record(critic_result: dict[str, Any] | None) -> tuple[list[str], str]:
+    if not isinstance(critic_result, dict):
+        return [], ""
+    fail_types = [str(x).strip() for x in (critic_result.get("fail_types") or []) if str(x).strip()]
+    parts: list[str] = []
+    reason = str(critic_result.get("reason", "") or "").strip()
+    details = str(critic_result.get("details", "") or "").strip()
+    if reason:
+        parts.append(reason)
+    if details and details != reason:
+        parts.append(details)
+    for field in ("all_issues", "quality_issues", "missing_conditions"):
+        values = [str(x).strip() for x in (critic_result.get(field) or []) if str(x).strip()]
+        if values:
+            parts.append(f"{field}: " + "；".join(values))
+    return fail_types, "\n".join(parts).strip()
+
+
+def _is_abort_whitelist_pass(critic_result: dict[str, Any] | None) -> bool:
+    if not isinstance(critic_result, dict):
+        return False
+    if bool(critic_result.get("passed")):
+        return False
+    fail_types = [str(x).strip() for x in (critic_result.get("fail_types") or []) if str(x).strip()]
+    if not fail_types:
+        return False
+    if set(fail_types).issubset(_CRITIC_ABORT_WHITELIST_FAIL_TYPES):
+        return True
+    return bool(
+        critic_result.get("answer_field_mismatch_whitelist_candidate")
+        or critic_result.get("question_type_alignment_whitelist_candidate")
+    )
+
+
+def _build_whitelist_pass_bank_item(
+    *,
+    final_json: dict[str, Any],
+    critic_result: dict[str, Any],
+    task_id: str,
+    task_name: str,
+    run_id: str,
+) -> dict[str, Any]:
+    item = deepcopy(final_json)
+    fail_types, error_content = _extract_critic_issue_record(critic_result)
+    if task_id:
+        item["出题任务ID"] = task_id
+    if task_name:
+        item["出题任务名称"] = task_name
+    item["出题RunID"] = run_id
+    item["审计状态"] = "whitelist_pass"
+    item["是否正式通过"] = True
+    item["白名单通过"] = True
+    item["白名单错误类型"] = fail_types
+    item["白名单错误内容"] = error_content
+    item["白名单critic结果"] = deepcopy(critic_result)
+    return item
+
+
+def _record_slice_generation_failure(
+    *,
+    tenant_id: str,
+    material_version_id: str,
+    slice_id: int,
+    critic_result: dict[str, Any] | None,
+    task_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    path = _slice_generation_health_file_by_material(tenant_id)
+    bucket = _load_material_bucket(path, material_version_id)
+    key = str(int(slice_id))
+    current = bucket.get(key) if isinstance(bucket.get(key), dict) else {}
+    fail_types, error_content = _extract_critic_issue_record(critic_result if isinstance(critic_result, dict) else {})
+    failure_count = int(current.get("failure_count", 0) or 0) + 1
+    blocked = failure_count > 10
+    bucket[key] = {
+        "slice_id": int(slice_id),
+        "failure_count": failure_count,
+        "blocked": blocked,
+        "blocked_reason": "该切片累计非白名单失败超过10次，修改前禁止继续出题" if blocked else "",
+        "last_fail_types": fail_types,
+        "last_error_content": error_content,
+        "last_task_id": str(task_id or ""),
+        "last_run_id": str(run_id or ""),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _save_material_bucket(path, material_version_id, bucket)
+    return dict(bucket[key])
+
+
+def _build_slice_candidate_lookup(
+    candidate_slices: list[dict[str, Any]],
+    *,
+    template_route_rules: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    by_id: dict[int, dict[str, Any]] = {}
+    bucket_to_ids: dict[tuple[str, str], list[int]] = {}
+    template_bucket_to_ids: dict[tuple[str, str], list[int]] = {}
+    route_rules = _normalize_route_rules(template_route_rules or [])
+    for row in candidate_slices or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            sid = int(row.get("slice_id"))
+        except (TypeError, ValueError):
+            continue
+        path = str(row.get("path", "") or "").strip()
+        mastery = str(row.get("mastery", "") or "").strip()
+        bucket_key = (_path_prefix(path, 3), mastery)
+        info = {"slice_id": sid, "path": path, "mastery": mastery, "bucket_key": bucket_key}
+        matched_route_prefix = ""
+        if route_rules:
+            matched = [
+                str(rule.get("path_prefix", "")).strip()
+                for rule in route_rules
+                if path.startswith(str(rule.get("path_prefix", "")).strip())
+            ]
+            if matched:
+                matched_route_prefix = max(matched, key=len)
+                template_bucket_to_ids.setdefault((matched_route_prefix, mastery), []).append(sid)
+                info["template_bucket_key"] = (matched_route_prefix, mastery)
+        by_id[sid] = info
+        bucket_to_ids.setdefault(bucket_key, []).append(sid)
+    return {
+        "by_id": by_id,
+        "bucket_to_ids": bucket_to_ids,
+        "template_bucket_to_ids": template_bucket_to_ids,
+    }
+
+
+def _choose_generation_slice_id(
+    *,
+    planned_slice_ids: list[int],
+    planned_slots: list[dict[str, Any]] | None,
+    success_index: int,
+    candidate_ids: list[int],
+    attempt_count: int,
+    target_question_count: int,
+    excluded_slice_ids: set[int],
+    candidate_lookup: dict[str, Any] | None,
+) -> tuple[int | None, str]:
+    excluded = {int(x) for x in (excluded_slice_ids or set())}
+    if planned_slice_ids and success_index < len(planned_slice_ids):
+        target_sid = int(planned_slice_ids[success_index])
+        if target_sid not in excluded:
+            return target_sid, ""
+        lookup = candidate_lookup or {}
+        by_id = lookup.get("by_id") if isinstance(lookup.get("by_id"), dict) else {}
+        bucket_to_ids = lookup.get("bucket_to_ids") if isinstance(lookup.get("bucket_to_ids"), dict) else {}
+        template_bucket_to_ids = (
+            lookup.get("template_bucket_to_ids")
+            if isinstance(lookup.get("template_bucket_to_ids"), dict)
+            else {}
+        )
+        bucket_key = ((by_id.get(target_sid) or {}).get("bucket_key")) if isinstance(by_id, dict) else None
+        if bucket_key in bucket_to_ids:
+            for alt_sid in bucket_to_ids.get(bucket_key, []):
+                try:
+                    alt_sid_int = int(alt_sid)
+                except (TypeError, ValueError):
+                    continue
+                if alt_sid_int not in excluded:
+                    return alt_sid_int, ""
+        planned_slot = planned_slots[success_index] if isinstance(planned_slots, list) and success_index < len(planned_slots) and isinstance(planned_slots[success_index], dict) else {}
+        route_prefix = str(planned_slot.get("route_prefix", "") or "").strip()
+        mastery = str(planned_slot.get("mastery", "") or "").strip()
+        template_bucket_key = (route_prefix, mastery) if route_prefix and mastery else None
+        if template_bucket_key in template_bucket_to_ids:
+            for alt_sid in template_bucket_to_ids.get(template_bucket_key, []):
+                try:
+                    alt_sid_int = int(alt_sid)
+                except (TypeError, ValueError):
+                    continue
+                if alt_sid_int not in excluded:
+                    return alt_sid_int, ""
+        return None, f"模板位次第{success_index + 1}题对应切片已不可用，且同模板路由范围内相同掌握程度无可替代切片"
+    available = [int(sid) for sid in candidate_ids if int(sid) not in excluded]
+    if not available:
+        return None, "当前范围内已无可继续出题的切片"
+    if target_question_count > len(available):
+        return available[(attempt_count - 1) % len(available)], ""
+    return random.choice(available), ""
+
+
+def _is_template_same_mastery_hard_gap(
+    *,
+    planned_slots: list[dict[str, Any]] | None,
+    success_index: int,
+    sid: int,
+    candidate_lookup: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(planned_slots, list) or success_index >= len(planned_slots):
+        return False
+    planned_slot = planned_slots[success_index] if isinstance(planned_slots[success_index], dict) else {}
+    route_prefix = str(planned_slot.get("route_prefix", "") or "").strip()
+    mastery = str(planned_slot.get("mastery", "") or "").strip()
+    if not route_prefix or not mastery:
+        return False
+    lookup = candidate_lookup or {}
+    template_bucket_to_ids = (
+        lookup.get("template_bucket_to_ids")
+        if isinstance(lookup.get("template_bucket_to_ids"), dict)
+        else {}
+    )
+    peers = []
+    for alt_sid in template_bucket_to_ids.get((route_prefix, mastery), []):
+        try:
+            alt_sid_int = int(alt_sid)
+        except (TypeError, ValueError):
+            continue
+        if alt_sid_int != int(sid):
+            peers.append(alt_sid_int)
+    return len(peers) == 0
+
+
+def _should_exclude_failed_slice_from_task(
+    *,
+    allow_single_retry: bool,
+    sid: int,
+    failure_counts: dict[int, int] | None,
+    retry_limit: int = 2,
+) -> bool:
+    if not allow_single_retry:
+        return True
+    counts = failure_counts if isinstance(failure_counts, dict) else {}
+    current = int(counts.get(int(sid), 0) or 0) + 1
+    counts[int(sid)] = current
+    return current >= max(1, int(retry_limit or 1))
+
+
+def _should_abort_question_attempt(
+    *,
+    started_at: datetime,
+    current_run_id: int,
+    max_graph_rounds_per_question: int,
+    max_question_elapsed_ms: int,
+) -> tuple[bool, str]:
+    elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+    if current_run_id >= max_graph_rounds_per_question:
+        return True, f"超出单题重路由轮次上限({max_graph_rounds_per_question})"
+    if elapsed_ms >= max_question_elapsed_ms:
+        return True, f"超出单题耗时上限({max_question_elapsed_ms}ms)"
+    return False, ""
 
 
 def _merge_llm_trace_records(
@@ -1868,6 +2480,12 @@ def _mapping_review_file_by_material(tenant_id: str) -> Path:
     return path
 
 
+def _slice_generation_health_file_by_material(tenant_id: str) -> Path:
+    path = tenant_root(tenant_id) / "slices" / "slice_generation_health_by_material.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _load_material_bucket(path: Path, material_version_id: str) -> dict[str, dict[str, Any]]:
     if not path.exists():
         return {}
@@ -1944,6 +2562,62 @@ def _upsert_slice_review_for_material(
         "material_version_id": material_version_id,
     }
     _save_material_bucket(path, material_version_id, bucket)
+
+
+def _load_slice_generation_health_for_material(tenant_id: str, material_version_id: str) -> dict[str, dict[str, Any]]:
+    return _load_material_bucket(_slice_generation_health_file_by_material(tenant_id), material_version_id)
+
+
+def _save_slice_generation_health_for_material(
+    tenant_id: str,
+    material_version_id: str,
+    bucket: dict[str, dict[str, Any]],
+) -> None:
+    _save_material_bucket(_slice_generation_health_file_by_material(tenant_id), material_version_id, bucket)
+
+
+def _reset_slice_generation_health_for_material(
+    tenant_id: str,
+    material_version_id: str,
+    *,
+    slice_ids: list[int],
+    reason: str,
+) -> None:
+    path = _slice_generation_health_file_by_material(tenant_id)
+    bucket = _load_material_bucket(path, material_version_id)
+    changed = False
+    for sid in slice_ids:
+        key = str(int(sid))
+        if key not in bucket:
+            continue
+        changed = True
+        bucket[key] = {
+            "slice_id": int(sid),
+            "failure_count": 0,
+            "blocked": False,
+            "blocked_reason": "",
+            "last_fail_types": [],
+            "last_error_content": "",
+            "last_task_id": "",
+            "last_run_id": "",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "reset_reason": str(reason or "").strip(),
+        }
+    if changed:
+        _save_material_bucket(path, material_version_id, bucket)
+
+
+def _blocked_slice_ids_for_material(tenant_id: str, material_version_id: str) -> set[int]:
+    bucket = _load_slice_generation_health_for_material(tenant_id, material_version_id)
+    out: set[int] = set()
+    for k, v in bucket.items():
+        if not (str(k).isdigit() and isinstance(v, dict) and bool(v.get("blocked"))):
+            continue
+        try:
+            out.add(int(k))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _load_mapping_review_for_material(tenant_id: str, material_version_id: str) -> dict[str, dict[str, Any]]:
@@ -2213,6 +2887,7 @@ def _cleanup_material_artifacts(tenant_id: str, material_version_id: str) -> dic
             deleted_files += 1
 
     _delete_material_bucket(_slice_review_file_by_material(tenant_id), material_version_id)
+    _delete_material_bucket(_slice_generation_health_file_by_material(tenant_id), material_version_id)
     _delete_material_bucket(_mapping_review_file_by_material(tenant_id), material_version_id)
 
     bank_removed = 0
@@ -2336,7 +3011,7 @@ def _build_bank_origin_lookup(tenant_id: str) -> dict[str, dict[str, Any]]:
         return "\n".join(parts).strip()
 
     task_name_lookup: dict[str, str] = {}
-    for row in _read_jsonl(_qa_gen_tasks_path(tenant_id)):
+    for row in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
         if not isinstance(row, dict):
             continue
         tid = str(row.get("task_id", "")).strip()
@@ -2576,6 +3251,108 @@ def _append_bank_item(path: Path, item: dict[str, Any]) -> None:
             f.write(line)
 
 
+def _build_needs_fix_bank_item(
+    *,
+    final_json: dict[str, Any],
+    question_trace: dict[str, Any],
+    attempt_error_info: dict[str, Any] | None,
+    task_id: str,
+    task_name: str,
+    run_id: str,
+) -> dict[str, Any]:
+    item = deepcopy(final_json)
+    critic_result = question_trace.get("critic_result") if isinstance(question_trace.get("critic_result"), dict) else {}
+    issues = [str(x) for x in (critic_result.get("all_issues") or []) if str(x).strip()]
+    if not issues:
+        issues = [str(x) for x in (critic_result.get("quality_issues") or []) if str(x).strip()]
+    if not issues:
+        issues = [str(x) for x in (critic_result.get("missing_conditions") or []) if str(x).strip()]
+
+    reason = str((attempt_error_info or {}).get("reason", "") or critic_result.get("reason", "") or "").strip()
+    evidence = str((attempt_error_info or {}).get("evidence", "") or reason or "").strip()
+    solution = str((attempt_error_info or {}).get("solution", "") or "").strip()
+    error_key = str((attempt_error_info or {}).get("error_key", "") or "").strip()
+    fail_types = [str(x) for x in ((attempt_error_info or {}).get("fail_types") or critic_result.get("fail_types") or []) if str(x).strip()]
+    missing_conditions = [
+        str(x)
+        for x in ((attempt_error_info or {}).get("missing_conditions") or critic_result.get("missing_conditions") or [])
+        if str(x).strip()
+    ]
+    basis_paths = [
+        str(x)
+        for x in ((attempt_error_info or {}).get("basis_paths") or critic_result.get("basis_paths") or [])
+        if str(x).strip()
+    ]
+
+    item["出题RunID"] = run_id
+    if task_id:
+        item["出题任务ID"] = task_id
+    if task_name:
+        item["出题任务名称"] = task_name
+    item["审计状态"] = "needs_fix"
+    item["是否正式通过"] = False
+    item["待修复"] = True
+    item["待修复错误键"] = error_key
+    item["待修复原因"] = reason
+    item["待修复证据"] = evidence
+    item["待修复建议"] = solution
+    item["待修复问题"] = issues
+    item["待修复失败类型"] = fail_types
+    item["待修复缺失条件"] = missing_conditions
+    item["待修复依据切片"] = basis_paths
+    item["critic_result"] = critic_result
+    item["_needs_fix_saved"] = True
+    return item
+
+
+def _persist_needs_fix_bank_item(
+    *,
+    path: Path,
+    final_json: dict[str, Any] | None,
+    question_trace: dict[str, Any],
+    attempt_error_info: dict[str, Any] | None,
+    task_id: str,
+    task_name: str,
+    run_id: str,
+) -> tuple[bool, dict[str, Any] | None, str]:
+    if not isinstance(final_json, dict):
+        return False, None, "未产出 final_json，无法保存待修复题"
+    item = _build_needs_fix_bank_item(
+        final_json=final_json,
+        question_trace=question_trace,
+        attempt_error_info=attempt_error_info,
+        task_id=task_id,
+        task_name=task_name,
+        run_id=run_id,
+    )
+    _append_bank_item(path, item)
+    return True, item, ""
+
+
+def _persist_template_gap_failed_item(
+    *,
+    enabled: bool,
+    path: Path,
+    final_json: dict[str, Any] | None,
+    question_trace: dict[str, Any],
+    attempt_error_info: dict[str, Any] | None,
+    task_id: str,
+    task_name: str,
+    run_id: str,
+) -> tuple[bool, dict[str, Any] | None, str]:
+    if not enabled:
+        return False, None, ""
+    return _persist_needs_fix_bank_item(
+        path=path,
+        final_json=final_json,
+        question_trace=question_trace,
+        attempt_error_info=attempt_error_info,
+        task_id=task_id,
+        task_name=task_name,
+        run_id=run_id,
+    )
+
+
 def _qa_dir(tenant_id: str) -> Path:
     path = tenant_root(tenant_id) / "audit"
     path.mkdir(parents=True, exist_ok=True)
@@ -2654,6 +3431,10 @@ def _qa_gen_tasks_path(tenant_id: str) -> Path:
     return _qa_dir(tenant_id) / "gen_tasks.jsonl"
 
 
+def _qa_gen_tasks_summary_path(tenant_id: str) -> Path:
+    return _qa_dir(tenant_id) / "gen_tasks_summary.jsonl"
+
+
 def _qa_judge_tasks_path(tenant_id: str) -> Path:
     return _qa_dir(tenant_id) / "judge_tasks.jsonl"
 
@@ -2668,6 +3449,10 @@ QA_PERSIST_LOCK = threading.Lock()
 BANK_WRITE_LOCK = threading.Lock()
 MAPPING_JOBS: dict[str, dict[str, Any]] = {}
 MAPPING_JOB_LOCK = threading.Lock()
+RETRIEVER_CACHE: dict[tuple[str, str, str, str, str], KnowledgeRetriever] = {}
+RETRIEVER_CACHE_LOCK = threading.Lock()
+RETRIEVER_CACHE_INFLIGHT: dict[tuple[str, str, str, str, str], threading.Event] = {}
+RETRIEVER_CACHE_ERRORS: dict[tuple[str, str, str, str, str], Exception] = {}
 
 
 _REPLACEMENT_FOR_TIMEOUT_MSG = "任务执行失败（当前版本已取消任务执行时间限制；该错误可能来自历史任务记录）"
@@ -2694,6 +3479,9 @@ _ORPHAN_GEN_TASK_MSG = "任务在服务重启后未恢复，已自动标记失�
 _ORPHAN_JUDGE_TASK_MSG = "Judge 任务在服务重启后未恢复，已自动标记失败，请重新发起 Judge 任务。"
 _ORPHAN_GEN_GRACE_SECONDS = max(300, int(os.getenv("ORPHAN_GEN_GRACE_SECONDS", "7200") or 7200))
 _ORPHAN_GEN_ZERO_PROGRESS_SECONDS = max(60, int(os.getenv("ORPHAN_GEN_ZERO_PROGRESS_SECONDS", "900") or 900))
+_ORPHAN_GEN_UNOWNED_RUNNING_SECONDS = max(
+    120, int(os.getenv("ORPHAN_GEN_UNOWNED_RUNNING_SECONDS", "300") or 300)
+)
 _ORPHAN_JUDGE_GRACE_SECONDS = max(120, int(os.getenv("ORPHAN_JUDGE_GRACE_SECONDS", "1800") or 1800))
 _TASK_MAINTENANCE_INTERVAL_SECONDS = max(30, int(os.getenv("TASK_MAINTENANCE_INTERVAL_SECONDS", "120") or 120))
 _MAINTENANCE_STARTED = False
@@ -2731,6 +3519,27 @@ def _is_orphan_reconcile_due(task: dict[str, Any], now: datetime, grace_seconds:
     return (now - last_seen).total_seconds() >= float(max(1, int(grace_seconds or 1)))
 
 
+def _is_unowned_running_task_stale(task: dict[str, Any], now: datetime, stale_seconds: int) -> bool:
+    """Fast stale detection for running tasks without any in-process worker ownership."""
+    if not isinstance(task, dict):
+        return True
+    status = str(task.get("status", "") or "").strip().lower()
+    if status != "running":
+        return False
+    last_seen: datetime | None = None
+    for key in ("updated_at", "started_at", "created_at"):
+        dt = _parse_iso_ts(str(task.get(key, "") or ""))
+        if dt is None:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if last_seen is None or dt > last_seen:
+            last_seen = dt
+    if last_seen is None:
+        return True
+    return (now - last_seen).total_seconds() >= float(max(1, int(stale_seconds or 1)))
+
+
 def _latest_rows_by_task_id(path: Path) -> dict[str, dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     for row in _read_jsonl(path):
@@ -2742,20 +3551,121 @@ def _latest_rows_by_task_id(path: Path) -> dict[str, dict[str, Any]]:
     return rows
 
 
-def _build_bank_task_recovery_stats(tenant_id: str) -> dict[str, dict[str, Any]]:
-    stats: dict[str, dict[str, Any]] = {}
-    for row in _load_bank(tenant_bank_path(tenant_id)):
-        if not isinstance(row, dict):
+_GEN_TASK_FULL_FALLBACK_MAX_BYTES = max(
+    0, int(os.getenv("GEN_TASK_FULL_FALLBACK_MAX_BYTES", str(8 * 1024 * 1024)) or 0)
+)
+_GEN_TASK_SUMMARY_TAIL_SYNC_BYTES = max(
+    0, int(os.getenv("GEN_TASK_SUMMARY_TAIL_SYNC_BYTES", str(16 * 1024 * 1024)) or 0)
+)
+
+
+def _allow_gen_tasks_full_fallback(tenant_id: str) -> bool:
+    path = _qa_gen_tasks_path(tenant_id)
+    if not path.exists():
+        return False
+    try:
+        return path.stat().st_size <= _GEN_TASK_FULL_FALLBACK_MAX_BYTES
+    except Exception:
+        return False
+
+
+def _read_jsonl_tail(path: Path, max_bytes: int) -> list[dict[str, Any]]:
+    if max_bytes <= 0 or not path.exists():
+        return []
+    try:
+        file_size = path.stat().st_size
+        start = max(0, file_size - max_bytes)
+        with path.open("rb") as f:
+            if start > 0:
+                f.seek(start)
+                f.readline()
+            else:
+                f.seek(0)
+            raw = f.read()
+    except Exception:
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in raw.decode("utf-8", errors="ignore").splitlines():
+        if not line.strip():
             continue
-        tid = str(row.get("出题任务ID") or row.get("source_task_id") or row.get("task_id") or "").strip()
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            rows.append(obj)
+    return rows
+
+
+def _refresh_gen_task_summary_from_tail(tenant_id: str) -> None:
+    full_path = _qa_gen_tasks_path(tenant_id)
+    summary_path = _qa_gen_tasks_summary_path(tenant_id)
+    if not full_path.exists() or _GEN_TASK_SUMMARY_TAIL_SYNC_BYTES <= 0:
+        return
+    try:
+        full_mtime = full_path.stat().st_mtime
+        summary_mtime = summary_path.stat().st_mtime if summary_path.exists() else 0.0
+        if summary_mtime >= full_mtime:
+            return
+    except Exception:
+        return
+
+    existing = _latest_rows_by_task_id(summary_path)
+    tail_rows = _read_jsonl_tail(full_path, _GEN_TASK_SUMMARY_TAIL_SYNC_BYTES)
+    pending: list[dict[str, Any]] = []
+    for row in tail_rows:
+        tid = str(row.get("task_id", "")).strip()
         if not tid:
             continue
-        run_id = str(row.get("出题RunID") or row.get("source_run_id") or row.get("run_id") or "").strip()
-        bucket = stats.setdefault(tid, {"saved_count": 0, "run_ids": set()})
+        summary = _build_gen_task_summary(row)
+        prev = existing.get(tid)
+        prev_ts = ""
+        if isinstance(prev, dict):
+            prev_ts = str(prev.get("updated_at", "") or prev.get("created_at", "") or "")
+        curr_ts = str(summary.get("updated_at", "") or summary.get("created_at", "") or "")
+        if not prev or curr_ts >= prev_ts:
+            pending.append(summary)
+            existing[tid] = summary
+    for row in pending:
+        _append_jsonl(summary_path, row)
+
+
+def _latest_gen_task_rows(tenant_id: str, *, allow_full_fallback: bool = False) -> dict[str, dict[str, Any]]:
+    _refresh_gen_task_summary_from_tail(tenant_id)
+    summary_rows = _latest_rows_by_task_id(_qa_gen_tasks_summary_path(tenant_id))
+    if summary_rows:
+        return summary_rows
+    if allow_full_fallback and _allow_gen_tasks_full_fallback(tenant_id):
+        return _latest_rows_by_task_id(_qa_gen_tasks_path(tenant_id))
+    return {}
+
+
+def _build_bank_task_recovery_stats(tenant_id: str) -> dict[str, dict[str, Any]]:
+    stats: dict[str, dict[str, Any]] = {}
+    def _merge(bucket_key: str, run_id: str) -> None:
+        if not bucket_key:
+            return
+        bucket = stats.setdefault(bucket_key, {"saved_count": 0, "run_ids": set()})
         bucket["saved_count"] = int(bucket.get("saved_count", 0) or 0) + 1
         run_ids = bucket.get("run_ids")
         if run_id and isinstance(run_ids, set):
             run_ids.add(run_id)
+
+    for row in _load_bank(tenant_bank_path(tenant_id)):
+        if not isinstance(row, dict):
+            continue
+        tid = str(row.get("出题任务ID") or row.get("source_task_id") or row.get("task_id") or "").strip()
+        task_name = str(row.get("出题任务名称") or row.get("task_name") or "").strip()
+        if not tid:
+            tid = ""
+        run_id = str(row.get("出题RunID") or row.get("source_run_id") or row.get("run_id") or "").strip()
+        if tid:
+            _merge(f"task_id:{tid}", run_id)
+        if task_name:
+            _merge(f"task_name:{task_name}", run_id)
+            parent_name = re.sub(r"#(?:p|repair)\d+$", "", task_name).strip()
+            if parent_name and parent_name != task_name:
+                _merge(f"task_name:{parent_name}", run_id)
     for tid, bucket in stats.items():
         run_ids = bucket.get("run_ids")
         if isinstance(run_ids, set):
@@ -2767,9 +3677,12 @@ def _apply_gen_task_bank_recovery(task: dict[str, Any], bank_stats: dict[str, di
     if not isinstance(task, dict):
         return task
     tid = str(task.get("task_id", "")).strip()
-    if not tid:
-        return task
-    stat = bank_stats.get(tid)
+    task_name = str(task.get("task_name", "")).strip()
+    stat = None
+    if tid:
+        stat = bank_stats.get(f"task_id:{tid}")
+    if not isinstance(stat, dict) and task_name:
+        stat = bank_stats.get(f"task_name:{task_name}")
     if not isinstance(stat, dict):
         return task
     saved_count = int(stat.get("saved_count", 0) or 0)
@@ -2839,6 +3752,192 @@ def _build_run_questions_from_bank(tenant_id: str, run_id: str) -> list[dict[str
     return questions
 
 
+def _build_task_questions_from_bank(tenant_id: str, task_name: str) -> list[dict[str, Any]]:
+    name = str(task_name or "").strip()
+    if not name:
+        return []
+    questions: list[dict[str, Any]] = []
+    idx = 0
+    for row in _load_bank(tenant_bank_path(tenant_id)):
+        if not isinstance(row, dict):
+            continue
+        row_task_name = str(row.get("出题任务名称") or row.get("task_name") or "").strip()
+        if not row_task_name:
+            continue
+        if row_task_name != name and not row_task_name.startswith(f"{name}#"):
+            continue
+        idx += 1
+        stem = str(row.get("题干", "") or "").strip()
+        answer = str(row.get("正确答案", "") or "").strip()
+        explanation = str(row.get("解析", "") or "").strip()
+        options: list[str] = []
+        for opt_idx in range(1, 9):
+            opt_val = str(row.get(f"选项{opt_idx}", "") or "").strip()
+            if opt_val:
+                options.append(opt_val)
+        questions.append(
+            {
+                "index": idx,
+                "question_id": f"bank_task:{idx}",
+                "question_text": stem,
+                "answer": answer,
+                "explanation": explanation,
+                "options": options,
+                "slice_path": str(row.get("来源路径", "") or ""),
+                "slice_id": row.get("来源切片ID"),
+                "saved": True,
+                "final_json": dict(row),
+            }
+        )
+    return questions
+
+
+def _build_task_items_from_qa_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in questions or []:
+        if not isinstance(row, dict):
+            continue
+        final_json = row.get("final_json") if isinstance(row.get("final_json"), dict) else {}
+        item = dict(final_json) if final_json else {}
+        if not item:
+            item = {
+                "题干": str(row.get("question_text", "") or ""),
+                "正确答案": str(row.get("answer", "") or ""),
+                "解析": str(row.get("explanation", "") or ""),
+                "来源路径": str(row.get("slice_path", "") or ""),
+                "来源切片ID": row.get("slice_id"),
+            }
+            options = row.get("options") if isinstance(row.get("options"), list) else []
+            for idx, opt in enumerate(options[:8], start=1):
+                item[f"选项{idx}"] = str(opt or "")
+        if "题干" not in item:
+            item["题干"] = str(row.get("question_text", "") or "")
+        if "正确答案" not in item:
+            item["正确答案"] = str(row.get("answer", "") or "")
+        if "解析" not in item:
+            item["解析"] = str(row.get("explanation", "") or "")
+        if "来源路径" not in item:
+            item["来源路径"] = str(row.get("slice_path", "") or "")
+        if "来源切片ID" not in item:
+            item["来源切片ID"] = row.get("slice_id")
+        items.append(item)
+    return items
+
+
+def _build_minimal_trace_from_qa_questions(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    trace: list[dict[str, Any]] = []
+    for idx, row in enumerate(questions or [], start=1):
+        if not isinstance(row, dict):
+            continue
+        answer = str(row.get("answer", "") or "").strip()
+        slice_path = str(row.get("slice_path", "") or "").strip()
+        steps = [
+            {
+                "seq": 1,
+                "node": "system",
+                "level": "success",
+                "message": "题目已恢复",
+                "detail": "服务重启后从 qa_runs 恢复已生成题目",
+                "time": "",
+                "elapsed_ms": 0,
+                "delta_ms": 0,
+                "run_id": 0,
+            },
+            {
+                "seq": 2,
+                "node": "writer",
+                "level": "info",
+                "message": "定稿题干",
+                "detail": str(row.get("question_text", "") or ""),
+                "time": "",
+                "elapsed_ms": 0,
+                "delta_ms": 0,
+                "run_id": 0,
+            },
+        ]
+        options = row.get("options") if isinstance(row.get("options"), list) else []
+        if options:
+            steps.append(
+                {
+                    "seq": 3,
+                    "node": "writer",
+                    "level": "info",
+                    "message": "定稿选项",
+                    "detail": " | ".join(
+                        f"{chr(64 + opt_idx)}. {str(opt or '').strip()}"
+                        for opt_idx, opt in enumerate(options[:8], start=1)
+                    ),
+                    "time": "",
+                    "elapsed_ms": 0,
+                    "delta_ms": 0,
+                    "run_id": 0,
+                }
+            )
+        if answer:
+            steps.append(
+                {
+                    "seq": len(steps) + 1,
+                    "node": "critic",
+                    "level": "success",
+                    "message": "审核通过",
+                    "detail": f"答案={answer}",
+                    "time": "",
+                    "elapsed_ms": 0,
+                    "delta_ms": 0,
+                    "run_id": 0,
+                }
+            )
+        trace.append(
+            {
+                "index": idx,
+                "target_index": idx,
+                "question_id": str(row.get("question_id", "") or ""),
+                "slice_id": row.get("slice_id"),
+                "slice_path": slice_path,
+                "elapsed_ms": 0,
+                "timing_unknown": True,
+                "saved": bool(row.get("saved", True)),
+                "steps": steps,
+                "final_json": dict(row.get("final_json")) if isinstance(row.get("final_json"), dict) else {},
+                "critic_result": {"passed": True} if answer else {},
+            }
+        )
+    return trace
+
+
+def _hydrate_task_detail_from_run(tenant_id: str, task: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(task, dict):
+        return task
+    out = dict(task)
+    run_id = str(out.get("run_id", "") or "").strip()
+    run = _get_qa_run_by_id(tenant_id, run_id) if run_id else None
+    questions = run.get("questions") if isinstance(run, dict) and isinstance(run.get("questions"), list) else []
+    if not questions:
+        questions = _build_task_questions_from_bank(tenant_id, str(out.get("task_name", "") or ""))
+    if questions and not (isinstance(out.get("items"), list) and out.get("items")):
+        out["items"] = _build_task_items_from_qa_questions(questions)
+    if questions and not (isinstance(out.get("process_trace"), list) and out.get("process_trace")):
+        out["process_trace"] = _build_minimal_trace_from_qa_questions(questions)
+    if questions:
+        q_count = len(questions)
+        out["generated_count"] = max(int(out.get("generated_count", 0) or 0), q_count)
+        out["saved_count"] = max(int(out.get("saved_count", 0) or 0), sum(1 for q in questions if isinstance(q, dict) and q.get("saved", True)))
+        progress = out.get("progress") if isinstance(out.get("progress"), dict) else {}
+        total = int(progress.get("total", 0) or 0)
+        current = int(progress.get("current", 0) or 0)
+        out["progress"] = {
+            "current": max(current, int(out["generated_count"])),
+            "total": max(total, int((out.get("request") or {}).get("num_questions", 0) or 0)),
+        }
+    bm = run.get("batch_metrics") if isinstance(run, dict) and isinstance(run.get("batch_metrics"), dict) else {}
+    if bm:
+        out["batch_metrics"] = bm
+    cs = run.get("cost_summary") if isinstance(run, dict) and isinstance(run.get("cost_summary"), dict) else {}
+    if cs:
+        out["cost_summary"] = cs
+    return out
+
+
 def _is_generate_run_still_active(tenant_id: str, run_id: str) -> bool:
     rid = str(run_id or "").strip()
     if not rid:
@@ -2894,7 +3993,10 @@ def _reconcile_orphan_generate_tasks(tenant_id: str, rows: dict[str, dict[str, A
             continue
         if _is_generate_run_still_active(tenant_id, str(task.get("run_id", "") or "")):
             continue
-        if not _is_orphan_reconcile_due(task, now_dt, _ORPHAN_GEN_GRACE_SECONDS):
+        if not (
+            _is_orphan_reconcile_due(task, now_dt, _ORPHAN_GEN_GRACE_SECONDS)
+            or _is_unowned_running_task_stale(task, now_dt, _ORPHAN_GEN_UNOWNED_RUNNING_SECONDS)
+        ):
             continue
         patched = _apply_gen_task_bank_recovery(dict(task), bank_stats)
         errs = [str(x).strip() for x in (patched.get("errors") or []) if str(x).strip()]
@@ -2973,7 +4075,7 @@ def _maintenance_tenant_ids() -> list[str]:
 
 def _reconcile_orphans_once() -> None:
     for tenant_id in _maintenance_tenant_ids():
-        gen_rows = _latest_rows_by_task_id(_qa_gen_tasks_path(tenant_id))
+        gen_rows = _latest_gen_task_rows(tenant_id)
         if gen_rows:
             _reconcile_orphan_generate_tasks(tenant_id, gen_rows)
         judge_rows = _latest_rows_by_task_id(_qa_judge_tasks_path(tenant_id))
@@ -3052,9 +4154,15 @@ def _make_gen_task(tenant_id: str, system_user: str, body: dict[str, Any]) -> di
             "difficulty": str(body.get("difficulty", "随机")),
             "template_id": str(body.get("template_id", "")).strip(),
             "template_name": str(body.get("template_name", "")).strip(),
-            "save_to_bank": bool(body.get("save_to_bank", True)),
+            "persist_to_bank": bool(body.get("persist_to_bank", body.get("save_to_bank", True))),
+            "save_to_bank": bool(body.get("persist_to_bank", body.get("save_to_bank", True))),
             "slice_ids": [int(x) for x in (body.get("slice_ids") or []) if str(x).isdigit()],
             "material_version_id": str(body.get("material_version_id", "")).strip(),
+            "resume_from_task_id": str(body.get("resume_from_task_id", "")).strip(),
+            "resume_done_count": int(body.get("resume_done_count", 0) or 0),
+            "resume_total_count": int(body.get("resume_total_count", 0) or 0),
+            "resume_remaining_count": int(body.get("resume_remaining_count", 0) or 0),
+            "resume_note": str(body.get("resume_note", "") or "").strip(),
         },
         "run_id": "",
         "material_version_id": str(body.get("material_version_id", "")).strip(),
@@ -3089,6 +4197,19 @@ def _merge_task_trace_by_index(base: list[dict[str, Any]], incoming: list[dict[s
             continue
         prev = by_index.get(idx, {"index": idx, "steps": []})
         merged = {**prev, **item}
+        # When writer/fixer emits a fresh final_json before the next critic verdict,
+        # clear stale critic fields from older live snapshots so the UI does not show
+        # a previous-round reject reason on the new draft.
+        if item.get("final_json") is not None:
+            incoming_critic = item.get("critic_result")
+            has_incoming_critic_details = "critic_details" in item
+            incoming_critic_is_empty = (
+                incoming_critic is None
+                or (isinstance(incoming_critic, dict) and not incoming_critic)
+            )
+            if incoming_critic_is_empty and not has_incoming_critic_details:
+                merged.pop("critic_details", None)
+                merged["critic_result"] = {}
         steps = []
         seen: set[str] = set()
         for s in list(prev.get("steps") or []) + list(item.get("steps") or []):
@@ -3126,8 +4247,30 @@ def _update_task_live(tenant_id: str, task_id: str, patch: dict[str, Any], trace
         task["updated_at"] = now
 
 
+def _mark_live_final_json_stale(question_trace: dict[str, Any], append_step: Callable[..., None] | None = None) -> None:
+    """When reroute starts a new round, mark previous live final_json as stale for UI/debugging."""
+    if not isinstance(question_trace, dict):
+        return
+    final_json = question_trace.get("final_json")
+    if not isinstance(final_json, dict) or not final_json:
+        return
+    if bool(question_trace.get("final_json_expired")):
+        return
+    question_trace["final_json_expired"] = True
+    question_trace["final_json_expired_at"] = datetime.now(timezone.utc).isoformat()
+    question_trace["final_json_expired_run_id"] = int(question_trace.get("active_run_id", 0) or 0)
+    if callable(append_step):
+        append_step(
+            "上一轮定稿已过期",
+            node="system",
+            level="warning",
+            detail="已进入新一轮重试，上一轮 writer/fixer 预览仅供回溯，不再代表当前轮次内容。",
+        )
+
+
 def _persist_gen_task(tenant_id: str, task: dict[str, Any]) -> None:
     _append_jsonl(_qa_gen_tasks_path(tenant_id), task)
+    _append_jsonl(_qa_gen_tasks_summary_path(tenant_id), _build_gen_task_summary(task))
 
 
 def _persist_live_task_snapshot(tenant_id: str, task_id: str) -> None:
@@ -3140,6 +4283,539 @@ def _persist_live_task_snapshot(tenant_id: str, task_id: str) -> None:
             return
         snap = _task_snapshot(task)
     _persist_gen_task(tenant_id, snap)
+
+
+def _get_latest_gen_task_snapshot(tenant_id: str, task_id: str) -> dict[str, Any] | None:
+    tid = str(task_id or "").strip()
+    if not tid:
+        return None
+    live_snap: dict[str, Any] | None = None
+    with GEN_TASK_LOCK:
+        live = GEN_TASKS.get(tid)
+        if isinstance(live, dict) and str(live.get("tenant_id", "")) == tenant_id:
+            live_snap = _task_snapshot(live)
+    persisted = _read_persisted_task(tenant_id, tid)
+    persisted_snap = dict(persisted) if isinstance(persisted, dict) else None
+    if isinstance(live_snap, dict) and isinstance(persisted_snap, dict):
+        live_ts = _parse_iso_ts(str(live_snap.get("updated_at", "") or "")) or _parse_iso_ts(
+            str(live_snap.get("started_at", "") or "")
+        )
+        persisted_ts = _parse_iso_ts(str(persisted_snap.get("updated_at", "") or "")) or _parse_iso_ts(
+            str(persisted_snap.get("started_at", "") or "")
+        )
+        if live_ts and persisted_ts:
+            return persisted_snap if persisted_ts >= live_ts else live_snap
+        # If timestamps are absent/unparseable, prefer persisted snapshot to avoid stale in-memory state blocking resume.
+        return persisted_snap
+    if isinstance(live_snap, dict):
+        return live_snap
+    if isinstance(persisted_snap, dict):
+        return persisted_snap
+    return None
+
+
+def _build_resume_task_body_from_source(
+    tenant_id: str,
+    source_task: dict[str, Any],
+    *,
+    force_remaining: int | None = None,
+    inplace: bool = False,
+) -> dict[str, Any] | None:
+    req = source_task.get("request") if isinstance(source_task.get("request"), dict) else {}
+    total = int(req.get("num_questions", 0) or 0)
+    if total <= 0:
+        return None
+    generated_count = int(source_task.get("generated_count", 0) or 0)
+    saved_count = int(source_task.get("saved_count", 0) or 0)
+    done = max(generated_count, saved_count)
+    remain = int(force_remaining if force_remaining is not None else (total - done))
+    if remain <= 0:
+        return None
+    task_name_base = str(source_task.get("task_name", "") or req.get("task_name", "") or "").strip() or "续跑任务"
+    suffix = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    task_name = task_name_base if inplace else f"{task_name_base}-续跑-{suffix}"
+    return {
+        "task_name": task_name,
+        "gen_scope_mode": str(req.get("gen_scope_mode", "custom") or "custom"),
+        "num_questions": int(remain),
+        "question_type": str(req.get("question_type", "随机") or "随机"),
+        "generation_mode": _normalize_generation_mode(req.get("generation_mode", "随机")),
+        "difficulty": str(req.get("difficulty", "随机") or "随机"),
+        "template_id": str(req.get("template_id", "") or "").strip(),
+        "template_name": str(req.get("template_name", "") or "").strip(),
+        "persist_to_bank": bool(req.get("persist_to_bank", req.get("save_to_bank", True))),
+        "save_to_bank": bool(req.get("persist_to_bank", req.get("save_to_bank", True))),
+        "slice_ids": [int(x) for x in (req.get("slice_ids") or []) if str(x).isdigit()],
+        "material_version_id": str(req.get("material_version_id", "") or source_task.get("material_version_id", "") or "").strip(),
+        "resume_from_task_id": str(source_task.get("task_id", "") or "").strip(),
+        "resume_done_count": int(done),
+        "resume_total_count": int(total),
+        "resume_remaining_count": int(remain),
+        "resume_note": f"断点续跑：复用原任务已成功 {done} 题，补齐剩余 {remain} 题",
+        "resume_inplace": bool(inplace),
+        "resume_original_total": int(total),
+    }
+
+
+def _prepare_inplace_resume_task(tenant_id: str, source_task: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    req = source_task.get("request") if isinstance(source_task.get("request"), dict) else {}
+    task = dict(source_task)
+    task["tenant_id"] = tenant_id
+    task["task_name"] = str(source_task.get("task_name", "") or req.get("task_name", "") or "").strip()
+    task["status"] = "pending"
+    task["ended_at"] = ""
+    task["updated_at"] = now
+    task["cancel_requested"] = False
+    return task
+
+
+def _rebuild_template_resume_gap_plan(
+    tenant_id: str,
+    source_task: dict[str, Any],
+    resume_body: dict[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    """
+    For template tasks, rebuild full template plan by original total count, then subtract
+    already saved questions to obtain remaining planned_slice_ids for resume.
+    """
+    try:
+        req = source_task.get("request") if isinstance(source_task.get("request"), dict) else {}
+        template_id = str(req.get("template_id", "") or "").strip()
+        if not template_id:
+            return resume_body, None
+        template = _get_gen_template(tenant_id, template_id)
+        if not isinstance(template, dict):
+            return resume_body, "模板不存在，无法按占比续跑"
+
+        effective_material_version_request = str(
+            req.get("material_version_id", "") or source_task.get("material_version_id", "") or ""
+        ).strip()
+        material_version_id = _resolve_material_version_id(tenant_id, effective_material_version_request)
+        if not material_version_id:
+            return resume_body, "教材版本不存在，无法按占比续跑"
+
+        kb_file = _resolve_slice_file_for_material(tenant_id, material_version_id)
+        kb_items = _load_kb_items_from_file(kb_file) if kb_file else []
+        if not kb_items:
+            return resume_body, "切片为空，无法按占比续跑"
+
+        review_store = _load_slice_review_for_material(tenant_id, material_version_id)
+        approved_ids = {
+            int(k) for k, v in review_store.items()
+            if str(k).isdigit() and isinstance(v, dict) and v.get("review_status") == "approved"
+        }
+        if not approved_ids:
+            return resume_body, "无 approved 切片，无法按占比续跑"
+
+        selected_ids = set()
+        for sid in (req.get("slice_ids") or []):
+            try:
+                selected_ids.add(int(sid))
+            except (TypeError, ValueError):
+                continue
+        candidate_ids = sorted((selected_ids & approved_ids) if selected_ids else approved_ids)
+        if not candidate_ids:
+            return resume_body, "模板范围内无可用切片，无法按占比续跑"
+
+        history_path = str(_resolve_history_path_for_material(tenant_id, material_version_id))
+        mapping_path = str(_resolve_mapping_path_for_material(tenant_id, material_version_id) or tenant_mapping_path(tenant_id))
+        mapping_review_path = str(tenant_mapping_review_path(tenant_id))
+        retriever = _get_cached_retriever(
+            tenant_id=tenant_id,
+            kb_path=str(kb_file),
+            history_path=history_path,
+            mapping_path=mapping_path,
+            mapping_review_path=mapping_review_path,
+        )
+        candidate_ids = [sid for sid in candidate_ids if 0 <= sid < len(retriever.kb_data)]
+        question_type = str(req.get("question_type", "随机") or "随机")
+        candidate_ids, _ = _filter_candidate_ids_by_question_type(retriever, candidate_ids, question_type)
+        blocked_slice_ids = _blocked_slice_ids_for_material(tenant_id, material_version_id)
+        candidate_ids = [sid for sid in candidate_ids if sid not in blocked_slice_ids]
+        if not candidate_ids:
+            return resume_body, "模板题型与切片冲突，无法按占比续跑"
+
+        candidate_slices = []
+        for sid in candidate_ids:
+            kb_item = retriever.kb_data[sid]
+            candidate_slices.append(
+                {
+                    "slice_id": sid,
+                    "path": str(kb_item.get("完整路径", "")).strip(),
+                    "mastery": str(kb_item.get("掌握程度", "")).strip(),
+                }
+            )
+
+        total_original = int(req.get("num_questions", 0) or 0)
+        if total_original <= 0:
+            return resume_body, None
+        full_plan = _build_generation_template_plan(
+            question_count=total_original,
+            template=template,
+            candidate_slices=candidate_slices,
+        )
+        full_slots = [
+            slot for slot in (full_plan.get("planned_slots") or [])
+            if isinstance(slot, dict) and int(slot.get("slice_id", -1)) in candidate_ids
+        ]
+        full_planned = [int(slot.get("slice_id")) for slot in full_slots]
+        if not full_slots:
+            return resume_body, None
+
+        completed_by_slice: dict[int, int] = {}
+        for tr in (source_task.get("process_trace") or []):
+            if not isinstance(tr, dict):
+                continue
+            if not bool(tr.get("saved")):
+                continue
+            try:
+                sid = int(tr.get("slice_id"))
+            except Exception:
+                continue
+            completed_by_slice[sid] = int(completed_by_slice.get(sid, 0) or 0) + 1
+
+        remaining_plan: list[int] = []
+        remaining_slots: list[dict[str, Any]] = []
+        consume = dict(completed_by_slice)
+        for slot in full_slots:
+            sid = int(slot.get("slice_id"))
+            left = int(consume.get(sid, 0) or 0)
+            if left > 0:
+                consume[sid] = left - 1
+            else:
+                remaining_plan.append(sid)
+                remaining_slots.append(slot)
+
+        # Respect computed remaining count upper bound
+        remain_need = int(resume_body.get("num_questions", 0) or 0)
+        if remain_need > 0 and len(remaining_plan) > remain_need:
+            remaining_plan = remaining_plan[:remain_need]
+            remaining_slots = remaining_slots[:remain_need]
+        if remaining_plan:
+            patched = dict(resume_body)
+            patched["planned_slice_ids"] = remaining_plan
+            patched["planned_slots"] = remaining_slots
+            patched["num_questions"] = int(len(remaining_plan))
+            return patched, None
+        return resume_body, None
+    except Exception as e:
+        return resume_body, f"模板占比缺口重建失败: {e}"
+
+
+def _resolve_template_parallel_context(
+    tenant_id: str,
+    request_body: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        template_id = str(request_body.get("template_id", "") or "").strip()
+        if not template_id:
+            return None, None
+        template = _get_gen_template(tenant_id, template_id)
+        if not isinstance(template, dict):
+            return None, "模板不存在，无法进行模板并发分片"
+
+        material_version_id = _resolve_material_version_id(
+            tenant_id,
+            str(request_body.get("material_version_id", "") or "").strip(),
+        )
+        if not material_version_id:
+            return None, "教材版本不存在，无法进行模板并发分片"
+
+        kb_file = _resolve_slice_file_for_material(tenant_id, material_version_id)
+        kb_items = _load_kb_items_from_file(kb_file) if kb_file else []
+        if not kb_items:
+            return None, "切片为空，无法进行模板并发分片"
+
+        review_store = _load_slice_review_for_material(tenant_id, material_version_id)
+        approved_ids = {
+            int(k) for k, v in review_store.items()
+            if str(k).isdigit() and isinstance(v, dict) and v.get("review_status") == "approved"
+        }
+        if not approved_ids:
+            return None, "无 approved 切片，无法进行模板并发分片"
+
+        selected_ids = set()
+        for sid in (request_body.get("slice_ids") or []):
+            try:
+                selected_ids.add(int(sid))
+            except (TypeError, ValueError):
+                continue
+        candidate_ids = sorted((selected_ids & approved_ids) if selected_ids else approved_ids)
+        if not candidate_ids:
+            return None, "模板范围内没有 approved 切片"
+
+        if not kb_file:
+            return None, "当前城市没有可用切片文件"
+        history_path = str(_resolve_history_path_for_material(tenant_id, material_version_id))
+        mapping_path = str(_resolve_mapping_path_for_material(tenant_id, material_version_id) or tenant_mapping_path(tenant_id))
+        mapping_review_path = str(tenant_mapping_review_path(tenant_id))
+        retriever = _get_cached_retriever(
+            tenant_id=tenant_id,
+            kb_path=str(kb_file),
+            history_path=history_path,
+            mapping_path=mapping_path,
+            mapping_review_path=mapping_review_path,
+        )
+        candidate_ids = [sid for sid in candidate_ids if 0 <= sid < len(retriever.kb_data)]
+        if not candidate_ids:
+            return None, "审核记录与当前切片版本不一致，请重新审核切片后再出题"
+
+        question_type = str(request_body.get("question_type", "随机") or "随机")
+        candidate_ids, _ = _filter_candidate_ids_by_question_type(retriever, candidate_ids, question_type)
+        if not candidate_ids:
+            return None, "模板题型在当前切片范围内均被禁止，无法并发分片"
+
+        blocked_slice_ids = _blocked_slice_ids_for_material(tenant_id, material_version_id)
+        candidate_ids = [sid for sid in candidate_ids if sid not in blocked_slice_ids]
+        if not candidate_ids:
+            return None, "当前范围内切片均已因累计失败被禁用，请先修复切片"
+
+        candidate_slices = []
+        for sid in candidate_ids:
+            kb_item = retriever.kb_data[sid]
+            candidate_slices.append(
+                {
+                    "slice_id": sid,
+                    "path": str(kb_item.get("完整路径", "")).strip(),
+                    "mastery": str(kb_item.get("掌握程度", "")).strip(),
+                }
+            )
+        candidate_lookup = _build_slice_candidate_lookup(
+            candidate_slices,
+            template_route_rules=(template or {}).get("route_rules") if template else None,
+        )
+        question_count = int(template.get("question_count", request_body.get("num_questions", 0)) or request_body.get("num_questions", 0) or 0)
+        if question_count <= 0:
+            return None, "模板题量必须大于0"
+        template_plan = _build_generation_template_plan(
+            question_count=question_count,
+            template=template,
+            candidate_slices=candidate_slices,
+        )
+        planned_slots = [
+            slot for slot in (template_plan.get("planned_slots") or [])
+            if isinstance(slot, dict) and int(slot.get("slice_id", -1)) in candidate_ids
+        ]
+        if not planned_slots:
+            return None, "模板计划为空，无法进行并发分片"
+        return {
+            "template": template,
+            "template_plan": template_plan,
+            "planned_slots": planned_slots,
+            "planned_slice_ids": [int(slot.get("slice_id")) for slot in planned_slots],
+            "candidate_lookup": candidate_lookup,
+            "material_version_id": material_version_id,
+        }, None
+    except Exception as e:
+        return None, f"模板并发计划构建失败: {e}"
+
+
+def _compute_template_parallel_min_shard_size(template_plan: dict[str, Any], total: int) -> int:
+    route_breakdown = template_plan.get("route_breakdown") if isinstance(template_plan, dict) else []
+    mastery_counts = template_plan.get("mastery_counts") if isinstance(template_plan, dict) else {}
+    active_route_count = sum(
+        1 for row in (route_breakdown or [])
+        if isinstance(row, dict) and int(row.get("count", 0) or 0) > 0
+    )
+    active_mastery_count = sum(
+        1 for key in GEN_TEMPLATE_MASTERIES
+        if int((mastery_counts or {}).get(key, 0) or 0) > 0
+    )
+    active_combo_count = 0
+    for row in (route_breakdown or []):
+        if not isinstance(row, dict):
+            continue
+        for item in (row.get("mastery_breakdown") or []):
+            if isinstance(item, dict) and int(item.get("count", 0) or 0) > 0:
+                active_combo_count += 1
+    min_size = max(20, active_route_count, active_mastery_count, active_combo_count)
+    return min(max(1, min_size), max(1, int(total or 1)))
+
+
+def _split_template_slots_for_parallel(
+    planned_slots: list[dict[str, Any]],
+    shard_count: int,
+) -> list[list[dict[str, Any]]]:
+    if shard_count <= 1:
+        return [[{**slot, "_global_target_index": idx} for idx, slot in enumerate(planned_slots or [], start=1)]]
+    shards: list[list[dict[str, Any]]] = [[] for _ in range(shard_count)]
+    for global_idx, slot in enumerate(planned_slots or [], start=1):
+        shard_idx = (global_idx - 1) % shard_count
+        shards[shard_idx].append({**slot, "_global_target_index": global_idx})
+    return [shard for shard in shards if shard]
+
+
+def _validate_template_parallel_result(
+    *,
+    planned_slots: list[dict[str, Any]],
+    process_trace: list[dict[str, Any]],
+    candidate_lookup: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    report = _analyze_template_parallel_result(
+        planned_slots=planned_slots,
+        process_trace=process_trace,
+        candidate_lookup=candidate_lookup,
+    )
+    if report.get("ok"):
+        return True, ""
+    issues = report.get("issues") if isinstance(report.get("issues"), list) else []
+    return False, "；".join([str(x).strip() for x in issues if str(x).strip()][:6]) or "模板整体校验失败"
+
+
+def _analyze_template_parallel_result(
+    *,
+    planned_slots: list[dict[str, Any]],
+    process_trace: list[dict[str, Any]],
+    candidate_lookup: dict[str, Any] | None,
+) -> dict[str, Any]:
+    slot_count = len([slot for slot in (planned_slots or []) if isinstance(slot, dict)])
+    if slot_count <= 0:
+        return {"ok": False, "issues": ["模板计划为空，无法校验"], "missing_target_indexes": [], "invalid_targets": []}
+    saved_traces = [
+        row for row in (process_trace or [])
+        if isinstance(row, dict) and bool(row.get("saved"))
+    ]
+    by_target: dict[int, dict[str, Any]] = {}
+    issues: list[str] = []
+    invalid_targets: list[dict[str, Any]] = []
+    for row in saved_traces:
+        try:
+            target_idx = int(row.get("target_index", 0) or 0)
+        except (TypeError, ValueError):
+            target_idx = 0
+        if target_idx <= 0 or target_idx > slot_count:
+            issues.append(f"存在越界 target_index：{target_idx}")
+            invalid_targets.append({"target_index": target_idx, "reason": "out_of_range", "trace": row})
+            continue
+        if target_idx in by_target:
+            issues.append(f"模板位次重复写入：target_index={target_idx}")
+            invalid_targets.append({"target_index": target_idx, "reason": "duplicate_target", "trace": row})
+            by_target[target_idx] = row
+            continue
+        by_target[target_idx] = row
+    template_bucket_to_ids = (
+        candidate_lookup.get("template_bucket_to_ids")
+        if isinstance(candidate_lookup, dict) and isinstance(candidate_lookup.get("template_bucket_to_ids"), dict)
+        else {}
+    )
+    for idx, slot in enumerate(planned_slots, start=1):
+        row = by_target.get(idx)
+        if not isinstance(row, dict):
+            continue
+        try:
+            actual_sid = int(row.get("slice_id", 0) or 0)
+        except (TypeError, ValueError):
+            actual_sid = 0
+        route_prefix = str(slot.get("route_prefix", "") or "").strip()
+        mastery = str(slot.get("mastery", "") or "").strip()
+        if route_prefix and mastery:
+            allowed_ids = {
+                int(x) for x in (template_bucket_to_ids.get((route_prefix, mastery), []) or [])
+                if str(x).isdigit()
+            }
+            if actual_sid not in allowed_ids:
+                issues.append(
+                    f"模板位次 {idx} 未命中指定桶：期望 route={route_prefix}, mastery={mastery}，实际 slice_id={actual_sid}"
+                )
+                invalid_targets.append({"target_index": idx, "reason": "wrong_bucket", "trace": row})
+        else:
+            try:
+                expected_sid = int(slot.get("slice_id", 0) or 0)
+            except (TypeError, ValueError):
+                expected_sid = 0
+            if expected_sid and actual_sid != expected_sid:
+                issues.append(f"模板位次 {idx} 切片偏移：期望 {expected_sid}，实际 {actual_sid}")
+                invalid_targets.append({"target_index": idx, "reason": "wrong_slice", "trace": row})
+    missing_target_indexes = [idx for idx in range(1, slot_count + 1) if idx not in by_target]
+    if len(saved_traces) != slot_count:
+        issues.insert(0, f"模板并发聚合后通过题数不足：期望 {slot_count} 题，实际 {len(saved_traces)} 题")
+    for idx in missing_target_indexes:
+        issues.append(f"模板位次缺失：target_index={idx}")
+    valid_by_target = {
+        idx: row for idx, row in by_target.items()
+        if idx not in {int(x.get("target_index", 0) or 0) for x in invalid_targets if isinstance(x, dict)}
+    }
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "slot_count": slot_count,
+        "valid_by_target": valid_by_target,
+        "missing_target_indexes": missing_target_indexes,
+        "invalid_targets": invalid_targets,
+    }
+
+
+def _plan_template_repair_strategy(report: dict[str, Any]) -> tuple[str, str]:
+    issue_lines = [str(x).strip() for x in (report.get("issues") or []) if str(x).strip()]
+    prompt = f"""
+你是模板出题修复调度器。你只能在以下策略中选择一种：
+1. `repair_missing_slots`：仅补缺失位次
+2. `retry_invalid_and_missing_slots`：作废错位/重复位次，并补跑错位+缺失位次
+3. `abort`：不要继续修复，直接失败
+
+当前模板聚合校验报告：
+{json.dumps({
+    "slot_count": report.get("slot_count"),
+    "missing_target_indexes": report.get("missing_target_indexes"),
+    "invalid_targets": [
+        {
+            "target_index": x.get("target_index"),
+            "reason": x.get("reason"),
+            "slice_id": ((x.get("trace") or {}).get("slice_id") if isinstance(x.get("trace"), dict) else None),
+        }
+        for x in (report.get("invalid_targets") or [])
+        if isinstance(x, dict)
+    ],
+    "issues": issue_lines,
+}, ensure_ascii=False)}
+
+决策要求：
+- 如果只有缺失位次，没有错位/重复，优先选 `repair_missing_slots`
+- 如果存在错位、重复或错桶，优先选 `retry_invalid_and_missing_slots`
+- 只有在问题无法通过补位/重试局部位次解决时，才选 `abort`
+
+只输出 JSON：
+{{
+  "strategy": "repair_missing_slots/retry_invalid_and_missing_slots/abort",
+  "reason": "一句话说明"
+}}
+"""
+    try:
+        api_key, base_url, model_name = _resolve_generation_llm_from_primary_key()
+        if not api_key:
+            raise RuntimeError("missing_api_key")
+        content, _, _ = call_llm(
+            node_name="template.repair_plan",
+            prompt=prompt,
+            model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
+            provider="ait",
+            temperature=0.0,
+            max_tokens=200,
+            timeout=60,
+        )
+        parsed = parse_json_from_response(content)
+        strategy = str(parsed.get("strategy", "") or "").strip()
+        reason = str(parsed.get("reason", "") or "").strip()
+    except Exception:
+        strategy = ""
+        reason = ""
+    allowed = {"repair_missing_slots", "retry_invalid_and_missing_slots", "abort"}
+    if strategy not in allowed:
+        invalid_targets = report.get("invalid_targets") if isinstance(report.get("invalid_targets"), list) else []
+        missing_targets = report.get("missing_target_indexes") if isinstance(report.get("missing_target_indexes"), list) else []
+        if invalid_targets:
+            strategy = "retry_invalid_and_missing_slots"
+            reason = reason or "存在错位/重复位次，优先局部作废并补跑"
+        elif missing_targets:
+            strategy = "repair_missing_slots"
+            reason = reason or "仅存在缺失位次，直接补位"
+        else:
+            strategy = "abort"
+            reason = reason or "未识别出可修复缺口"
+    return strategy, reason
 
 
 def _prune_judge_task_cache() -> None:
@@ -3217,6 +4893,86 @@ def _judge_task_name_exists(tenant_id: str, task_name: str) -> bool:
         if exist and exist == normalized:
             return True
     return False
+
+
+def _path_version_token(path_like: Any) -> str:
+    path_str = str(path_like or "").strip()
+    if not path_str:
+        return ""
+    try:
+        stat = Path(path_str).stat()
+        return f"{path_str}|{int(stat.st_mtime_ns)}|{int(stat.st_size)}"
+    except Exception:
+        return path_str
+
+
+def _get_cached_retriever(
+    *,
+    tenant_id: str,
+    kb_path: str,
+    history_path: str,
+    mapping_path: str,
+    mapping_review_path: str,
+) -> KnowledgeRetriever:
+    cache_key = (
+        str(tenant_id or "").strip(),
+        _path_version_token(kb_path),
+        _path_version_token(history_path),
+        _path_version_token(mapping_path),
+        _path_version_token(mapping_review_path),
+    )
+    wait_event: threading.Event | None = None
+    should_build = False
+    with RETRIEVER_CACHE_LOCK:
+        cached = RETRIEVER_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        wait_event = RETRIEVER_CACHE_INFLIGHT.get(cache_key)
+        if wait_event is None:
+            wait_event = threading.Event()
+            RETRIEVER_CACHE_INFLIGHT[cache_key] = wait_event
+            RETRIEVER_CACHE_ERRORS.pop(cache_key, None)
+            should_build = True
+    if not should_build:
+        assert wait_event is not None
+        wait_event.wait()
+        with RETRIEVER_CACHE_LOCK:
+            cached = RETRIEVER_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+            err = RETRIEVER_CACHE_ERRORS.pop(cache_key, None)
+        if err is not None:
+            raise RuntimeError(f"retriever_build_failed[{cache_key[0]}]") from err
+        raise RuntimeError(f"retriever_cache_wait_failed[{cache_key[0]}]")
+
+    try:
+        retriever = build_knowledge_retriever(
+            tenant_id=tenant_id,
+            kb_path=str(kb_path),
+            history_path=str(history_path),
+            mapping_path=str(mapping_path),
+            mapping_review_path=str(mapping_review_path),
+        )
+    except Exception as e:
+        with RETRIEVER_CACHE_LOCK:
+            RETRIEVER_CACHE_ERRORS[cache_key] = e
+            inflight = RETRIEVER_CACHE_INFLIGHT.pop(cache_key, None)
+            if inflight is not None:
+                inflight.set()
+        raise
+
+    with RETRIEVER_CACHE_LOCK:
+        RETRIEVER_CACHE[cache_key] = retriever
+        RETRIEVER_CACHE_ERRORS.pop(cache_key, None)
+        if len(RETRIEVER_CACHE) > 12:
+            stale_keys = [k for k in RETRIEVER_CACHE.keys() if k != cache_key]
+            for stale_key in stale_keys[: max(0, len(RETRIEVER_CACHE) - 12)]:
+                RETRIEVER_CACHE.pop(stale_key, None)
+                RETRIEVER_CACHE_ERRORS.pop(stale_key, None)
+        inflight = RETRIEVER_CACHE_INFLIGHT.pop(cache_key, None)
+        if inflight is not None:
+            inflight.set()
+        return RETRIEVER_CACHE[cache_key]
 
 
 def _judge_request_body_from_task(task: dict[str, Any]) -> dict[str, Any]:
@@ -3323,7 +5079,7 @@ def _is_judge_task_cancelled(task_id: str) -> bool:
 
 def _load_run_task_name_lookup(tenant_id: str) -> dict[str, str]:
     lookup: dict[str, str] = {}
-    for row in _read_jsonl(_qa_gen_tasks_path(tenant_id)):
+    for row in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
         if not isinstance(row, dict):
             continue
         rid = str(row.get("run_id", "") or "").strip()
@@ -4335,9 +6091,36 @@ def _parse_iso_ts(val: str) -> datetime | None:
     except Exception:
         return None
 
+
+def _resolve_judge_city_name(
+    tenant_id: str | None,
+    config_payload: dict[str, Any] | None,
+) -> str:
+    """
+    解析离线 Judge 使用的命题城市展示名：优先配置显式字段，否则按 tenant_id 查 tenants 注册表。
+    """
+    cfg = config_payload if isinstance(config_payload, dict) else {}
+    for key in ("city_name", "tenant_display_name", "命题城市"):
+        v = str(cfg.get(key, "") or "").strip()
+        if v:
+            return v
+    tid = str(cfg.get("tenant_id", "") or (tenant_id or "")).strip()
+    if not tid:
+        return ""
+    try:
+        for row in list_tenants():
+            if str(row.get("tenant_id", "")).strip() == tid:
+                name = str(row.get("name", "") or "").strip()
+                return name or tid
+    except Exception:
+        pass
+    return tid
+
+
 def _trace_to_question_input(
     question_trace: dict[str, Any],
     config_payload: dict[str, Any],
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Build a dict suitable for Judge QuestionInput from process_trace item and config.
@@ -4372,6 +6155,7 @@ def _trace_to_question_input(
     )
     generation_mode = str(config_payload.get("generation_mode", "随机") or "随机")
     assessment_type = "实战应用/推演" if generation_mode == "实战应用/推演" else "基础概念/理解记忆"
+    city_name = _resolve_judge_city_name(tenant_id, config_payload)
     return {
         "question_id": str(question_trace.get("question_id", "")),
         "stem": stem,
@@ -4384,6 +6168,7 @@ def _trace_to_question_input(
         "question_type": question_type,
         "assessment_type": assessment_type,
         "is_calculation": False,
+        "city_name": city_name,
     }
 
 
@@ -4436,7 +6221,8 @@ def _run_offline_judge_for_trace(
     except Exception:
         return None
     try:
-        qin_dict = _trace_to_question_input(question_trace, config_payload)
+        tid = str((config_payload or {}).get("tenant_id", "") or "").strip() or None
+        qin_dict = _trace_to_question_input(question_trace, config_payload, tid)
         qin = QuestionInput(**qin_dict)
         report = run_judge(qin, llm)
         out = report.model_dump()
@@ -4602,7 +6388,7 @@ def _hydrate_run_questions_from_task_if_needed(
                 q2["options"] = opts
         if not str(q2.get("slice_content", "") or "").strip():
             q2["slice_content"] = str(trace.get("slice_content", "") or "").strip()
-        ji = _trace_to_question_input(trace, cfg)
+        ji = _trace_to_question_input(trace, cfg, tenant_id)
         if _is_effective_judge_input(ji):
             q2["judge_input"] = {
                 "stem": str(ji.get("stem", "") or ""),
@@ -4613,6 +6399,7 @@ def _hydrate_run_questions_from_task_if_needed(
                 "related_slices": list(ji.get("related_slices") or []),
                 "reference_slices": list(ji.get("reference_slices") or []),
                 "question_type": str(ji.get("question_type", "") or ""),
+                "city_name": str(ji.get("city_name", "") or ""),
             }
         if q2 != q:
             questions[i] = q2
@@ -4628,6 +6415,8 @@ def _run_offline_judge_for_question(
     question: dict[str, Any],
     config_payload: dict[str, Any],
     llm: Any,
+    *,
+    tenant_id: str | None = None,
 ) -> dict[str, Any] | None:
     """
     Run offline Judge on one question. Uses judge_input if present; otherwise builds input
@@ -4646,6 +6435,12 @@ def _run_offline_judge_for_question(
     ji = _build_judge_input_from_question(question)
     if not ji:
         return {"error": "题目缺少 judge_input 且无法从题干/选项拼出"}
+    cfg = dict(config_payload) if isinstance(config_payload, dict) else {}
+    eff_tid = str(tenant_id or cfg.get("tenant_id", "") or "").strip() or None
+    city_name = _resolve_judge_city_name(eff_tid, cfg)
+    ji_city = str(ji.get("city_name", "") or "").strip()
+    if ji_city:
+        city_name = ji_city
     question_final_json = question.get("final_json") if isinstance(question.get("final_json"), dict) else {}
     question_type = _resolve_judge_question_type(
         preferred=(ji or {}).get("question_type") or question.get("question_type") or question_final_json.get("题目类型"),
@@ -4669,6 +6464,7 @@ def _run_offline_judge_for_question(
             "reference_slices": list(ji.get("reference_slices") or []),
             "question_type": question_type,
             "assessment_type": assessment_type,
+            "city_name": city_name,
         },
     }
     try:
@@ -4686,6 +6482,7 @@ def _run_offline_judge_for_question(
             question_type=question_type,
             assessment_type=assessment_type,
             is_calculation=False,
+            city_name=city_name,
         )
         report = run_judge(qin, llm)
         out = report.model_dump()
@@ -5641,6 +7438,7 @@ def api_slices(tenant_id: str):
 
         display_paths = _build_display_paths(kb_items)
         reviews = _load_slice_review_for_material(tenant_id, material_version_id)
+        generation_health = _load_slice_generation_health_for_material(tenant_id, material_version_id)
         items = []
         for i, s in enumerate(kb_items):
             if _is_slice_deleted(s):
@@ -5658,6 +7456,7 @@ def api_slices(tenant_id: str):
                 continue
             full_content = _extract_slice_text(s)
             image_items = _extract_slice_images(s)
+            health = generation_health.get(str(i), {}) if isinstance(generation_health.get(str(i)), dict) else {}
             items.append(
                 {
                     'slice_id': i,
@@ -5670,6 +7469,11 @@ def api_slices(tenant_id: str):
                     'images': image_items,
                     'material_version_id': material_version_id,
                     'is_calculation_slice': _is_calculation_slice(s),
+                    'generation_failure_count': int(health.get("failure_count", 0) or 0),
+                    'generation_blocked': bool(health.get("blocked")),
+                    'generation_block_reason': str(health.get("blocked_reason", "") or ""),
+                    'generation_last_fail_types': [str(x) for x in (health.get("last_fail_types") or []) if str(x).strip()],
+                    'generation_last_error_content': str(health.get("last_error_content", "") or ""),
                 }
             )
         order_bucket = _load_slice_order_for_material(tenant_id, material_version_id)
@@ -5973,6 +7777,12 @@ def api_slice_update(tenant_id: str, slice_id: int):
         reviewer=system_user,
         comment="内容已修改，待复核",
     )
+    _reset_slice_generation_health_for_material(
+        tenant_id,
+        material_version_id,
+        slice_ids=[slice_id],
+        reason="切片内容已修改，清空历史失败禁用状态",
+    )
 
     write_audit_log(
         tenant_id,
@@ -6069,6 +7879,12 @@ def api_slice_image_update(tenant_id: str, slice_id: int):
         review_status="pending",
         reviewer=system_user,
         comment="图片解析已修改，待复核",
+    )
+    _reset_slice_generation_health_for_material(
+        tenant_id,
+        material_version_id,
+        slice_ids=[slice_id],
+        reason="切片图片解析已修改，清空历史失败禁用状态",
     )
 
     write_audit_log(
@@ -6179,6 +7995,12 @@ def api_slice_merge(tenant_id: str):
         reviewer=reviewer,
         comment="切片已合并，待复核",
     )
+    _reset_slice_generation_health_for_material(
+        tenant_id,
+        material_version_id,
+        slice_ids=[base_id, *deleted_ids],
+        reason="切片已合并，清空相关失败禁用状态",
+    )
 
     order_bucket = _load_slice_order_for_material(tenant_id, material_version_id)
     group_ids = [sid for sid in order_bucket.get(p3, []) if sid not in deleted_ids]
@@ -6264,6 +8086,12 @@ def api_slice_add(tenant_id: str):
         review_status="pending",
         reviewer=reviewer,
         comment="",
+    )
+    _reset_slice_generation_health_for_material(
+        tenant_id,
+        material_version_id,
+        slice_ids=[new_slice_id],
+        reason="新增切片，初始化失败禁用状态",
     )
 
     path3 = _path_prefix(path, 3)
@@ -7083,6 +8911,7 @@ def api_material_reslice(tenant_id: str, material_version_id: str):
 
     # 重新切片后，旧审核记录与旧映射都可能不再可靠，重置以避免脏数据。
     _delete_material_bucket(_slice_review_file_by_material(tenant_id), target)
+    _delete_material_bucket(_slice_generation_health_file_by_material(tenant_id), target)
     mapping_dir = tenant_root(tenant_id) / "mapping"
     for p in (
         mapping_dir / f"knowledge_question_mapping_{target}.json",
@@ -7619,7 +9448,9 @@ def api_generate_questions(tenant_id: str):
     slice_ids_input = body.get("slice_ids") or []
     template_id = str(body.get("template_id", "")).strip()
     planned_slice_ids_input = body.get("planned_slice_ids") or []
-    save_to_bank = bool(body.get("save_to_bank", True))
+    planned_slots_input = body.get("planned_slots") or []
+    planned_slots_input = body.get("planned_slots") or []
+    persist_to_bank = bool(body.get("persist_to_bank", body.get("save_to_bank", True)))
     requested_material_version_id = str(body.get("material_version_id", "")).strip()
     task_id = str(body.get("task_id", "")).strip()
     task_name = str(body.get("task_name", "")).strip()
@@ -7629,6 +9460,8 @@ def api_generate_questions(tenant_id: str):
         return _error("BAD_REQUEST", "非法题型", 400)
     if generation_mode not in GEN_MODES:
         return _error("BAD_REQUEST", "非法出题模式", 400)
+    max_graph_rounds_per_question = max(1, int(os.getenv("MAX_GRAPH_ROUNDS_PER_QUESTION", "3") or 3))
+    max_question_elapsed_ms = max(1000, int(os.getenv("MAX_QUESTION_ELAPSED_MS", "900000") or 900000))
 
     template = _get_gen_template(tenant_id, template_id) if template_id else None
     if template_id and not template:
@@ -7663,14 +9496,17 @@ def api_generate_questions(tenant_id: str):
     if not candidate_ids:
         return _error("NO_CANDIDATE_SLICES", "选中范围内没有 approved 切片", 400)
 
-    set_active_tenant(tenant_id)
-    os.environ["TENANT_ID"] = tenant_id
     if not kb_file:
         return _error("NO_SLICES_FILE", "当前城市没有可用切片文件", 400)
-    retriever = KnowledgeRetriever(
+    history_path = str(_resolve_history_path_for_material(tenant_id, material_version_id))
+    mapping_path = str(_resolve_mapping_path_for_material(tenant_id, material_version_id) or tenant_mapping_path(tenant_id))
+    mapping_review_path = str(tenant_mapping_review_path(tenant_id))
+    retriever = _get_cached_retriever(
+        tenant_id=tenant_id,
         kb_path=str(kb_file),
-        history_path=str(_resolve_history_path_for_material(tenant_id, material_version_id)),
-        mapping_path=str(_resolve_mapping_path_for_material(tenant_id, material_version_id) or tenant_mapping_path(tenant_id)),
+        history_path=history_path,
+        mapping_path=mapping_path,
+        mapping_review_path=mapping_review_path,
     )
     candidate_ids = [sid for sid in candidate_ids if 0 <= sid < len(retriever.kb_data)]
     if not candidate_ids:
@@ -7686,6 +9522,10 @@ def api_generate_questions(tenant_id: str):
             f"所选题型在当前切片范围内均被禁止，未生成题目。{skipped_msg}".strip(),
             400,
         )
+    blocked_slice_ids = _blocked_slice_ids_for_material(tenant_id, material_version_id)
+    candidate_ids = [sid for sid in candidate_ids if sid not in blocked_slice_ids]
+    if not candidate_ids:
+        return _error("NO_UNBLOCKED_SLICES", "当前范围内切片均已因累计失败被禁用，请先修复切片", 400)
     candidate_slices = []
     for sid in candidate_ids:
         kb_item = retriever.kb_data[sid]
@@ -7696,7 +9536,12 @@ def api_generate_questions(tenant_id: str):
                 "mastery": str(kb_item.get("掌握程度", "")).strip(),
             }
         )
+    candidate_lookup = _build_slice_candidate_lookup(
+        candidate_slices,
+        template_route_rules=(template or {}).get("route_rules") if template else None,
+    )
     planned_slice_ids: list[int] = []
+    planned_slots: list[dict[str, Any]] = []
     template_plan: dict[str, Any] | None = None
     if template:
         num_questions = int(template.get("question_count", num_questions) or num_questions)
@@ -7708,8 +9553,28 @@ def api_generate_questions(tenant_id: str):
             )
         except ValueError as e:
             return _error("TEMPLATE_PLAN_INVALID", str(e), 400)
-        planned_slice_ids = [int(x) for x in (template_plan.get("planned_slice_ids") or []) if int(x) in candidate_ids]
+        planned_slots = [
+            slot for slot in (template_plan.get("planned_slots") or [])
+            if isinstance(slot, dict) and int(slot.get("slice_id", -1)) in candidate_ids
+        ]
+        planned_slice_ids = [int(slot.get("slice_id")) for slot in planned_slots]
     else:
+        for slot in planned_slots_input:
+            if not isinstance(slot, dict):
+                continue
+            try:
+                sid_int = int(slot.get("slice_id"))
+            except (TypeError, ValueError):
+                continue
+            if sid_int not in candidate_ids:
+                continue
+            planned_slots.append(
+                {
+                    "slice_id": sid_int,
+                    "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
+                    "mastery": str(slot.get("mastery", "") or "").strip(),
+                }
+            )
         for sid in planned_slice_ids_input:
             try:
                 sid_int = int(sid)
@@ -7717,9 +9582,13 @@ def api_generate_questions(tenant_id: str):
                 continue
             if sid_int in candidate_ids:
                 planned_slice_ids.append(sid_int)
+        if planned_slots and not planned_slice_ids:
+            planned_slice_ids = [int(slot.get("slice_id")) for slot in planned_slots]
         if gen_scope_mode == "per_slice":
             num_questions = len(candidate_ids)
-    if planned_slice_ids:
+    if planned_slots:
+        num_questions = len(planned_slots)
+    elif planned_slice_ids:
         num_questions = len(planned_slice_ids)
     if num_questions <= 0:
         return _error("BAD_REQUEST", "题量必须大于0", 400)
@@ -7746,6 +9615,7 @@ def api_generate_questions(tenant_id: str):
             run_id=run_id,
             material_version_id=material_version_id,
             config_payload={
+                "tenant_id": tenant_id,
                 "question_type": question_type,
                 "generation_mode": generation_mode,
                 "difficulty": difficulty,
@@ -7754,11 +9624,14 @@ def api_generate_questions(tenant_id: str):
                 "max_attempts": max_attempts,
                 "model": model_name,
                 "gen_scope_mode": gen_scope_mode,
+                "persist_to_bank": persist_to_bank,
+                "save_to_bank": persist_to_bank,
                 "task_id": task_id,
                 "template_id": template_id,
                 "template_name": str(template.get("name", "")).strip() if template else "",
                 "template_snapshot": template if template else None,
                 "template_plan": template_plan,
+                "persist_to_bank": persist_to_bank,
                 "enable_offline_judge": False,
             },
             process_trace=[],
@@ -7785,25 +9658,36 @@ def api_generate_questions(tenant_id: str):
     fuse_info: dict[str, Any] | None = None
     failure_key_counts: dict[str, int] = {}
     failure_examples: dict[str, dict[str, Any]] = {}
+    task_slice_failure_counts: dict[int, int] = {}
     random_difficulty_buckets = _random_difficulty_buckets() if difficulty == "随机" else []
     attempt_count = 0
-    slice_fail_counts: dict[int, int] = {}
-    skipped_slice_ids: set[int] = set()
-    while len(generated) < target_question_count and attempt_count < max_attempts and not fuse_triggered:
+    task_excluded_slice_ids: set[int] = set(blocked_slice_ids)
+    while len(generated) < target_question_count and attempt_count < max_attempts:
         if task_id and _is_task_cancelled(task_id):
             cancelled_by_user = True
             break
         success_index = len(generated)
         attempt_count += 1
-        if attempt_count - 1 < len(planned_slice_ids):
-            sid = planned_slice_ids[attempt_count - 1]
-        else:
-            active_ids = [x for x in candidate_ids if x not in skipped_slice_ids] or list(candidate_ids)
-            sid = (
-                active_ids[(attempt_count - 1) % len(active_ids)]
-                if target_question_count > len(active_ids)
-                else random.choice(active_ids)
-            )
+        allow_retry_on_current_slot = bool(template) and _is_template_same_mastery_hard_gap(
+            planned_slots=planned_slots,
+            success_index=success_index,
+            sid=int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else -1,
+            candidate_lookup=candidate_lookup,
+        )
+        template_gap_final_failure = False
+        sid, sid_pick_error = _choose_generation_slice_id(
+            planned_slice_ids=planned_slice_ids,
+            planned_slots=planned_slots,
+            success_index=success_index,
+            candidate_ids=candidate_ids,
+            attempt_count=attempt_count,
+            target_question_count=target_question_count,
+            excluded_slice_ids=task_excluded_slice_ids,
+            candidate_lookup=candidate_lookup,
+        )
+        if sid is None:
+            errors.append(sid_pick_error or "无可用切片")
+            break
         kb_chunk = retriever.kb_data[sid]
         effective_difficulty_range = (
             random_difficulty_buckets[success_index % len(random_difficulty_buckets)]
@@ -7833,7 +9717,10 @@ def api_generate_questions(tenant_id: str):
             "difficulty_range": list(effective_difficulty_range) if effective_difficulty_range else None,
             "steps": [],
             "critic_result": {},
+            "snapshot_stage": "live",
             "saved": False,
+            "active_run_id": 0,
+            "final_json_expired": False,
         }
 
         def _append_step(message: str, *, node: str = "", level: str = "info", detail: str = "") -> None:
@@ -7878,6 +9765,7 @@ def api_generate_questions(tenant_id: str):
                 },
                 [question_trace],
             )
+            _persist_live_task_snapshot(tenant_id, task_id)
         inputs = {
             "kb_chunk": kb_chunk,
             "examples": [],
@@ -7903,9 +9791,14 @@ def api_generate_questions(tenant_id: str):
         mother_questions: list[str] = []
         mother_full_questions: list[dict[str, Any]] = []
         saved_current = False
+        saved_with_issues_current = False
         critic_seen = False
         critic_passed = False
+        critic_reject_count = 0
+        abort_question_attempt = False
+        abort_question_reason = ""
         attempt_error_info: dict[str, Any] | None = None
+        whitelist_saved_current = False
         try:
             for event in graph_app.stream(inputs, config=config):
                 for node_name, state_update in event.items():
@@ -7949,6 +9842,7 @@ def api_generate_questions(tenant_id: str):
                             },
                             trace_updates,
                         )
+                        _persist_live_task_snapshot(tenant_id, task_id)
                     if node_name == "router":
                         details = state_update.get("router_details") or {}
                         agent = details.get("agent")
@@ -7959,9 +9853,12 @@ def api_generate_questions(tenant_id: str):
                             detail=f"agent={agent or '-'} path={path or '-'}",
                         )
                         if router_seen:
+                            _mark_live_final_json_stale(question_trace, _append_step)
                             current_run_id += 1  # reroute starts next round; first route remains round 0
+                            question_trace["active_run_id"] = current_run_id
                         else:
                             router_seen = True
+                            question_trace["active_run_id"] = current_run_id
                     # Show specialist/calculator logs so "随机题型：本题已选定【X】" is visible
                     if node_name in ("specialist", "calculator"):
                         logs = state_update.get("logs") or []
@@ -7976,6 +9873,9 @@ def api_generate_questions(tenant_id: str):
                         critic_result = state_update.get("critic_result") or {}
                         if isinstance(critic_result, dict) and ("passed" in critic_result):
                             question_trace["critic_result"] = critic_result
+                            fail_types_preview, error_content_preview = _extract_critic_issue_record(critic_result)
+                            question_trace["critic_last_fail_types"] = fail_types_preview
+                            question_trace["critic_last_error_content"] = error_content_preview
                             critic_details = state_update.get("critic_details")
                             if critic_details is not None:
                                 question_trace["critic_details"] = str(critic_details).strip()
@@ -7991,6 +9891,22 @@ def api_generate_questions(tenant_id: str):
                                 level="success" if passed else "warning",
                                 detail=reason or ("" if passed else "审核未通过（原因未返回）"),
                             )
+                            if not passed:
+                                critic_reject_count += 1
+                                if critic_reject_count > 3:
+                                    abort_question_attempt = True
+                                    abort_question_reason = "单题critic->fixer循环超过3次，熔断本题"
+                                    _append_step(
+                                        "单题熔断",
+                                        node="system",
+                                        level="error",
+                                        detail=abort_question_reason,
+                                    )
+                                    attempt_error_info = _build_abort_attempt_error(
+                                        abort_reason=abort_question_reason,
+                                        question_trace=question_trace,
+                                    )
+                                    break
                     if node_name == "fixer":
                         fix_summary = state_update.get("fix_summary") or {}
                         changed = fix_summary.get("changed_fields") if isinstance(fix_summary, dict) else []
@@ -8018,6 +9934,12 @@ def api_generate_questions(tenant_id: str):
                         q_json = state_update.get("final_json")
                         question_trace["critic_result"] = {}
                         question_trace.pop("critic_details", None)
+                        if isinstance(q_json, dict):
+                            # 实时透出当前定稿，便于前端在 critic/fix 循环中展示完整题目（非落库）
+                            question_trace["final_json"] = deepcopy(q_json)
+                            question_trace["final_json_expired"] = False
+                            question_trace.pop("final_json_expired_at", None)
+                            question_trace["final_json_run_id"] = current_run_id
                     _emit_node_highlights(node_name, state_update, _append_step)
                     # Stream yields full state after each step; sync llm_trace to avoid duplicates
                     llm_records = state_update.get("llm_trace") or []
@@ -8026,9 +9948,69 @@ def api_generate_questions(tenant_id: str):
                             question_llm_trace,
                             [x for x in llm_records if isinstance(x, dict)],
                         )
+                    if not abort_question_attempt:
+                        should_abort, should_abort_reason = _should_abort_question_attempt(
+                            started_at=started_at,
+                            current_run_id=current_run_id,
+                            max_graph_rounds_per_question=max_graph_rounds_per_question,
+                            max_question_elapsed_ms=max_question_elapsed_ms,
+                        )
+                        if should_abort:
+                            abort_question_attempt = True
+                            abort_question_reason = should_abort_reason
+                            attempt_error_info = _build_abort_attempt_error(
+                                abort_reason=abort_question_reason,
+                                question_trace=question_trace,
+                            )
+                            _append_step(
+                                "单题中止",
+                                node="system",
+                                level="error",
+                                detail=abort_question_reason,
+                            )
+                            break
+                if abort_question_attempt:
+                    break
                 if cancelled_by_user:
                     break
-            if q_json and critic_passed:
+            if abort_question_attempt:
+                last_critic_result = question_trace.get("critic_result") if isinstance(question_trace.get("critic_result"), dict) else {}
+                if isinstance(q_json, dict) and _is_abort_whitelist_pass(last_critic_result):
+                    soft_reason = "单题在熔断/中止前仅命中 critic 白名单问题，按正式通过处理并保留问题标记。"
+                    soft_pass_result = dict(last_critic_result)
+                    soft_pass_result["passed"] = True
+                    soft_pass_result["whitelist_pass"] = True
+                    soft_pass_result["whitelist_pass_reason"] = soft_reason
+                    question_trace["critic_result"] = soft_pass_result
+                    question_trace["critic_original_result"] = deepcopy(last_critic_result)
+                    question_trace["critic_details"] = soft_reason
+                    question_trace["whitelist_pass"] = True
+                    critic_passed = True
+                    whitelist_saved_current = True
+                    attempt_error_info = None
+                    _append_step("白名单问题通过", node="system", level="warning", detail=soft_reason)
+                else:
+                    errors.append(f"第{attempt_count}次尝试失败: {abort_question_reason}")
+                    exclude_now = _should_exclude_failed_slice_from_task(
+                        allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                        sid=int(sid),
+                        failure_counts=task_slice_failure_counts,
+                    )
+                    if exclude_now:
+                        task_excluded_slice_ids.add(int(sid))
+                    template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
+                    if critic_seen and isinstance(question_trace.get("critic_result"), dict):
+                        health = _record_slice_generation_failure(
+                            tenant_id=tenant_id,
+                            material_version_id=material_version_id,
+                            slice_id=int(sid),
+                            critic_result=question_trace.get("critic_result"),
+                            task_id=task_id,
+                            run_id=run_id,
+                        )
+                        if bool(health.get("blocked")):
+                            _append_step("切片已禁用", node="system", level="error", detail=str(health.get("blocked_reason", "")))
+            elif q_json and critic_passed:
                 final_qt_cn = _resolve_storage_question_type_cn(
                     final_json=q_json,
                     trace_question_type=question_trace.get("question_type"),
@@ -8036,32 +10018,68 @@ def api_generate_questions(tenant_id: str):
                 )
                 question_trace["question_type"] = final_qt_cn
                 q_json["题目类型"] = final_qt_cn
-                q_json["来源路径"] = str(kb_chunk.get("完整路径", ""))
-                q_json["来源切片ID"] = sid
-                q_json["教材版本ID"] = material_version_id
                 if task_id:
                     q_json["出题任务ID"] = task_id
                 if task_name:
                     q_json["出题任务名称"] = task_name
                 q_json["出题RunID"] = run_id
-                _attach_mother_questions_to_question_payload(q_json, mother_questions)
-                _attach_mother_question_full_to_question_payload(q_json, mother_full_questions)
-                _attach_related_slices_to_question_payload(q_json, question_trace.get("related_slice_paths") or [])
+                _attach_preview_context_to_question_payload(
+                    q_json,
+                    tenant_id=tenant_id,
+                    material_version_id=material_version_id,
+                    question_trace=question_trace,
+                    source_path=str(kb_chunk.get("完整路径", "")),
+                    source_slice_id=sid,
+                    mother_questions=mother_questions,
+                    mother_full_questions=mother_full_questions,
+                )
+                if whitelist_saved_current:
+                    q_json = _build_whitelist_pass_bank_item(
+                        final_json=q_json,
+                        critic_result=question_trace.get("critic_original_result") if isinstance(question_trace.get("critic_original_result"), dict) else {},
+                        task_id=task_id,
+                        task_name=task_name,
+                        run_id=run_id,
+                    )
+                    question_trace["final_json"] = deepcopy(q_json)
                 generated.append(q_json)
-                if save_to_bank:
+                if persist_to_bank:
                     try:
                         _append_bank_item(bank_path, q_json)
                         saved += 1
                         saved_current = True
-                        _append_step("题目已落库", node="system", level="success")
+                        _append_step("题目已落库", node="system", level="success", detail="白名单通过" if whitelist_saved_current else "")
                     except Exception as e:
                         saved_current = False
                         errors.append(f"第{attempt_count}次尝试落库失败: {e}")
                         _append_step("落库失败", node="system", level="error", detail=str(e))
+                        attempt_error_info = {
+                            "error_key": "storage:append_bank_item_failed",
+                            "category": "storage_failure",
+                            "reason": str(e),
+                            "evidence": str(e),
+                            "fail_types": [],
+                            "missing_conditions": [],
+                            "basis_paths": [],
+                            "solution": _infer_solution_by_error_key(
+                                error_key="storage:append_bank_item_failed",
+                                fail_types=[],
+                                reason=str(e),
+                                missing_conditions=[],
+                            ),
+                        }
                 _append_step("题目生成成功", node="system", level="success")
             elif q_json and not critic_seen:
                 errors.append(f"第{attempt_count}次尝试失败: 未经过 critic 审核")
                 _append_step("未经过 critic 审核", node="critic", level="error")
+                exclude_now = _should_exclude_failed_slice_from_task(
+                    allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                    sid=int(sid),
+                    failure_counts=task_slice_failure_counts,
+                )
+                if exclude_now:
+                    task_excluded_slice_ids.add(int(sid))
+                template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
                 attempt_error_info = _classify_generation_attempt_error(
                     question_trace=question_trace,
                     q_json=q_json,
@@ -8072,6 +10090,24 @@ def api_generate_questions(tenant_id: str):
             elif q_json and critic_seen and not critic_passed:
                 errors.append(f"第{attempt_count}次尝试失败: critic 未通过")
                 _append_step("critic 未通过，题目未保存", node="critic", level="error")
+                exclude_now = _should_exclude_failed_slice_from_task(
+                    allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                    sid=int(sid),
+                    failure_counts=task_slice_failure_counts,
+                )
+                if exclude_now:
+                    task_excluded_slice_ids.add(int(sid))
+                template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
+                health = _record_slice_generation_failure(
+                    tenant_id=tenant_id,
+                    material_version_id=material_version_id,
+                    slice_id=int(sid),
+                    critic_result=question_trace.get("critic_result") if isinstance(question_trace.get("critic_result"), dict) else {},
+                    task_id=task_id,
+                    run_id=run_id,
+                )
+                if bool(health.get("blocked")):
+                    _append_step("切片已禁用", node="system", level="error", detail=str(health.get("blocked_reason", "")))
                 attempt_error_info = _classify_generation_attempt_error(
                     question_trace=question_trace,
                     q_json=q_json,
@@ -8082,6 +10118,14 @@ def api_generate_questions(tenant_id: str):
             else:
                 errors.append(f"第{attempt_count}次尝试未产出 final_json")
                 _append_step("未产出 final_json", node="writer", level="error")
+                exclude_now = _should_exclude_failed_slice_from_task(
+                    allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                    sid=int(sid),
+                    failure_counts=task_slice_failure_counts,
+                )
+                if exclude_now:
+                    task_excluded_slice_ids.add(int(sid))
+                template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
                 attempt_error_info = _classify_generation_attempt_error(
                     question_trace=question_trace,
                     q_json=q_json,
@@ -8104,15 +10148,6 @@ def api_generate_questions(tenant_id: str):
             }
 
         if attempt_error_info and not saved_current:
-            slice_fail_counts[sid] = int(slice_fail_counts.get(sid, 0) or 0) + 1
-            if slice_fail_counts[sid] >= 2:
-                skipped_slice_ids.add(int(sid))
-                _append_step(
-                    "切片降权跳过",
-                    node="system",
-                    level="warning",
-                    detail=f"slice_id={sid} fail_count={slice_fail_counts[sid]}",
-                )
             err_key = str(attempt_error_info.get("error_key", "attempt_failed")).strip() or "attempt_failed"
             category = str(attempt_error_info.get("category", "") or "").strip()
             is_critic_family = err_key.startswith("critic:") or category in {"critic_rejected", "critic_missing"}
@@ -8120,47 +10155,77 @@ def api_generate_questions(tenant_id: str):
                 failure_key_counts[err_key] = int(failure_key_counts.get(err_key, 0) or 0) + 1
                 failure_examples.setdefault(err_key, attempt_error_info)
             if is_critic_family and failure_key_counts[err_key] >= fuse_threshold:
-                fuse_triggered = True
-                example = failure_examples.get(err_key, attempt_error_info)
-                fuse_info = {
-                    "triggered": True,
-                    "threshold": fuse_threshold,
-                    "error_key": err_key,
-                    "count": failure_key_counts[err_key],
-                    "category": example.get("category", ""),
-                    "fail_types": example.get("fail_types") or [],
-                    "missing_conditions": example.get("missing_conditions") or [],
-                    "basis_paths": example.get("basis_paths") or [],
-                    "evidence": str(example.get("evidence", "") or "").strip(),
-                    "solution": str(example.get("solution", "") or "").strip(),
-                }
-                errors.append(
-                    f"任务熔断：critic 同类错误[{err_key}]在单次任务中已超过{fuse_threshold}次（本次第{failure_key_counts[err_key]}次触发）。"
-                    f" 证据：{fuse_info['evidence']}。建议：{fuse_info['solution']}"
-                )
-                _append_step(
-                    "触发熔断",
-                    node="system",
-                    level="error",
-                    detail=f"error_key={err_key} count={failure_key_counts[err_key]} solution={fuse_info['solution']}",
-                )
-                if task_id:
-                    _update_task_live(
-                        tenant_id,
-                        task_id,
-                        {
-                            "current_node": "fuse",
-                            "current_node_updated_at": datetime.now(timezone.utc).isoformat(),
-                            "fuse_info": fuse_info,
-                        },
+                if _should_skip_fuse_for_error(
+                    error_key=err_key,
+                    target_question_count=target_question_count,
+                ):
+                    _append_step(
+                        "熔断豁免",
+                        node="system",
+                        level="warning",
+                        detail=f"error_key={err_key} count={failure_key_counts[err_key]} reason=large_batch_writer_quality_family",
+                    )
+                else:
+                    # 容错策略：同类错误超阈值仅告警，不中断整批；继续跑后续题补位。
+                    example = failure_examples.get(err_key, attempt_error_info)
+                    fuse_info = {
+                        "triggered": False,
+                        "threshold": fuse_threshold,
+                        "error_key": err_key,
+                        "count": failure_key_counts[err_key],
+                        "category": example.get("category", ""),
+                        "fail_types": example.get("fail_types") or [],
+                        "missing_conditions": example.get("missing_conditions") or [],
+                        "basis_paths": example.get("basis_paths") or [],
+                        "evidence": str(example.get("evidence", "") or "").strip(),
+                        "solution": str(example.get("solution", "") or "").strip(),
+                    }
+                    _append_step(
+                        "同类错误超阈值，继续补位",
+                        node="system",
+                        level="warning",
+                        detail=f"error_key={err_key} count={failure_key_counts[err_key]}",
                     )
         elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        if template_gap_final_failure and not saved_current and isinstance(q_json, dict):
+            persisted, saved_item, save_err = _persist_template_gap_failed_item(
+                enabled=bool(persist_to_bank),
+                path=bank_path,
+                final_json=q_json,
+                question_trace=question_trace,
+                attempt_error_info=attempt_error_info,
+                task_id=task_id,
+                task_name=task_name,
+                run_id=run_id,
+            )
+            if persisted and isinstance(saved_item, dict):
+                q_json = saved_item
+                question_trace["final_json"] = deepcopy(saved_item)
+                generated.append(saved_item)
+                saved += 1
+                saved_current = True
+                saved_with_issues_current = True
+                _append_step("题目已落库", node="system", level="warning", detail="模板唯一缺口失败入库，待修复")
+            elif save_err:
+                errors.append(f"第{attempt_count}次尝试待修复题落库失败: {save_err}")
+                _append_step("待修复题落库失败", node="system", level="error", detail=save_err)
         question_trace["elapsed_ms"] = elapsed_ms
         question_trace["llm_trace"] = question_llm_trace
         question_trace["llm_summary"] = summarize_llm_trace(question_llm_trace)
         question_trace["unstable_flags"] = mark_unstable(question_trace["llm_summary"])
         question_trace["saved"] = bool(saved_current)
+        question_trace["saved_with_issues"] = bool(saved_with_issues_current)
         if isinstance(q_json, dict):
+            _attach_preview_context_to_question_payload(
+                q_json,
+                tenant_id=tenant_id,
+                material_version_id=material_version_id,
+                question_trace=question_trace,
+                source_path=str(kb_chunk.get("完整路径", "")),
+                source_slice_id=sid,
+                mother_questions=mother_questions,
+                mother_full_questions=mother_full_questions,
+            )
             question_trace["final_json"] = q_json
         if question_trace["unstable_flags"]:
             _append_step(
@@ -8171,6 +10236,7 @@ def api_generate_questions(tenant_id: str):
             )
         # Ensure critic result is visible in step list (e.g. rule-based reject before LLM)
         _ensure_critic_step_in_trace(question_trace)
+        question_trace["snapshot_stage"] = "final"
         process_trace.append(question_trace)
         # Live task mode: flush finalized question trace immediately so UI can mark
         # this question as passed/failed without waiting for the whole batch to end.
@@ -8184,9 +10250,11 @@ def api_generate_questions(tenant_id: str):
                     "generated_count": len(generated),
                     "saved_count": saved,
                     "error_count": len(errors),
+                    "saved_with_issues_count": sum(1 for row in process_trace if isinstance(row, dict) and row.get("saved_with_issues")),
                 },
                 [question_trace],
             )
+            _persist_live_task_snapshot(tenant_id, task_id)
         if cancelled_by_user:
             errors.append("用户取消")
             break
@@ -8201,6 +10269,7 @@ def api_generate_questions(tenant_id: str):
         run_id=run_id,
         material_version_id=material_version_id,
         config_payload={
+            "tenant_id": tenant_id,
             "question_type": question_type,
             "generation_mode": generation_mode,
             "difficulty": difficulty,
@@ -8225,10 +10294,37 @@ def api_generate_questions(tenant_id: str):
         ended_at=run_ended_at,
     )
     _persist_qa_run(tenant_id, qa_run)
+    hard_failed_count, soft_warning_count = _summarize_trace_fail_levels(process_trace)
 
     if fuse_triggered and errors:
+        # 容错策略：只要有有效产出，不把整批任务标记为失败；返回 200 + partial 标记。
+        if len(generated) > 0:
+            return _json_response(
+                {
+                    "success": False,
+                    "partial_completed": True,
+                    "error": {
+                        "code": "GENERATION_FUSED",
+                        "message": errors[-1],
+                    },
+                    "run_id": run_id,
+                    "items": generated,
+                    "generated_count": len(generated),
+                    "saved_count": saved,
+                    "errors": errors,
+                    "fuse_info": fuse_info,
+                    "hard_failed_count": hard_failed_count,
+                    "soft_warning_count": soft_warning_count,
+                    "process_trace": process_trace,
+                    "material_version_id": material_version_id,
+                },
+                status=200,
+            )
+        # 即便 0 题通过，也返回 200 + 结构化错误，交由任务层按“完成但有失败题”处理。
         return _json_response(
             {
+                "success": False,
+                "partial_completed": False,
                 "error": {
                     "code": "GENERATION_FUSED",
                     "message": errors[-1],
@@ -8238,13 +10334,52 @@ def api_generate_questions(tenant_id: str):
                 "saved_count": saved,
                 "errors": errors,
                 "fuse_info": fuse_info,
+                "hard_failed_count": hard_failed_count,
+                "soft_warning_count": soft_warning_count,
                 "process_trace": process_trace,
                 "material_version_id": material_version_id,
             },
-            status=502,
+            status=200,
         )
     if len(generated) < target_question_count and errors:
-        return _error("GENERATION_FAILED", f"出题失败：{errors[0]}", 502)
+        # 容错策略：统一返回 200，避免“单题失败导致整任务失败”。
+        if len(generated) > 0:
+            return _json_response(
+                {
+                    "success": False,
+                    "partial_completed": True,
+                    "run_id": run_id,
+                    "items": generated,
+                    "generated_count": len(generated),
+                    "saved_count": saved,
+                    "errors": errors,
+                    "hard_failed_count": hard_failed_count,
+                    "soft_warning_count": soft_warning_count,
+                    "process_trace": process_trace,
+                    "material_version_id": material_version_id,
+                },
+                status=200,
+            )
+        return _json_response(
+            {
+                "success": False,
+                "partial_completed": False,
+                "error": {
+                    "code": "GENERATION_FAILED",
+                    "message": f"出题失败：{errors[0]}",
+                },
+                "run_id": run_id,
+                "items": [],
+                "generated_count": 0,
+                "saved_count": 0,
+                "errors": errors,
+                "hard_failed_count": hard_failed_count,
+                "soft_warning_count": soft_warning_count,
+                "process_trace": process_trace,
+                "material_version_id": material_version_id,
+            },
+            status=200,
+        )
 
     write_audit_log(
         tenant_id,
@@ -8276,6 +10411,8 @@ def api_generate_questions(tenant_id: str):
             "generated_count": len(generated),
             "saved_count": saved,
             "errors": errors,
+            "hard_failed_count": hard_failed_count,
+            "soft_warning_count": soft_warning_count,
             "process_trace": process_trace,
             "material_version_id": material_version_id,
             "cancelled": cancelled_by_user,
@@ -8305,7 +10442,7 @@ def api_generate_questions_stream(tenant_id: str):
     slice_ids_input = body.get("slice_ids") or []
     template_id = str(body.get("template_id", "")).strip()
     planned_slice_ids_input = body.get("planned_slice_ids") or []
-    save_to_bank = bool(body.get("save_to_bank", True))
+    persist_to_bank = bool(body.get("persist_to_bank", body.get("save_to_bank", True)))
     requested_material_version_id = str(body.get("material_version_id", "")).strip()
     task_id = str(body.get("task_id", "")).strip()
     task_name = str(body.get("task_name", "")).strip()
@@ -8315,8 +10452,17 @@ def api_generate_questions_stream(tenant_id: str):
         return _error("BAD_REQUEST", "非法题型", 400)
     if generation_mode not in GEN_MODES:
         return _error("BAD_REQUEST", "非法出题模式", 400)
+    max_graph_rounds_per_question = max(1, int(os.getenv("MAX_GRAPH_ROUNDS_PER_QUESTION", "3") or 3))
+    max_question_elapsed_ms = max(1000, int(os.getenv("MAX_QUESTION_ELAPSED_MS", "900000") or 900000))
 
-    material_version_id = _resolve_material_version_id(tenant_id, requested_material_version_id)
+    template = _get_gen_template(tenant_id, template_id) if template_id else None
+    if template_id and not template:
+        return _error("TEMPLATE_NOT_FOUND", "出题模板不存在", 404)
+    effective_material_version_request = (
+        str(template.get("material_version_id", "")).strip()
+        if template else requested_material_version_id
+    )
+    material_version_id = _resolve_material_version_id(tenant_id, effective_material_version_request)
     if requested_material_version_id and not material_version_id:
         return _error("MATERIAL_NOT_FOUND", "教材版本不存在", 404)
     kb_file = _resolve_slice_file_for_material(tenant_id, material_version_id)
@@ -8342,14 +10488,17 @@ def api_generate_questions_stream(tenant_id: str):
     if not candidate_ids:
         return _error("NO_CANDIDATE_SLICES", "选中范围内没有 approved 切片", 400)
 
-    set_active_tenant(tenant_id)
-    os.environ["TENANT_ID"] = tenant_id
     if not kb_file:
         return _error("NO_SLICES_FILE", "当前城市没有可用切片文件", 400)
-    retriever = KnowledgeRetriever(
+    history_path = str(_resolve_history_path_for_material(tenant_id, material_version_id))
+    mapping_path = str(_resolve_mapping_path_for_material(tenant_id, material_version_id) or tenant_mapping_path(tenant_id))
+    mapping_review_path = str(tenant_mapping_review_path(tenant_id))
+    retriever = _get_cached_retriever(
+        tenant_id=tenant_id,
         kb_path=str(kb_file),
-        history_path=str(_resolve_history_path_for_material(tenant_id, material_version_id)),
-        mapping_path=str(_resolve_mapping_path_for_material(tenant_id, material_version_id) or tenant_mapping_path(tenant_id)),
+        history_path=history_path,
+        mapping_path=mapping_path,
+        mapping_review_path=mapping_review_path,
     )
     candidate_ids = [sid for sid in candidate_ids if 0 <= sid < len(retriever.kb_data)]
     if not candidate_ids:
@@ -8365,6 +10514,10 @@ def api_generate_questions_stream(tenant_id: str):
             f"所选题型在当前切片范围内均被禁止，未生成题目。{skipped_msg}".strip(),
             400,
         )
+    blocked_slice_ids = _blocked_slice_ids_for_material(tenant_id, material_version_id)
+    candidate_ids = [sid for sid in candidate_ids if sid not in blocked_slice_ids]
+    if not candidate_ids:
+        return _error("NO_UNBLOCKED_SLICES", "当前范围内切片均已因累计失败被禁用，请先修复切片", 400)
     candidate_slices = []
     for sid in candidate_ids:
         kb_item = retriever.kb_data[sid]
@@ -8375,7 +10528,12 @@ def api_generate_questions_stream(tenant_id: str):
                 "mastery": str(kb_item.get("掌握程度", "")).strip(),
             }
         )
+    candidate_lookup = _build_slice_candidate_lookup(
+        candidate_slices,
+        template_route_rules=(template or {}).get("route_rules") if template else None,
+    )
     planned_slice_ids: list[int] = []
+    planned_slots: list[dict[str, Any]] = []
     template_plan: dict[str, Any] | None = None
     if template:
         num_questions = int(template.get("question_count", num_questions) or num_questions)
@@ -8387,8 +10545,28 @@ def api_generate_questions_stream(tenant_id: str):
             )
         except ValueError as e:
             return _error("TEMPLATE_PLAN_INVALID", str(e), 400)
-        planned_slice_ids = [int(x) for x in (template_plan.get("planned_slice_ids") or []) if int(x) in candidate_ids]
+        planned_slots = [
+            slot for slot in (template_plan.get("planned_slots") or [])
+            if isinstance(slot, dict) and int(slot.get("slice_id", -1)) in candidate_ids
+        ]
+        planned_slice_ids = [int(slot.get("slice_id")) for slot in planned_slots]
     else:
+        for slot in planned_slots_input:
+            if not isinstance(slot, dict):
+                continue
+            try:
+                sid_int = int(slot.get("slice_id"))
+            except (TypeError, ValueError):
+                continue
+            if sid_int not in candidate_ids:
+                continue
+            planned_slots.append(
+                {
+                    "slice_id": sid_int,
+                    "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
+                    "mastery": str(slot.get("mastery", "") or "").strip(),
+                }
+            )
         for sid in planned_slice_ids_input:
             try:
                 sid_int = int(sid)
@@ -8396,9 +10574,13 @@ def api_generate_questions_stream(tenant_id: str):
                 continue
             if sid_int in candidate_ids:
                 planned_slice_ids.append(sid_int)
+        if planned_slots and not planned_slice_ids:
+            planned_slice_ids = [int(slot.get("slice_id")) for slot in planned_slots]
         if gen_scope_mode == "per_slice":
             num_questions = len(candidate_ids)
-    if planned_slice_ids:
+    if planned_slots:
+        num_questions = len(planned_slots)
+    elif planned_slice_ids:
         num_questions = len(planned_slice_ids)
     if num_questions <= 0:
         return _error("BAD_REQUEST", "题量必须大于0", 400)
@@ -8437,6 +10619,7 @@ def api_generate_questions_stream(tenant_id: str):
                 "template_name": str(template.get("name", "")).strip() if template else "",
                 "template_snapshot": template if template else None,
                 "template_plan": template_plan,
+                "persist_to_bank": persist_to_bank,
             },
         )
         random_difficulty_buckets = _random_difficulty_buckets() if difficulty == "随机" else []
@@ -8445,21 +10628,32 @@ def api_generate_questions_stream(tenant_id: str):
         fuse_info: dict[str, Any] | None = None
         failure_key_counts: dict[str, int] = {}
         failure_examples: dict[str, dict[str, Any]] = {}
+        task_slice_failure_counts: dict[int, int] = {}
         attempt_count = 0
-        slice_fail_counts: dict[int, int] = {}
-        skipped_slice_ids: set[int] = set()
-        while len(generated) < target_question_count and attempt_count < max_attempts and not fuse_triggered:
+        task_excluded_slice_ids: set[int] = set(blocked_slice_ids)
+        while len(generated) < target_question_count and attempt_count < max_attempts:
             success_index = len(generated)
             attempt_count += 1
-            if attempt_count - 1 < len(planned_slice_ids):
-                sid = planned_slice_ids[attempt_count - 1]
-            else:
-                active_ids = [x for x in candidate_ids if x not in skipped_slice_ids] or list(candidate_ids)
-                sid = (
-                    active_ids[(attempt_count - 1) % len(active_ids)]
-                    if target_question_count > len(active_ids)
-                    else random.choice(active_ids)
-                )
+            allow_retry_on_current_slot = bool(template) and _is_template_same_mastery_hard_gap(
+                planned_slots=planned_slots,
+                success_index=success_index,
+                sid=int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else -1,
+                candidate_lookup=candidate_lookup,
+            )
+            template_gap_final_failure = False
+            sid, sid_pick_error = _choose_generation_slice_id(
+                planned_slice_ids=planned_slice_ids,
+                planned_slots=planned_slots,
+                success_index=success_index,
+                candidate_ids=candidate_ids,
+                attempt_count=attempt_count,
+                target_question_count=target_question_count,
+                excluded_slice_ids=task_excluded_slice_ids,
+                candidate_lookup=candidate_lookup,
+            )
+            if sid is None:
+                errors.append(sid_pick_error or "无可用切片")
+                break
             kb_chunk = retriever.kb_data[sid]
             effective_difficulty_range = (
                 random_difficulty_buckets[success_index % len(random_difficulty_buckets)]
@@ -8486,7 +10680,10 @@ def api_generate_questions_stream(tenant_id: str):
                 "difficulty_range": list(effective_difficulty_range) if effective_difficulty_range else None,
                 "steps": [],
                 "critic_result": {},
+                "snapshot_stage": "live",
                 "saved": False,
+                "active_run_id": 0,
+                "final_json_expired": False,
             }
             yield _sse(
                 "question_start",
@@ -8565,9 +10762,14 @@ def api_generate_questions_stream(tenant_id: str):
             mother_questions: list[str] = []
             mother_full_questions: list[dict[str, Any]] = []
             saved_current = False
+            saved_with_issues_current = False
             critic_seen = False
             critic_passed = False
+            critic_reject_count = 0
+            abort_question_attempt = False
+            abort_question_reason = ""
             attempt_error_info: dict[str, Any] | None = None
+            whitelist_saved_current = False
             try:
                 for event in graph_app.stream(inputs, config=config):
                     for node_name, state_update in event.items():
@@ -8598,9 +10800,12 @@ def api_generate_questions_stream(tenant_id: str):
                                 detail=f"agent={agent or '-'} path={path or '-'}",
                             )
                             if router_seen:
+                                _mark_live_final_json_stale(question_trace, _append_step)
                                 current_run_id += 1  # reroute starts next round; first route remains round 0
+                                question_trace["active_run_id"] = current_run_id
                             else:
                                 router_seen = True
+                                question_trace["active_run_id"] = current_run_id
                         if node_name in ("specialist", "calculator"):
                             logs = state_update.get("logs") or []
                             if isinstance(logs, list):
@@ -8614,6 +10819,9 @@ def api_generate_questions_stream(tenant_id: str):
                             critic_result = state_update.get("critic_result") or {}
                             if isinstance(critic_result, dict) and ("passed" in critic_result):
                                 question_trace["critic_result"] = critic_result
+                                fail_types_preview, error_content_preview = _extract_critic_issue_record(critic_result)
+                                question_trace["critic_last_fail_types"] = fail_types_preview
+                                question_trace["critic_last_error_content"] = error_content_preview
                                 critic_details = state_update.get("critic_details")
                                 if critic_details is not None:
                                     question_trace["critic_details"] = str(critic_details).strip()
@@ -8629,6 +10837,22 @@ def api_generate_questions_stream(tenant_id: str):
                                     level="success" if passed else "warning",
                                     detail=reason or ("" if passed else "审核未通过（原因未返回）"),
                                 )
+                                if not passed:
+                                    critic_reject_count += 1
+                                    if critic_reject_count > 3:
+                                        abort_question_attempt = True
+                                        abort_question_reason = "单题critic->fixer循环超过3次，熔断本题"
+                                        _append_step(
+                                            "单题熔断",
+                                            node="system",
+                                            level="error",
+                                            detail=abort_question_reason,
+                                        )
+                                        attempt_error_info = _build_abort_attempt_error(
+                                            abort_reason=abort_question_reason,
+                                            question_trace=question_trace,
+                                        )
+                                        break
                         if node_name == "fixer":
                             fix_summary = state_update.get("fix_summary") or {}
                             changed = fix_summary.get("changed_fields") if isinstance(fix_summary, dict) else []
@@ -8654,6 +10878,11 @@ def api_generate_questions_stream(tenant_id: str):
                             q_json = state_update.get("final_json")
                             question_trace["critic_result"] = {}
                             question_trace.pop("critic_details", None)
+                            if isinstance(q_json, dict):
+                                question_trace["final_json"] = deepcopy(q_json)
+                                question_trace["final_json_expired"] = False
+                                question_trace.pop("final_json_expired_at", None)
+                                question_trace["final_json_run_id"] = current_run_id
                         _emit_node_highlights(node_name, state_update, _append_step)
                         # Stream yields full state after each step; sync llm_trace to avoid duplicates
                         llm_records = state_update.get("llm_trace") or []
@@ -8662,9 +10891,69 @@ def api_generate_questions_stream(tenant_id: str):
                                 question_llm_trace,
                                 [x for x in llm_records if isinstance(x, dict)],
                             )
+                        if not abort_question_attempt:
+                            should_abort, should_abort_reason = _should_abort_question_attempt(
+                                started_at=started_at,
+                                current_run_id=current_run_id,
+                                max_graph_rounds_per_question=max_graph_rounds_per_question,
+                                max_question_elapsed_ms=max_question_elapsed_ms,
+                            )
+                            if should_abort:
+                                abort_question_attempt = True
+                                abort_question_reason = should_abort_reason
+                                attempt_error_info = _build_abort_attempt_error(
+                                    abort_reason=abort_question_reason,
+                                    question_trace=question_trace,
+                                )
+                                _append_step(
+                                    "单题中止",
+                                    node="system",
+                                    level="error",
+                                    detail=abort_question_reason,
+                                )
+                                break
                         while _event_stream_buffer:
                             yield _event_stream_buffer.pop(0)
-                if q_json and critic_passed:
+                    if abort_question_attempt:
+                        break
+                if abort_question_attempt:
+                    last_critic_result = question_trace.get("critic_result") if isinstance(question_trace.get("critic_result"), dict) else {}
+                    if isinstance(q_json, dict) and _is_abort_whitelist_pass(last_critic_result):
+                        soft_reason = "单题在熔断/中止前仅命中 critic 白名单问题，按正式通过处理并保留问题标记。"
+                        soft_pass_result = dict(last_critic_result)
+                        soft_pass_result["passed"] = True
+                        soft_pass_result["whitelist_pass"] = True
+                        soft_pass_result["whitelist_pass_reason"] = soft_reason
+                        question_trace["critic_result"] = soft_pass_result
+                        question_trace["critic_original_result"] = deepcopy(last_critic_result)
+                        question_trace["critic_details"] = soft_reason
+                        question_trace["whitelist_pass"] = True
+                        critic_passed = True
+                        whitelist_saved_current = True
+                        attempt_error_info = None
+                        _append_step("白名单问题通过", node="system", level="warning", detail=soft_reason)
+                    else:
+                        errors.append(f"第{attempt_count}次尝试失败: {abort_question_reason}")
+                        exclude_now = _should_exclude_failed_slice_from_task(
+                            allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                            sid=int(sid),
+                            failure_counts=task_slice_failure_counts,
+                        )
+                        if exclude_now:
+                            task_excluded_slice_ids.add(int(sid))
+                        template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
+                        if critic_seen and isinstance(question_trace.get("critic_result"), dict):
+                            health = _record_slice_generation_failure(
+                                tenant_id=tenant_id,
+                                material_version_id=material_version_id,
+                                slice_id=int(sid),
+                                critic_result=question_trace.get("critic_result"),
+                                task_id=task_id,
+                                run_id=run_id,
+                            )
+                            if bool(health.get("blocked")):
+                                _append_step("切片已禁用", node="system", level="error", detail=str(health.get("blocked_reason", "")))
+                elif q_json and critic_passed:
                     final_qt_cn = _resolve_storage_question_type_cn(
                         final_json=q_json,
                         trace_question_type=question_trace.get("question_type"),
@@ -8672,32 +10961,68 @@ def api_generate_questions_stream(tenant_id: str):
                     )
                     question_trace["question_type"] = final_qt_cn
                     q_json["题目类型"] = final_qt_cn
-                    q_json["来源路径"] = str(kb_chunk.get("完整路径", ""))
-                    q_json["来源切片ID"] = sid
-                    q_json["教材版本ID"] = material_version_id
                     if task_id:
                         q_json["出题任务ID"] = task_id
                     if task_name:
                         q_json["出题任务名称"] = task_name
                     q_json["出题RunID"] = run_id
-                    _attach_mother_questions_to_question_payload(q_json, mother_questions)
-                    _attach_mother_question_full_to_question_payload(q_json, mother_full_questions)
-                    _attach_related_slices_to_question_payload(q_json, question_trace.get("related_slice_paths") or [])
+                    _attach_preview_context_to_question_payload(
+                        q_json,
+                        tenant_id=tenant_id,
+                        material_version_id=material_version_id,
+                        question_trace=question_trace,
+                        source_path=str(kb_chunk.get("完整路径", "")),
+                        source_slice_id=sid,
+                        mother_questions=mother_questions,
+                        mother_full_questions=mother_full_questions,
+                    )
+                    if whitelist_saved_current:
+                        q_json = _build_whitelist_pass_bank_item(
+                            final_json=q_json,
+                            critic_result=question_trace.get("critic_original_result") if isinstance(question_trace.get("critic_original_result"), dict) else {},
+                            task_id=task_id,
+                            task_name=task_name,
+                            run_id=run_id,
+                        )
+                        question_trace["final_json"] = deepcopy(q_json)
                     generated.append(q_json)
-                    if save_to_bank:
+                    if persist_to_bank:
                         try:
                             _append_bank_item(bank_path, q_json)
                             saved += 1
                             saved_current = True
-                            _append_step("题目已落库", node="system", level="success")
+                            _append_step("题目已落库", node="system", level="success", detail="白名单通过" if whitelist_saved_current else "")
                         except Exception as e:
                             saved_current = False
                             errors.append(f"第{attempt_count}次尝试落库失败: {e}")
                             _append_step("落库失败", node="system", level="error", detail=str(e))
+                            attempt_error_info = {
+                                "error_key": "storage:append_bank_item_failed",
+                                "category": "storage_failure",
+                                "reason": str(e),
+                                "evidence": str(e),
+                                "fail_types": [],
+                                "missing_conditions": [],
+                                "basis_paths": [],
+                                "solution": _infer_solution_by_error_key(
+                                    error_key="storage:append_bank_item_failed",
+                                    fail_types=[],
+                                    reason=str(e),
+                                    missing_conditions=[],
+                                ),
+                            }
                     _append_step("题目生成成功", node="system", level="success")
                 elif q_json and not critic_seen:
                     errors.append(f"第{attempt_count}次尝试失败: 未经过 critic 审核")
                     _append_step("未经过 critic 审核", node="critic", level="error")
+                    exclude_now = _should_exclude_failed_slice_from_task(
+                        allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                        sid=int(sid),
+                        failure_counts=task_slice_failure_counts,
+                    )
+                    if exclude_now:
+                        task_excluded_slice_ids.add(int(sid))
+                    template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
                     attempt_error_info = _classify_generation_attempt_error(
                         question_trace=question_trace,
                         q_json=q_json,
@@ -8708,6 +11033,24 @@ def api_generate_questions_stream(tenant_id: str):
                 elif q_json and critic_seen and not critic_passed:
                     errors.append(f"第{attempt_count}次尝试失败: critic 未通过")
                     _append_step("critic 未通过，题目未保存", node="critic", level="error")
+                    exclude_now = _should_exclude_failed_slice_from_task(
+                        allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                        sid=int(sid),
+                        failure_counts=task_slice_failure_counts,
+                    )
+                    if exclude_now:
+                        task_excluded_slice_ids.add(int(sid))
+                    template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
+                    health = _record_slice_generation_failure(
+                        tenant_id=tenant_id,
+                        material_version_id=material_version_id,
+                        slice_id=int(sid),
+                        critic_result=question_trace.get("critic_result") if isinstance(question_trace.get("critic_result"), dict) else {},
+                        task_id=task_id,
+                        run_id=run_id,
+                    )
+                    if bool(health.get("blocked")):
+                        _append_step("切片已禁用", node="system", level="error", detail=str(health.get("blocked_reason", "")))
                     attempt_error_info = _classify_generation_attempt_error(
                         question_trace=question_trace,
                         q_json=q_json,
@@ -8718,6 +11061,14 @@ def api_generate_questions_stream(tenant_id: str):
                 else:
                     errors.append(f"第{attempt_count}次尝试未产出 final_json")
                     _append_step("未产出 final_json", node="writer", level="error")
+                    exclude_now = _should_exclude_failed_slice_from_task(
+                        allow_single_retry=allow_retry_on_current_slot and int(sid) == int(planned_slice_ids[success_index]) if planned_slice_ids and success_index < len(planned_slice_ids) else False,
+                        sid=int(sid),
+                        failure_counts=task_slice_failure_counts,
+                    )
+                    if exclude_now:
+                        task_excluded_slice_ids.add(int(sid))
+                    template_gap_final_failure = bool(exclude_now and allow_retry_on_current_slot)
                     attempt_error_info = _classify_generation_attempt_error(
                         question_trace=question_trace,
                         q_json=q_json,
@@ -8740,15 +11091,6 @@ def api_generate_questions_stream(tenant_id: str):
                 }
 
             if attempt_error_info and not saved_current:
-                slice_fail_counts[sid] = int(slice_fail_counts.get(sid, 0) or 0) + 1
-                if slice_fail_counts[sid] >= 2:
-                    skipped_slice_ids.add(int(sid))
-                    _append_step(
-                        "切片降权跳过",
-                        node="system",
-                        level="warning",
-                        detail=f"slice_id={sid} fail_count={slice_fail_counts[sid]}",
-                    )
                 err_key = str(attempt_error_info.get("error_key", "attempt_failed")).strip() or "attempt_failed"
                 category = str(attempt_error_info.get("category", "") or "").strip()
                 is_critic_family = err_key.startswith("critic:") or category in {"critic_rejected", "critic_missing"}
@@ -8756,39 +11098,79 @@ def api_generate_questions_stream(tenant_id: str):
                     failure_key_counts[err_key] = int(failure_key_counts.get(err_key, 0) or 0) + 1
                     failure_examples.setdefault(err_key, attempt_error_info)
                 if is_critic_family and failure_key_counts[err_key] >= fuse_threshold:
-                    fuse_triggered = True
-                    example = failure_examples.get(err_key, attempt_error_info)
-                    fuse_info = {
-                        "triggered": True,
-                        "threshold": fuse_threshold,
-                        "error_key": err_key,
-                        "count": failure_key_counts[err_key],
-                        "category": example.get("category", ""),
-                        "fail_types": example.get("fail_types") or [],
-                        "missing_conditions": example.get("missing_conditions") or [],
-                        "basis_paths": example.get("basis_paths") or [],
-                        "evidence": str(example.get("evidence", "") or "").strip(),
-                        "solution": str(example.get("solution", "") or "").strip(),
-                    }
-                    errors.append(
-                        f"任务熔断：critic 同类错误[{err_key}]在单次任务中已超过{fuse_threshold}次（本次第{failure_key_counts[err_key]}次触发）。"
-                        f" 证据：{fuse_info['evidence']}。建议：{fuse_info['solution']}"
-                    )
-                    _append_step(
-                        "触发熔断",
-                        node="system",
-                        level="error",
-                        detail=f"error_key={err_key} count={failure_key_counts[err_key]} solution={fuse_info['solution']}",
-                    )
+                    if _should_skip_fuse_for_error(
+                        error_key=err_key,
+                        target_question_count=target_question_count,
+                    ):
+                        _append_step(
+                            "熔断豁免",
+                            node="system",
+                            level="warning",
+                            detail=f"error_key={err_key} count={failure_key_counts[err_key]} reason=large_batch_writer_quality_family",
+                        )
+                    else:
+                        # 容错策略：同类错误超阈值仅告警，不中断整批；继续跑后续题补位。
+                        example = failure_examples.get(err_key, attempt_error_info)
+                        fuse_info = {
+                            "triggered": False,
+                            "threshold": fuse_threshold,
+                            "error_key": err_key,
+                            "count": failure_key_counts[err_key],
+                            "category": example.get("category", ""),
+                            "fail_types": example.get("fail_types") or [],
+                            "missing_conditions": example.get("missing_conditions") or [],
+                            "basis_paths": example.get("basis_paths") or [],
+                            "evidence": str(example.get("evidence", "") or "").strip(),
+                            "solution": str(example.get("solution", "") or "").strip(),
+                        }
+                        _append_step(
+                            "同类错误超阈值，继续补位",
+                            node="system",
+                            level="warning",
+                            detail=f"error_key={err_key} count={failure_key_counts[err_key]}",
+                        )
             while _event_stream_buffer:
                 yield _event_stream_buffer.pop(0)
             elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+            if template_gap_final_failure and not saved_current and isinstance(q_json, dict):
+                persisted, saved_item, save_err = _persist_template_gap_failed_item(
+                    enabled=bool(persist_to_bank),
+                    path=bank_path,
+                    final_json=q_json,
+                    question_trace=question_trace,
+                    attempt_error_info=attempt_error_info,
+                    task_id=task_id,
+                    task_name=task_name,
+                    run_id=run_id,
+                )
+                if persisted and isinstance(saved_item, dict):
+                    q_json = saved_item
+                    question_trace["final_json"] = deepcopy(saved_item)
+                    generated.append(saved_item)
+                    saved += 1
+                    saved_current = True
+                    saved_with_issues_current = True
+                    _append_step("题目已落库", node="system", level="warning", detail="模板唯一缺口失败入库，待修复")
+                elif save_err:
+                    errors.append(f"第{attempt_count}次尝试待修复题落库失败: {save_err}")
+                    _append_step("待修复题落库失败", node="system", level="error", detail=save_err)
             question_trace["elapsed_ms"] = elapsed_ms
             question_trace["llm_trace"] = question_llm_trace
             question_trace["llm_summary"] = summarize_llm_trace(question_llm_trace)
             question_trace["unstable_flags"] = mark_unstable(question_trace["llm_summary"])
             question_trace["saved"] = bool(saved_current)
+            question_trace["saved_with_issues"] = bool(saved_with_issues_current)
             if isinstance(q_json, dict):
+                _attach_preview_context_to_question_payload(
+                    q_json,
+                    tenant_id=tenant_id,
+                    material_version_id=material_version_id,
+                    question_trace=question_trace,
+                    source_path=str(kb_chunk.get("完整路径", "")),
+                    source_slice_id=sid,
+                    mother_questions=mother_questions,
+                    mother_full_questions=mother_full_questions,
+                )
                 question_trace["final_json"] = q_json
             if question_trace["unstable_flags"]:
                 _append_step(
@@ -8800,6 +11182,7 @@ def api_generate_questions_stream(tenant_id: str):
                 while _event_stream_buffer:
                     yield _event_stream_buffer.pop(0)
             _ensure_critic_step_in_trace(question_trace)
+            question_trace["snapshot_stage"] = "final"
             process_trace.append(question_trace)
             yield _sse(
                 "question_done",
@@ -8811,6 +11194,7 @@ def api_generate_questions_stream(tenant_id: str):
                     "trace": question_trace,
                     "generated_count": len(generated),
                     "saved_count": saved,
+                    "saved_with_issues": bool(saved_with_issues_current),
                     "error_count": len(errors),
                     "fuse_triggered": fuse_triggered,
                     "fuse_info": fuse_info,
@@ -8827,6 +11211,7 @@ def api_generate_questions_stream(tenant_id: str):
             run_id=run_id,
             material_version_id=material_version_id,
             config_payload={
+                "tenant_id": tenant_id,
                 "question_type": question_type,
                 "generation_mode": generation_mode,
                 "difficulty": difficulty,
@@ -8835,6 +11220,8 @@ def api_generate_questions_stream(tenant_id: str):
                 "max_attempts": max_attempts,
                 "model": model_name,
                 "gen_scope_mode": gen_scope_mode,
+                "persist_to_bank": persist_to_bank,
+                "save_to_bank": persist_to_bank,
                 "task_id": task_id,
                 "template_id": template_id,
                 "template_name": str(template.get("name", "")).strip() if template else "",
@@ -9048,6 +11435,7 @@ def _persist_failed_task_qa_run(
         return
     req = task.get("request") if isinstance(task.get("request"), dict) else {}
     config_payload = {
+        "tenant_id": tenant_id,
         "question_type": str(req.get("question_type", "")),
         "generation_mode": _normalize_generation_mode(req.get("generation_mode", "")),
         "difficulty": str(req.get("difficulty", "")),
@@ -9091,77 +11479,614 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
     try:
         body_with_task = dict(body or {})
         body_with_task["task_id"] = task_id
+        resume_inplace = bool(body_with_task.get("resume_inplace"))
+        seed_generated_count = 0
+        seed_saved_count = 0
+        seed_items: list[dict[str, Any]] = []
+        seed_errors: list[str] = []
+        seed_trace: list[dict[str, Any]] = []
+        if resume_inplace:
+            with GEN_TASK_LOCK:
+                seed_task = GEN_TASKS.get(task_id)
+                if isinstance(seed_task, dict) and str(seed_task.get("tenant_id", "")) == tenant_id:
+                    seed_generated_count = int(seed_task.get("generated_count", 0) or 0)
+                    seed_saved_count = int(seed_task.get("saved_count", 0) or 0)
+                    seed_items = [x for x in (seed_task.get("items") or []) if isinstance(x, dict)]
+                    seed_errors = [str(x) for x in (seed_task.get("errors") or []) if str(x).strip()]
+                    seed_trace = [x for x in (seed_task.get("process_trace") or []) if isinstance(x, dict)]
         total = int(body_with_task.get("num_questions", 0) or 0)
+        total_for_progress = int(body_with_task.get("resume_original_total", 0) or 0) if resume_inplace else total
+        if total_for_progress <= 0:
+            total_for_progress = total
+        current_for_progress = seed_generated_count if resume_inplace else 0
         _update_task_live(
             tenant_id,
             task_id,
             {
-                "progress": {"current": 0, "total": total},
+                "progress": {"current": current_for_progress, "total": total_for_progress},
                 "material_version_id": str(body_with_task.get("material_version_id", "")),
             },
         )
         _persist_live_task_snapshot(tenant_id, task_id)
 
-        result_holder: dict[str, Any] = {}
+        done_payload: dict[str, Any] | None = None
+        # 任务内并发策略：
+        # - 非模板题：固定 3 并发
+        # - 模板题：按全局 planned_slots 分片并发，保证最终聚合后仍满足整体模板要求
+        is_template_task = bool(str(body_with_task.get("template_id", "") or "").strip())
+        template_parallel_context: dict[str, Any] | None = None
+        if is_template_task:
+            template_parallel_context, template_parallel_error = _resolve_template_parallel_context(tenant_id, body_with_task)
+            if template_parallel_error:
+                _update_task_live(
+                    tenant_id,
+                    task_id,
+                    {
+                        "status": "failed",
+                        "ended_at": datetime.now(timezone.utc).isoformat(),
+                        "errors": [template_parallel_error],
+                        "error_count": 1,
+                    },
+                )
+                _persist_live_task_snapshot(tenant_id, task_id)
+                return
+        default_concurrency = max(1, int(os.getenv("GENERATE_TASK_CONCURRENCY", "3") or 3))
+        concurrency = 1 if resume_inplace else min(default_concurrency, max(1, total))
 
-        def _invoke_generate_once() -> None:
+        def _invoke_generate_payload(payload: dict[str, Any], *, detach_from_parent_task: bool = False):
+            req_payload = dict(payload or {})
+            # 续跑场景下，不让子运行直接写父任务，避免中途失败时覆盖历史 process_trace/errors。
+            if detach_from_parent_task:
+                req_payload.pop("task_id", None)
             with app.test_request_context(
                 f"/api/{tenant_id}/generate",
                 method="POST",
-                json=body_with_task,
+                json=req_payload,
                 headers={"X-System-User": system_user},
             ):
-                result_holder["resp"] = api_generate_questions(tenant_id)
+                return api_generate_questions(tenant_id)
 
-        t = threading.Thread(target=_invoke_generate_once, daemon=True)
-        t.start()
-        # No task-level timeout: wait until the batch completes (or fails)
-        t.join()
+        if concurrency <= 1 or total <= 1:
+            # 续跑串行：按单题子批次执行，实时回写进度，避免长时间卡在同一进度。
+            if resume_inplace and total > 1:
+                planned_ids = [int(x) for x in (body_with_task.get("planned_slice_ids") or []) if str(x).isdigit()]
+                planned_slots = [slot for slot in (body_with_task.get("planned_slots") or []) if isinstance(slot, dict)]
+                subcall_timeout_seconds = max(
+                    60, int(os.getenv("RESUME_SUBCALL_TIMEOUT_SECONDS", "900") or 900)
+                )
+                merged_items: list[dict[str, Any]] = []
+                merged_traces: list[dict[str, Any]] = []
+                merged_errors: list[str] = []
+                merged_run_ids: list[str] = []
+                merged_saved = 0
+                for idx in range(total):
+                    if _is_task_cancelled(task_id):
+                        merged_errors.append("用户取消")
+                        break
+                    _update_task_live(
+                        tenant_id,
+                        task_id,
+                        {
+                            "current_node": "resume_subrun",
+                            "current_node_updated_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    _persist_live_task_snapshot(tenant_id, task_id)
+                    shard_payload = dict(body_with_task)
+                    shard_payload["num_questions"] = 1
+                    if planned_slots:
+                        if idx < len(planned_slots):
+                            shard_payload["planned_slots"] = [planned_slots[idx]]
+                        else:
+                            shard_payload["planned_slots"] = [planned_slots[-1]]
+                    if planned_ids:
+                        if idx < len(planned_ids):
+                            shard_payload["planned_slice_ids"] = [int(planned_ids[idx])]
+                        else:
+                            shard_payload["planned_slice_ids"] = [int(planned_ids[-1])]
+                    with ThreadPoolExecutor(max_workers=1) as sub_ex:
+                        future = sub_ex.submit(_invoke_generate_payload, shard_payload, detach_from_parent_task=True)
+                        try:
+                            resp = future.result(timeout=float(subcall_timeout_seconds))
+                        except FuturesTimeoutError:
+                            merged_errors.append(f"续跑子批次超时（>{int(subcall_timeout_seconds)}s）")
+                            break
+                    if resp is None:
+                        merged_errors.append("任务失败：未拿到生成响应")
+                        break
+                    status_code = int(getattr(resp, "status_code", 200) or 200)
+                    payload: dict[str, Any] = {}
+                    try:
+                        payload = resp.get_json(silent=True) or {}
+                    except Exception:
+                        payload = {}
+                    if status_code >= 400:
+                        msg = str(((payload.get("error") if isinstance(payload, dict) else {}) or {}).get("message", "")).strip()
+                        merged_errors.append(msg or f"任务启动失败({status_code})")
+                        break
+                    new_items = [x for x in (payload.get("items") or []) if isinstance(x, dict)]
+                    new_traces_raw = [x for x in (payload.get("process_trace") or []) if isinstance(x, dict)]
+                    trace_base = len(seed_trace) + len(merged_traces)
+                    target_base = seed_generated_count + len(merged_items)
+                    new_traces: list[dict[str, Any]] = []
+                    for t_idx, row in enumerate(new_traces_raw, start=1):
+                        mapped = dict(row)
+                        mapped_idx = int(mapped.get("index", 0) or t_idx)
+                        mapped_target = int(mapped.get("target_index", 0) or mapped_idx)
+                        mapped["index"] = trace_base + mapped_idx
+                        mapped["target_index"] = target_base + mapped_target
+                        new_traces.append(mapped)
+                    merged_items.extend(new_items)
+                    merged_traces.extend(new_traces)
+                    merged_errors.extend([str(x) for x in (payload.get("errors") or []) if str(x).strip()])
+                    merged_saved += int(payload.get("saved_count", 0) or 0)
+                    rid = str(payload.get("run_id", "") or "").strip()
+                    if rid:
+                        merged_run_ids.append(rid)
+                    live_items = list(seed_items) + list(merged_items)
+                    live_trace = list(seed_trace) + list(merged_traces)
+                    live_generated = seed_generated_count + len(merged_items)
+                    live_saved = seed_saved_count + int(merged_saved)
+                    next_target = min(live_generated + 1, int(total_for_progress))
+                    _update_task_live(
+                        tenant_id,
+                        task_id,
+                        {
+                            "items": live_items,
+                            "process_trace": live_trace,
+                            "generated_count": int(live_generated),
+                            "saved_count": int(live_saved),
+                            "errors": list(seed_errors) + list(merged_errors),
+                            "progress": {
+                                "current": min(live_generated, int(total_for_progress)),
+                                "total": int(total_for_progress),
+                            },
+                            "current_question_id": f"第 {next_target} 题" if live_generated < int(total_for_progress) else "",
+                            "current_node": "resume_subrun",
+                            "current_node_updated_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                        live_trace,
+                    )
+                    _persist_live_task_snapshot(tenant_id, task_id)
+                if len(merged_items) > total:
+                    merged_items = merged_items[:total]
+                done_payload = {
+                    "run_id": ",".join(merged_run_ids),
+                    "items": merged_items,
+                    "generated_count": len(merged_items),
+                    "saved_count": min(merged_saved, len(merged_items)),
+                    "errors": merged_errors,
+                    "process_trace": merged_traces,
+                    "material_version_id": str(body_with_task.get("material_version_id", "")),
+                    "success": len(merged_items) > 0,
+                    "partial_completed": len(merged_items) > 0 and len(merged_items) < total,
+                }
+            else:
+                # 原有串行行为
+                resp = _invoke_generate_payload(body_with_task, detach_from_parent_task=resume_inplace)
+                if resp is None:
+                    raise RuntimeError("任务失败：未拿到生成响应")
+                status_code = int(getattr(resp, "status_code", 200) or 200)
+                if status_code >= 400:
+                    payload = {}
+                    try:
+                        payload = resp.get_json(silent=True) or {}
+                    except Exception:
+                        payload = {}
+                    msg = str(((payload.get("error") if isinstance(payload, dict) else {}) or {}).get("message", "")).strip()
+                    if not msg:
+                        msg = f"任务启动失败({status_code})"
+                    ended_at = datetime.now(timezone.utc).isoformat()
+                    if resume_inplace:
+                        merged_errors = list(seed_errors)
+                        merged_errors.append(msg)
+                        failed_task = {
+                            "status": "failed",
+                            "ended_at": ended_at,
+                            "errors": merged_errors,
+                            "error_count": len(merged_errors),
+                        }
+                    else:
+                        failed_task = {
+                            "status": "failed",
+                            "ended_at": ended_at,
+                            "errors": [msg],
+                            "error_count": 1,
+                        }
+                    _update_task_live(tenant_id, task_id, failed_task)
+                    _persist_live_task_snapshot(tenant_id, task_id)
+                    with GEN_TASK_LOCK:
+                        task = GEN_TASKS.get(task_id)
+                        if task:
+                            _persist_failed_task_qa_run(tenant_id, task, reason=msg, started_at=started_at, ended_at=ended_at)
+                            _persist_gen_task(tenant_id, task)
+                    return
+                try:
+                    done_payload = resp.get_json(silent=True) or {}
+                except Exception:
+                    done_payload = {}
+        else:
+            shard_specs: list[dict[str, Any]] = []
+            if is_template_task and isinstance(template_parallel_context, dict):
+                planned_slots_all = [slot for slot in (template_parallel_context.get("planned_slots") or []) if isinstance(slot, dict)]
+                template_plan = template_parallel_context.get("template_plan") if isinstance(template_parallel_context.get("template_plan"), dict) else {}
+                min_shard_size = _compute_template_parallel_min_shard_size(template_plan, len(planned_slots_all))
+                template_shard_cap = min(4, max(1, len(planned_slots_all) // max(1, min_shard_size)))
+                shard_count = max(1, template_shard_cap)
+                template_shards = _split_template_slots_for_parallel(planned_slots_all, shard_count)
+                if len(template_shards) == 1:
+                    shard_count = 1
+                for idx, shard_slots in enumerate(template_shards):
+                    cleaned_slots = [
+                        {
+                            "slice_id": int(slot.get("slice_id")),
+                            "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
+                            "mastery": str(slot.get("mastery", "") or "").strip(),
+                        }
+                        for slot in shard_slots
+                    ]
+                    shard_specs.append(
+                        {
+                            "shard_idx": idx,
+                            "mode": "template",
+                            "slots": shard_slots,
+                            "payload": {
+                                **dict(body_with_task),
+                                "num_questions": len(cleaned_slots),
+                                "planned_slots": cleaned_slots,
+                                "planned_slice_ids": [int(slot.get("slice_id")) for slot in cleaned_slots],
+                                "task_name": f"{str(body_with_task.get('task_name', '')).strip()}#p{idx + 1}",
+                            },
+                        }
+                    )
+            else:
+                shard_count = min(concurrency, total)
+                base = total // shard_count
+                remainder = total % shard_count
+                shard_sizes = [base + (1 if i < remainder else 0) for i in range(shard_count)]
+                shard_sizes = [x for x in shard_sizes if x > 0]
+                for idx, shard_num in enumerate(shard_sizes):
+                    shard_specs.append(
+                        {
+                            "shard_idx": idx,
+                            "mode": "regular",
+                            "payload": {
+                                **dict(body_with_task),
+                                "num_questions": int(shard_num),
+                                "task_name": f"{str(body_with_task.get('task_name', '')).strip()}#p{idx + 1}",
+                            },
+                        }
+                    )
 
-        resp = result_holder.get("resp")
-        if resp is None:
-            raise RuntimeError("任务失败：未拿到生成响应")
-        status_code = int(getattr(resp, "status_code", 200) or 200)
-        if status_code >= 400:
-            payload = {}
-            try:
-                payload = resp.get_json(silent=True) or {}
-            except Exception:
-                payload = {}
-            msg = str(((payload.get("error") if isinstance(payload, dict) else {}) or {}).get("message", "")).strip()
-            if not msg:
-                msg = f"任务启动失败({status_code})"
-            ended_at = datetime.now(timezone.utc).isoformat()
-            failed_task = {
-                "status": "failed",
-                "ended_at": ended_at,
-                "errors": [msg],
-                "error_count": 1,
+            merged_errors: list[str] = []
+            merged_run_ids: list[str] = []
+            shard_results: dict[int, dict[str, Any]] = {}
+            completed_shards = 0
+
+            with ThreadPoolExecutor(max_workers=max(1, len(shard_specs))) as ex:
+                future_map = {}
+                for spec in shard_specs:
+                    shard_payload = dict(spec.get("payload") or {})
+                    shard_payload.pop("task_id", None)
+                    if spec.get("mode") == "template":
+                        shard_payload.pop("template_id", None)
+                    future = ex.submit(_invoke_generate_payload, shard_payload)
+                    future_map[future] = spec
+
+                for fut in as_completed(list(future_map.keys())):
+                    spec = future_map[fut]
+                    resp = fut.result()
+                    status_code = int(getattr(resp, "status_code", 200) or 200)
+                    payload: dict[str, Any] = {}
+                    try:
+                        payload = resp.get_json(silent=True) or {}
+                    except Exception:
+                        payload = {}
+                    shard_results[int(spec.get("shard_idx", 0) or 0)] = {
+                        "spec": spec,
+                        "status_code": status_code,
+                        "payload": payload,
+                    }
+                    if status_code >= 400:
+                        msg = str(((payload.get("error") if isinstance(payload, dict) else {}) or {}).get("message", "")).strip()
+                        merged_errors.append(msg or f"并发子任务失败({status_code})")
+                    else:
+                        rid = str(payload.get("run_id", "") or "").strip()
+                        if rid:
+                            merged_run_ids.append(rid)
+                    completed_shards += 1
+                    est_generated = 0
+                    for row in shard_results.values():
+                        p = row.get("payload") if isinstance(row, dict) else {}
+                        est_generated += len([x for x in ((p or {}).get("items") or []) if isinstance(x, dict)])
+                    _update_task_live(
+                        tenant_id,
+                        task_id,
+                        {
+                            "progress": {"current": min(est_generated, total), "total": total},
+                            "current_node": "system",
+                            "current_node_updated_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                    _persist_live_task_snapshot(tenant_id, task_id)
+
+            merged_items: list[dict[str, Any]] = []
+            merged_traces: list[dict[str, Any]] = []
+            merged_saved = 0
+            ordered_entries: list[dict[str, Any]] = []
+            trace_seq = 0
+            for shard_idx in sorted(shard_results.keys()):
+                row = shard_results.get(shard_idx) or {}
+                spec = row.get("spec") if isinstance(row.get("spec"), dict) else {}
+                payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                status_code = int(row.get("status_code", 200) or 200)
+                if status_code >= 400:
+                    continue
+                shard_items = [x for x in (payload.get("items") or []) if isinstance(x, dict)]
+                shard_traces_raw = [x for x in (payload.get("process_trace") or []) if isinstance(x, dict)]
+                shard_mode = str(spec.get("mode", "") or "")
+                if shard_mode == "template":
+                    shard_slots = [slot for slot in (spec.get("slots") or []) if isinstance(slot, dict)]
+                    saved_traces_local = [x for x in shard_traces_raw if bool(x.get("saved"))]
+                    saved_traces_local.sort(key=lambda x: int(x.get("target_index", 0) or 0))
+                    for t_idx, tr in enumerate(shard_traces_raw, start=1):
+                        mapped = dict(tr)
+                        local_target = int(mapped.get("target_index", 0) or t_idx)
+                        if 1 <= local_target <= len(shard_slots):
+                            mapped["target_index"] = int(shard_slots[local_target - 1].get("_global_target_index", local_target))
+                        trace_seq += 1
+                        mapped["index"] = trace_seq
+                        merged_traces.append(mapped)
+                    for item, tr in zip(shard_items, saved_traces_local):
+                        local_target = int(tr.get("target_index", 0) or 0)
+                        if 1 <= local_target <= len(shard_slots):
+                            global_target = int(shard_slots[local_target - 1].get("_global_target_index", local_target))
+                        else:
+                            global_target = len(ordered_entries) + 1
+                        ordered_entries.append({"target_index": global_target, "item": item})
+                else:
+                    shard_base = len(ordered_entries)
+                    for t_idx, tr in enumerate(shard_traces_raw, start=1):
+                        mapped = dict(tr)
+                        current_target = int(mapped.get("target_index", 0) or t_idx)
+                        mapped["target_index"] = shard_base + current_target
+                        trace_seq += 1
+                        mapped["index"] = trace_seq
+                        merged_traces.append(mapped)
+                    for item_idx, item in enumerate(shard_items, start=1):
+                        ordered_entries.append({"target_index": shard_base + item_idx, "item": item})
+                merged_saved += int(payload.get("saved_count", 0) or 0)
+                merged_errors.extend([str(x) for x in (payload.get("errors") or []) if str(x).strip()])
+
+            ordered_entries.sort(key=lambda x: int(x.get("target_index", 0) or 0))
+            merged_items = [entry.get("item") for entry in ordered_entries if isinstance(entry.get("item"), dict)]
+            merged_traces.sort(key=lambda x: (int(x.get("target_index", 0) or 0), int(x.get("index", 0) or 0)))
+            for idx, trace in enumerate(merged_traces, start=1):
+                trace["index"] = idx
+
+            if len(merged_items) > total:
+                merged_items = merged_items[:total]
+            done_payload = {
+                "run_id": ",".join(merged_run_ids),
+                "items": merged_items,
+                "generated_count": len(merged_items),
+                "saved_count": min(merged_saved, len(merged_items)),
+                "errors": merged_errors,
+                "process_trace": merged_traces,
+                "material_version_id": str(
+                    (template_parallel_context or {}).get("material_version_id", body_with_task.get("material_version_id", ""))
+                ),
+                "success": len(merged_items) > 0,
+                "partial_completed": len(merged_items) > 0 and len(merged_items) < total,
             }
-            _update_task_live(tenant_id, task_id, failed_task)
-            with GEN_TASK_LOCK:
-                task = GEN_TASKS.get(task_id)
-                if task:
-                    _persist_failed_task_qa_run(tenant_id, task, reason=msg, started_at=started_at, ended_at=ended_at)
-                    _persist_gen_task(tenant_id, task)
-            return
-        done_payload: dict[str, Any] | None = None
-        try:
-            done_payload = resp.get_json(silent=True) or {}
-        except Exception:
-            done_payload = {}
+            if is_template_task and isinstance(template_parallel_context, dict):
+                planned_slots_all = [slot for slot in (template_parallel_context.get("planned_slots") or []) if isinstance(slot, dict)]
+                candidate_lookup = (
+                    template_parallel_context.get("candidate_lookup")
+                    if isinstance(template_parallel_context.get("candidate_lookup"), dict)
+                    else {}
+                )
+                repair_report = _analyze_template_parallel_result(
+                    planned_slots=planned_slots_all,
+                    process_trace=merged_traces,
+                    candidate_lookup=candidate_lookup,
+                )
+                ok = bool(repair_report.get("ok"))
+                reason = "；".join([str(x).strip() for x in (repair_report.get("issues") or []) if str(x).strip()][:6])
+                if not ok:
+                    repair_strategy, repair_strategy_reason = _plan_template_repair_strategy(repair_report)
+                    repair_targets: list[int] = []
+                    if repair_strategy == "repair_missing_slots":
+                        repair_targets = sorted(
+                            {int(x) for x in (repair_report.get("missing_target_indexes") or []) if int(x) > 0}
+                        )
+                    elif repair_strategy == "retry_invalid_and_missing_slots":
+                        repair_targets = sorted(
+                            {
+                                *[int(x) for x in (repair_report.get("missing_target_indexes") or []) if int(x) > 0],
+                                *[
+                                    int(item.get("target_index", 0) or 0)
+                                    for item in (repair_report.get("invalid_targets") or [])
+                                    if isinstance(item, dict) and int(item.get("target_index", 0) or 0) > 0
+                                ],
+                            }
+                        )
+                    if repair_targets:
+                        repair_slots = [planned_slots_all[idx - 1] for idx in repair_targets if 1 <= idx <= len(planned_slots_all)]
+                        repair_specs = _split_template_slots_for_parallel(repair_slots, min(3, max(1, len(repair_slots))))
+                        repair_results: list[dict[str, Any]] = []
+                        with ThreadPoolExecutor(max_workers=max(1, len(repair_specs))) as repair_ex:
+                            future_map = {}
+                            for idx, shard_slots in enumerate(repair_specs):
+                                shard_payload = dict(body_with_task)
+                                shard_payload.pop("task_id", None)
+                                shard_payload.pop("template_id", None)
+                                cleaned_slots = [
+                                    {
+                                        "slice_id": int(slot.get("slice_id")),
+                                        "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
+                                        "mastery": str(slot.get("mastery", "") or "").strip(),
+                                    }
+                                    for slot in shard_slots
+                                ]
+                                shard_payload["num_questions"] = len(cleaned_slots)
+                                shard_payload["planned_slots"] = cleaned_slots
+                                shard_payload["planned_slice_ids"] = [int(slot.get("slice_id")) for slot in cleaned_slots]
+                                shard_payload["task_name"] = f"{str(body_with_task.get('task_name', '')).strip()}#repair{idx + 1}"
+                                future = repair_ex.submit(_invoke_generate_payload, shard_payload)
+                                future_map[future] = shard_slots
+                            for fut in as_completed(list(future_map.keys())):
+                                repair_payload: dict[str, Any] = {}
+                                resp = fut.result()
+                                try:
+                                    repair_payload = resp.get_json(silent=True) or {}
+                                except Exception:
+                                    repair_payload = {}
+                                repair_results.append(
+                                    {
+                                        "slots": future_map[fut],
+                                        "status_code": int(getattr(resp, "status_code", 200) or 200),
+                                        "payload": repair_payload,
+                                    }
+                                )
+                        discard_targets = set(repair_targets)
+                        normalized_existing_traces: list[dict[str, Any]] = []
+                        for tr in merged_traces:
+                            mapped = dict(tr)
+                            target_idx = int(mapped.get("target_index", 0) or 0)
+                            if bool(mapped.get("saved")) and target_idx in discard_targets:
+                                mapped["saved"] = False
+                                mapped["template_repair_discarded"] = True
+                            normalized_existing_traces.append(mapped)
+                        appended_repair_traces: list[dict[str, Any]] = []
+                        next_trace_index = len(normalized_existing_traces)
+                        repair_errors: list[str] = []
+                        repair_run_ids: list[str] = []
+                        for row in repair_results:
+                            status_code = int(row.get("status_code", 200) or 200)
+                            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+                            shard_slots = [slot for slot in (row.get("slots") or []) if isinstance(slot, dict)]
+                            if status_code >= 400:
+                                msg = str(((payload.get("error") if isinstance(payload, dict) else {}) or {}).get("message", "")).strip()
+                                repair_errors.append(msg or f"模板修复子任务失败({status_code})")
+                                continue
+                            rid = str(payload.get("run_id", "") or "").strip()
+                            if rid:
+                                repair_run_ids.append(rid)
+                            for t_idx, tr in enumerate([x for x in (payload.get("process_trace") or []) if isinstance(x, dict)], start=1):
+                                mapped = dict(tr)
+                                local_target = int(mapped.get("target_index", 0) or t_idx)
+                                if 1 <= local_target <= len(shard_slots):
+                                    mapped["target_index"] = int(shard_slots[local_target - 1].get("_global_target_index", local_target))
+                                next_trace_index += 1
+                                mapped["index"] = next_trace_index
+                                appended_repair_traces.append(mapped)
+                            repair_errors.extend([str(x) for x in (payload.get("errors") or []) if str(x).strip()])
+                        merged_traces = normalized_existing_traces + appended_repair_traces
+                        merged_traces.sort(key=lambda x: (int(x.get("target_index", 0) or 0), int(x.get("index", 0) or 0)))
+                        for idx, trace in enumerate(merged_traces, start=1):
+                            trace["index"] = idx
+                        final_repair_report = _analyze_template_parallel_result(
+                            planned_slots=planned_slots_all,
+                            process_trace=merged_traces,
+                            candidate_lookup=candidate_lookup,
+                        )
+                        ok = bool(final_repair_report.get("ok"))
+                        reason = "；".join([str(x).strip() for x in (final_repair_report.get("issues") or []) if str(x).strip()][:6])
+                        done_payload["errors"] = list(done_payload.get("errors") or []) + repair_errors
+                        if repair_strategy_reason:
+                            done_payload["errors"].append(f"模板修复策略: {repair_strategy}（{repair_strategy_reason}）")
+                        if repair_run_ids:
+                            merged_run_ids.extend(repair_run_ids)
+                        valid_saved_traces = [
+                            x for x in merged_traces
+                            if isinstance(x, dict) and bool(x.get("saved")) and isinstance(x.get("final_json"), dict)
+                        ]
+                        valid_saved_traces.sort(key=lambda x: int(x.get("target_index", 0) or 0))
+                        merged_items = [dict(x.get("final_json")) for x in valid_saved_traces]
+                        done_payload["items"] = merged_items
+                        done_payload["generated_count"] = len(merged_items)
+                        done_payload["saved_count"] = len(merged_items)
+                        done_payload["process_trace"] = merged_traces
+                        done_payload["run_id"] = ",".join([x for x in merged_run_ids if str(x).strip()])
+                        done_payload["partial_completed"] = len(merged_items) > 0 and len(merged_items) < total
+                    else:
+                        done_payload["errors"] = list(done_payload.get("errors") or []) + [
+                            f"模板修复策略: {repair_strategy}（{repair_strategy_reason or '无'}）"
+                        ]
+                if not ok:
+                    done_payload["errors"] = list(done_payload.get("errors") or []) + [f"模板整体校验失败: {reason}"]
+                    done_payload["success"] = False
+
+        if resume_inplace and isinstance(done_payload, dict):
+            newly_items = [x for x in (done_payload.get("items") or []) if isinstance(x, dict)]
+            newly_traces = [x for x in (done_payload.get("process_trace") or []) if isinstance(x, dict)]
+            trace_offset = len(seed_trace)
+            remapped_traces: list[dict[str, Any]] = []
+            for idx, row in enumerate(newly_traces, start=1):
+                mapped = dict(row)
+                current_idx = int(mapped.get("index", 0) or idx)
+                current_target = int(mapped.get("target_index", 0) or current_idx)
+                mapped["index"] = trace_offset + current_idx
+                mapped["target_index"] = seed_generated_count + current_target
+                remapped_traces.append(mapped)
+            merged_trace = list(seed_trace) + remapped_traces
+            merged_items = list(seed_items) + newly_items
+            merged_errors = list(seed_errors) + [str(x) for x in (done_payload.get("errors") or []) if str(x).strip()]
+            merged_generated_count = seed_generated_count + int(done_payload.get("generated_count", 0) or 0)
+            merged_saved_count = seed_saved_count + int(done_payload.get("saved_count", 0) or 0)
+            hard_failed_count, soft_warning_count = _summarize_trace_fail_levels(merged_trace)
+            done_payload = {
+                **done_payload,
+                "items": merged_items,
+                "process_trace": merged_trace,
+                "errors": merged_errors,
+                "generated_count": merged_generated_count,
+                "saved_count": merged_saved_count,
+                "hard_failed_count": hard_failed_count,
+                "soft_warning_count": soft_warning_count,
+                "partial_completed": merged_generated_count > 0 and merged_generated_count < int(total_for_progress),
+            }
+            if (
+                str(body_with_task.get("template_id", "") or "").strip()
+                and merged_generated_count < int(total_for_progress)
+            ):
+                template_msg = (
+                    f"模板续跑未补齐：目标 {int(total_for_progress)} 题，当前累计通过 {int(merged_generated_count)} 题"
+                )
+                if template_msg not in done_payload["errors"]:
+                    done_payload["errors"].append(template_msg)
+                done_payload["success"] = False
+
         ended_at = datetime.now(timezone.utc).isoformat()
         if not isinstance(done_payload, dict):
-            _update_task_live(
-                tenant_id,
-                task_id,
-                {"status": "failed", "ended_at": ended_at, "errors": ["任务异常结束，未收到完成事件"]},
-            )
+            if resume_inplace:
+                merged_errors = list(seed_errors)
+                merged_errors.append("任务异常结束，未收到完成事件")
+                _update_task_live(
+                    tenant_id,
+                    task_id,
+                    {"status": "failed", "ended_at": ended_at, "errors": merged_errors},
+                )
+                _persist_live_task_snapshot(tenant_id, task_id)
+            else:
+                _update_task_live(
+                    tenant_id,
+                    task_id,
+                    {"status": "failed", "ended_at": ended_at, "errors": ["任务异常结束，未收到完成事件"]},
+                )
+                _persist_live_task_snapshot(tenant_id, task_id)
         else:
-            status = "cancelled" if done_payload.get("cancelled") else (
-                "completed"
-                if bool(done_payload.get("success", False)) or int(done_payload.get("generated_count", 0) or 0) > 0
-                else "failed"
+            template_incomplete = (
+                bool(resume_inplace)
+                and bool(str(body_with_task.get("template_id", "") or "").strip())
+                and int(done_payload.get("generated_count", 0) or 0) < int(total_for_progress)
+            )
+            payload_success = bool(done_payload.get("success", False))
+            # 模板续跑要求“补齐总量才成功”；若仍未补齐则保持 failed 便于继续续跑。
+            status = (
+                "cancelled" if done_payload.get("cancelled")
+                else ("failed" if (template_incomplete or not payload_success) else "completed")
             )
             _update_task_live(
                 tenant_id,
@@ -9175,13 +12100,16 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                     "errors": [str(x) for x in (done_payload.get("errors") or [])],
                     "generated_count": int(done_payload.get("generated_count", 0) or 0),
                     "saved_count": int(done_payload.get("saved_count", 0) or 0),
+                    "hard_failed_count": int(done_payload.get("hard_failed_count", 0) or 0),
+                    "soft_warning_count": int(done_payload.get("soft_warning_count", 0) or 0),
                     "progress": {
-                        "current": len(list(done_payload.get("process_trace") or [])),
-                        "total": int(body_with_task.get("num_questions", 0) or 0),
+                        "current": int(done_payload.get("generated_count", 0) or 0) if resume_inplace else len(list(done_payload.get("process_trace") or [])),
+                        "total": int(total_for_progress),
                     },
                 },
                 list(done_payload.get("process_trace") or []),
             )
+            _persist_live_task_snapshot(tenant_id, task_id)
         with GEN_TASK_LOCK:
             task = GEN_TASKS.get(task_id)
             if task:
@@ -9205,6 +12133,7 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 "errors": [str(e)],
             },
         )
+        _persist_live_task_snapshot(tenant_id, task_id)
         with GEN_TASK_LOCK:
             task = GEN_TASKS.get(task_id)
             if task:
@@ -9231,7 +12160,7 @@ def api_generate_task_create(tenant_id: str):
             exist_name = str(task.get("task_name", "") or "").strip()
             if exist_name and exist_name.casefold() == normalized:
                 return _error("BAD_REQUEST", "task_name already exists", 400)
-    for task in _read_jsonl(_qa_gen_tasks_path(tenant_id)):
+    for task in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
         if not isinstance(task, dict):
             continue
         exist_name = str(task.get("task_name", "") or "").strip()
@@ -9250,6 +12179,223 @@ def api_generate_task_create(tenant_id: str):
     return _json_response({"task": _build_gen_task_summary(task)})
 
 
+@app.post('/api/<tenant_id>/generate/tasks/<task_id>/resume')
+def api_generate_task_resume(tenant_id: str, task_id: str):
+    """Resume an incomplete generation task in-place (reuse the same task_id/task_name)."""
+    try:
+        system_user = _get_system_user()
+        _check_tenant_permission(tenant_id, "gen.create")
+    except PermissionError as e:
+        return _error(str(e), "无权限续跑出题任务", 403)
+
+    source_task = _get_latest_gen_task_snapshot(tenant_id, task_id)
+    if not isinstance(source_task, dict):
+        return _error("TASK_NOT_FOUND", "任务不存在", 404)
+
+    source_status = str(source_task.get("status", "") or "").strip().lower()
+    if source_status in {"pending", "running"}:
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        tid = str(source_task.get("task_id", "") or "").strip()
+        with GEN_TASK_LOCK:
+            in_live = tid in GEN_TASKS
+        still_active = _is_generate_run_still_active(tenant_id, str(source_task.get("run_id", "") or ""))
+        can_force_orphan_fail = (
+            not in_live
+            and not still_active
+            and _is_unowned_running_task_stale(source_task, now_dt, _ORPHAN_GEN_UNOWNED_RUNNING_SECONDS)
+        )
+        if can_force_orphan_fail:
+            patched = dict(source_task)
+            errs = [str(x).strip() for x in (patched.get("errors") or []) if str(x).strip()]
+            if _ORPHAN_GEN_TASK_MSG not in errs:
+                errs.append(_ORPHAN_GEN_TASK_MSG)
+            patched["status"] = "failed"
+            patched["ended_at"] = str(patched.get("ended_at", "") or now)
+            patched["updated_at"] = now
+            patched["errors"] = errs
+            patched["error_count"] = len(errs)
+            _persist_gen_task(tenant_id, patched)
+            _persist_failed_task_qa_run(
+                tenant_id,
+                patched,
+                reason=_ORPHAN_GEN_TASK_MSG,
+                started_at=str(patched.get("started_at", "") or ""),
+                ended_at=str(patched.get("ended_at", "") or now),
+            )
+            source_task = patched
+            source_status = "failed"
+        else:
+            return _error("TASK_STILL_RUNNING", "原任务仍在执行中，暂不支持续跑", 409)
+
+    body = request.get_json(silent=True) or {}
+    force_remaining = body.get("remaining_questions")
+    remain_val: int | None = None
+    if force_remaining is not None:
+        try:
+            remain_val = max(1, int(force_remaining))
+        except Exception:
+            return _error("BAD_REQUEST", "remaining_questions 必须是整数", 400)
+    resume_body = _build_resume_task_body_from_source(
+        tenant_id,
+        source_task,
+        force_remaining=remain_val,
+        inplace=True,
+    )
+    if not isinstance(resume_body, dict):
+        return _error("NO_REMAINING_WORK", "原任务已完成，无剩余题目可续跑", 400)
+    if str((source_task.get("request") or {}).get("template_id", "") or "").strip():
+        resume_body, plan_err = _rebuild_template_resume_gap_plan(tenant_id, source_task, resume_body)
+        if plan_err:
+            return _error("TEMPLATE_RESUME_PLAN_INVALID", plan_err, 400)
+        if int(resume_body.get("num_questions", 0) or 0) <= 0:
+            return _error("NO_REMAINING_WORK", "模板缺口已补齐，无需续跑", 400)
+
+    resumed_task = _prepare_inplace_resume_task(tenant_id, source_task)
+    with GEN_TASK_LOCK:
+        GEN_TASKS[str(resumed_task.get("task_id", ""))] = _task_snapshot(resumed_task)
+        _prune_task_cache()
+    _persist_gen_task(tenant_id, resumed_task)
+    t = threading.Thread(
+        target=_run_generate_task_worker,
+        args=(tenant_id, str(resumed_task.get("task_id", "")), resume_body, system_user),
+        daemon=True,
+    )
+    t.start()
+    return _json_response(
+        {
+            "task": _build_gen_task_summary(resumed_task),
+            "resume_from": {
+                "task_id": str(source_task.get("task_id", "") or ""),
+                "task_name": str(source_task.get("task_name", "") or ""),
+                "status": str(source_task.get("status", "") or ""),
+                "generated_count": int(source_task.get("generated_count", 0) or 0),
+                "saved_count": int(source_task.get("saved_count", 0) or 0),
+                "target_count": int((source_task.get("request") or {}).get("num_questions", 0) or 0),
+                "remaining_count": int((resume_body.get("num_questions", 0) or 0)),
+            },
+        }
+    )
+
+
+@app.post('/api/<tenant_id>/generate/tasks/resume-incomplete')
+def api_generate_task_resume_incomplete(tenant_id: str):
+    """Batch resume incomplete tasks in-place (especially template tasks)."""
+    try:
+        system_user = _get_system_user()
+        _check_tenant_permission(tenant_id, "gen.create")
+    except PermissionError as e:
+        return _error(str(e), "无权限批量续跑出题任务", 403)
+
+    body = request.get_json(silent=True) or {}
+    template_only = bool(body.get("template_only", True))
+    limit = max(1, min(int(body.get("limit", 20) or 20), 100))
+
+    rows: dict[str, dict[str, Any]] = {}
+    with GEN_TASK_LOCK:
+        for task in GEN_TASKS.values():
+            if str(task.get("tenant_id", "")) != tenant_id:
+                continue
+            tid = str(task.get("task_id", ""))
+            if tid:
+                rows[tid] = _task_snapshot(task)
+    for task in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
+        if not isinstance(task, dict):
+            continue
+        tid = str(task.get("task_id", ""))
+        if tid:
+            rows[tid] = task
+
+    active_resume_sources: set[str] = set()
+    for t in rows.values():
+        if not isinstance(t, dict):
+            continue
+        status = str(t.get("status", "") or "").strip().lower()
+        if status not in {"pending", "running"}:
+            continue
+        req = t.get("request") if isinstance(t.get("request"), dict) else {}
+        src = str(req.get("resume_from_task_id", "") or "").strip()
+        if src:
+            active_resume_sources.add(src)
+
+    candidates: list[dict[str, Any]] = []
+    for task in rows.values():
+        if not isinstance(task, dict):
+            continue
+        tid = str(task.get("task_id", "") or "").strip()
+        if not tid:
+            continue
+        if tid in active_resume_sources:
+            continue
+        status = str(task.get("status", "") or "").strip().lower()
+        if status in {"pending", "running"}:
+            continue
+        req = task.get("request") if isinstance(task.get("request"), dict) else {}
+        if template_only and not str(req.get("template_id", "") or "").strip():
+            continue
+        resume_body = _build_resume_task_body_from_source(tenant_id, task, inplace=True)
+        if not isinstance(resume_body, dict):
+            continue
+        if str((task.get("request") or {}).get("template_id", "") or "").strip():
+            resume_body, plan_err = _rebuild_template_resume_gap_plan(tenant_id, task, resume_body)
+            if plan_err:
+                row = dict(task)
+                row["_resume_skip_reason"] = plan_err
+                row["_resume_body"] = None
+                candidates.append(row)
+                continue
+            if int(resume_body.get("num_questions", 0) or 0) <= 0:
+                continue
+        row = dict(task)
+        row["_resume_body"] = resume_body
+        candidates.append(row)
+
+    candidates.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
+    selected = candidates[:limit]
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for src in selected:
+        resume_body = src.get("_resume_body") if isinstance(src.get("_resume_body"), dict) else None
+        if not isinstance(resume_body, dict):
+            skipped.append({
+                "source_task_id": str(src.get("task_id", "") or ""),
+                "reason": str(src.get("_resume_skip_reason", "") or "无可续跑剩余题目"),
+            })
+            continue
+        resumed_task = _prepare_inplace_resume_task(tenant_id, src)
+        with GEN_TASK_LOCK:
+            GEN_TASKS[str(resumed_task.get("task_id", ""))] = _task_snapshot(resumed_task)
+            _prune_task_cache()
+        _persist_gen_task(tenant_id, resumed_task)
+        t = threading.Thread(
+            target=_run_generate_task_worker,
+            args=(tenant_id, str(resumed_task.get("task_id", "")), resume_body, system_user),
+            daemon=True,
+        )
+        t.start()
+        created.append(
+            {
+                "source_task_id": str(src.get("task_id", "") or ""),
+                "source_task_name": str(src.get("task_name", "") or ""),
+                "source_status": str(src.get("status", "") or ""),
+                "task": _build_gen_task_summary(resumed_task),
+                "remaining_count": int(resume_body.get("num_questions", 0) or 0),
+            }
+        )
+
+    return _json_response(
+        {
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "created": created,
+            "skipped": skipped,
+            "template_only": template_only,
+            "limit": limit,
+        }
+    )
+
+
 @app.get('/api/<tenant_id>/generate/tasks')
 def api_generate_task_list(tenant_id: str):
     try:
@@ -9265,7 +12411,7 @@ def api_generate_task_list(tenant_id: str):
             tid = str(task.get("task_id", ""))
             if tid:
                 rows[tid] = _task_snapshot(task)
-    for task in _read_jsonl(_qa_gen_tasks_path(tenant_id)):
+    for task in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
         if not isinstance(task, dict):
             continue
         tid = str(task.get("task_id", ""))
@@ -9292,7 +12438,8 @@ def api_generate_task_list(tenant_id: str):
         generated_count = int(bm.get("generated_count", 0) or 0)
         saved_count = int(bm.get("saved_count", 0) or 0)
         error_count = int(bm.get("error_count", 0) or 0)
-        status = "failed" if error_count > 0 else "completed"
+        # 容错策略：有产出时即视为完成（即便存在单题失败告警）。
+        status = "failed" if (error_count > 0 and generated_count <= 0) else "completed"
         total_q = int(bm.get("question_count", 0) or 0)
         progress_current = generated_count + error_count
         task_id = str(cfg.get("task_id", "") or "").strip() or f"legacy_{rid}"
@@ -9382,17 +12529,24 @@ def api_generate_task_detail(tenant_id: str, task_id: str):
         _check_tenant_permission(tenant_id, "gen.read")
     except PermissionError as e:
         return _error(str(e), "无权限查看出题任务详情", 403)
+    bank_task_stats = _build_bank_task_recovery_stats(tenant_id)
     with GEN_TASK_LOCK:
         task = GEN_TASKS.get(task_id)
         if task and str(task.get("tenant_id", "")) == tenant_id:
             snap = _task_snapshot(task)
+            if bank_task_stats:
+                snap = _apply_gen_task_bank_recovery(snap, bank_task_stats)
             snap["errors"] = _sanitize_task_errors(snap.get("errors"))
+            snap = _hydrate_task_detail_from_run(tenant_id, snap)
             _enrich_task_with_qa_run(tenant_id, snap)
             return _json_response({"task": snap})
     persisted = _read_persisted_task(tenant_id, task_id)
     if isinstance(persisted, dict):
         out = dict(persisted)
+        if bank_task_stats:
+            out = _apply_gen_task_bank_recovery(out, bank_task_stats)
         out["errors"] = _sanitize_task_errors(out.get("errors"))
+        out = _hydrate_task_detail_from_run(tenant_id, out)
         _enrich_task_with_qa_run(tenant_id, out)
         return _json_response({"task": out})
     return _error("TASK_NOT_FOUND", "任务不存在", 404)
@@ -9409,7 +12563,9 @@ def _get_task_id_and_name_by_run_id(tenant_id: str, run_id: str) -> tuple[str, s
     rid = str(run_id or "").strip()
     if not rid or rid.startswith("run_fail_"):
         return "", ""
-    for row in reversed(_read_jsonl(_qa_gen_tasks_path(tenant_id))):
+    rows = list(_latest_gen_task_rows(tenant_id, allow_full_fallback=True).values())
+    rows.sort(key=lambda x: str(x.get("updated_at", "") or x.get("created_at", "")))
+    for row in reversed(rows):
         if not isinstance(row, dict):
             continue
         if str(row.get("run_id", "") or "").strip() != rid:
@@ -9957,7 +13113,7 @@ def _execute_judge_run(
                 }
             )
         _append_judge_log(tenant_id, "JUDGE_QUESTION_START", {"run_id": run_id, "question_id": qid})
-        report = _run_offline_judge_for_question(q, config_payload, judge_llm)
+        report = _run_offline_judge_for_question(q, config_payload, judge_llm, tenant_id=tenant_id)
         if report is None:
             _append_judge_log(tenant_id, "JUDGE_SKIP_NONE", {"run_id": run_id, "question_id": qid})
             continue
@@ -10914,6 +14070,8 @@ def api_bank_list(tenant_id: str):
         item["question_id"] = idx
         _fill_bank_item_origin_fields(item, origin_lookup)
         items.append(item)
+    # 题库优先展示最新入库题，避免用户误以为“未展示”。
+    items.reverse()
     payload = _paginate(items, page, page_size)
     payload["material_version_id"] = material_version_id
     return _json_response(payload)

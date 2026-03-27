@@ -118,14 +118,22 @@ export default function AdminLayout() {
               <Input
                 value={globalSystemUser}
                 style={{ width: 140 }}
-                onChange={(e) => setGlobalSystemUser(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setGlobalSystemUser(next);
+                  setSystemUser(next);
+                }}
                 onBlur={() => setSystemUser(globalSystemUser)}
               />
               <Input.Password
                 value={globalAuthToken}
                 placeholder="OIDC Token(可选)"
                 style={{ width: 220 }}
-                onChange={(e) => setGlobalAuthToken(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setGlobalAuthToken(next);
+                  setAuthToken(next);
+                }}
                 onBlur={() => setAuthToken(globalAuthToken)}
               />
             </Space>

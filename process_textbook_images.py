@@ -12,6 +12,7 @@ import json
 import base64
 import glob
 import tempfile
+import re
 from pathlib import Path
 from typing import List, Dict, Optional
 from openai import OpenAI
@@ -70,6 +71,112 @@ def _extract_openai_content(resp_obj: dict) -> Optional[str]:
     return None
 
 
+def _is_markdown_table_delimiter(line: str) -> bool:
+    compact = str(line or "").replace(" ", "")
+    if "|" not in compact:
+        return False
+    compact = compact.strip("|")
+    return bool(compact) and all(ch in ":-" for ch in compact)
+
+
+def _split_md_row(line: str) -> list[str]:
+    raw = str(line or "").strip().strip("|")
+    return [x.strip() for x in raw.split("|")]
+
+
+def _strip_table_judgement_lines(content: str) -> str:
+    """Remove table/non-table judgement lines from image analysis text."""
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    banned_patterns = [
+        r"^\s*该图(?:片)?不[是为]表格[。！!？?]?\s*$",
+        r"^\s*这张图(?:片)?不[是为]表格[。！!？?]?\s*$",
+        r"^\s*此图不[是为]表格[。！!？?]?\s*$",
+        r"^\s*图像不[是为]表格[。！!？?]?\s*$",
+        r"^\s*该图(?:片)?为表格[。！!？?]?\s*$",
+        r"^\s*这张图(?:片)?为表格[。！!？?]?\s*$",
+        r"^\s*先判断.*表格.*$\s*",
+    ]
+    kept_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            kept_lines.append(line)
+            continue
+        if any(re.match(pat, stripped, flags=re.IGNORECASE) for pat in banned_patterns):
+            continue
+        kept_lines.append(line)
+    cleaned = "\n".join(kept_lines).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def normalize_image_analysis_content(content: str, contains_table: bool) -> str:
+    """
+    规范图片解析输出。
+    - contains_table=True: 保留原有表格表达；
+    - contains_table=False: 统一转为纯文本结构化文案（不保留 Markdown 表格/代码块符号）。
+    """
+    text = _strip_table_judgement_lines(content)
+    if not text:
+        return ""
+    if contains_table:
+        return text
+
+    lines = text.splitlines()
+    out_lines: list[str] = []
+    i = 0
+    in_code_fence = False
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            i += 1
+            continue
+
+        if in_code_fence:
+            plain = stripped
+            if plain:
+                out_lines.append(plain)
+            i += 1
+            continue
+
+        if (
+            "|" in stripped
+            and i + 1 < len(lines)
+            and _is_markdown_table_delimiter(lines[i + 1])
+        ):
+            header_cells = _split_md_row(stripped)
+            i += 2
+            while i < len(lines) and "|" in lines[i]:
+                row_cells = _split_md_row(lines[i])
+                pairs = []
+                for idx, key in enumerate(header_cells):
+                    if not key:
+                        continue
+                    val = row_cells[idx] if idx < len(row_cells) else ""
+                    pairs.append(f"{key}：{val}")
+                if pairs:
+                    out_lines.append("；".join(pairs))
+                i += 1
+            continue
+
+        plain = stripped
+        plain = re.sub(r"^\s{0,3}#{1,6}\s*", "", plain)
+        plain = re.sub(r"^\s*[-*+]\s+", "", plain)
+        plain = plain.replace("**", "").replace("__", "")
+        if plain:
+            out_lines.append(plain)
+        i += 1
+
+    merged = "\n".join(out_lines)
+    merged = re.sub(r"\n{3,}", "\n\n", merged).strip()
+    return merged
+
+
 def analyze_image_with_qwen_vl(
     image_path: str,
     api_key: str,
@@ -88,8 +195,7 @@ def analyze_image_with_qwen_vl(
     try:
         # Flatten transparent images to improve OCR readability
         prepared_path = prepare_image_for_ocr(image_path)
-        # 极简提示词：按用户要求仅一句
-        prompt = "请分析并整理这张图中的全部信息，确保完整、不遗漏任何可见内容，并按 Markdown 进行结构化输出。注意：不要自己发挥或猜测图中的文字信息，无法确认处请明确标注“识别不清”。对于存在圈选/连线/箭头/区域覆盖的图，先逐项判定对象之间的位置与包含关系，再输出汇总结论。"
+        prompt = "请完整识别这张图的可见信息并结构化输出，禁止编造；无法确认请写“识别不清”。输出中禁止出现“该图片不是表格/这是表格”等判定句。若图片本体不是表格，输出纯文本结构化文案（可分段，禁止使用 Markdown 表格、代码块、项目符号）；仅当图片本体确实是表格时，输出标准 Markdown 表格（包含表头和分隔行，列数一致，合并单元格按列补齐）。"
 
         img_b64 = image_to_base64(prepared_path)
         mime = _guess_mime_type(prepared_path)
@@ -137,12 +243,22 @@ def analyze_image_with_qwen_vl(
             }
         ]
         base_candidates = []
-        for root in [base_url, "https://openapi-ait.ke.com"]:
-            val = str(root or "").strip()
+        primary = str(base_url or "").strip().rstrip("/")
+        fallback_root = "https://openapi-ait.ke.com"
+        for root in [primary, fallback_root]:
+            val = str(root or "").strip().rstrip("/")
             if not val:
                 continue
             if val not in base_candidates:
                 base_candidates.append(val)
+            if not val.endswith("/v1"):
+                v1 = f"{val}/v1"
+                if v1 not in base_candidates:
+                    base_candidates.append(v1)
+            if not val.endswith("/api/v1"):
+                apiv1 = f"{val}/api/v1"
+                if apiv1 not in base_candidates:
+                    base_candidates.append(apiv1)
 
         last_err = None
         for api_root in base_candidates:
@@ -174,7 +290,7 @@ def analyze_image_with_qwen_vl(
                 continue
 
         analyze_image_with_qwen_vl.last_error = str(last_err)
-        print(f"  ⚠️ 图片模型返回失败（doubao-seed-1.8）: {last_err}")
+        print(f"  ⚠️ 图片模型返回失败（{model_name or 'unknown_model'}）: {last_err}")
         return None
     except Exception as e:
         analyze_image_with_qwen_vl.last_error = str(e)
@@ -593,6 +709,8 @@ def process_image(
     
     # 提取表格和逻辑描述
     logic_desc, table_content = extract_table_from_content(analysis_result)
+    has_table = bool(table_content)
+    logic_desc = normalize_image_analysis_content(logic_desc, contains_table=has_table)
     
     # 构建 content（逻辑描述 + 表格）
     content_parts = []
@@ -604,7 +722,6 @@ def process_image(
     
     # 构建 metadata
     has_chart = any(kw in analysis_result.lower() for kw in ['坐标', '曲线', '趋势', '图表', '图', 'axis', 'chart'])
-    has_table = bool(table_content)
     metadata = {
         "标注": "含有图表说明" if (has_chart or has_table) else "图片内容",
         "包含图表": has_chart,
@@ -635,14 +752,32 @@ def main():
     
     # 加载配置
     config = load_config()
-    api_key = (
-        config.get('CRITIC_API_KEY')
-        or config.get('OPENAI_API_KEY')
-        or ''
-    )
-    model_name = config.get("IMAGE_MODEL") or "doubao-seed-1.8"
     provider = (config.get("IMAGE_PROVIDER") or "").lower()
-    base_url = config.get("IMAGE_BASE_URL") or config.get("ARK_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+    if provider == "ark":
+        api_key = (
+            config.get("IMAGE_API_KEY")
+            or config.get("ARK_API_KEY")
+            or config.get("OPENAI_API_KEY")
+            or ""
+        )
+    else:
+        api_key = (
+            config.get("AIT_API_KEY")
+            or config.get("IMAGE_API_KEY")
+            or config.get("OPENAI_API_KEY")
+            or config.get("CRITIC_API_KEY")
+            or ""
+        )
+    model_name = config.get("IMAGE_MODEL") or "doubao-seed-1.8"
+    if provider == "ark":
+        base_url = config.get("IMAGE_BASE_URL") or config.get("ARK_BASE_URL") or "https://ark.cn-beijing.volces.com/api/v3"
+    else:
+        base_url = (
+            config.get("IMAGE_BASE_URL")
+            or config.get("AIT_BASE_URL")
+            or config.get("OPENAI_BASE_URL")
+            or "https://openapi-ait.ke.com/v1"
+        )
     ark_api_key = config.get("ARK_API_KEY") or ""
     volc_ak = config.get("VOLC_ACCESS_KEY_ID") or ""
     volc_sk = config.get("VOLC_SECRET_ACCESS_KEY") or ""
@@ -653,7 +788,7 @@ def main():
             print("❌ Ark 图片链路缺少认证信息，请配置 ARK_API_KEY（推荐）或 VOLC_ACCESS_KEY_ID/VOLC_SECRET_ACCESS_KEY")
             return
     elif not api_key:
-        print("❌ 未找到 API Key，请在 填写您的Key.txt 中配置 CRITIC_API_KEY / OPENAI_API_KEY")
+        print("❌ 未找到 API Key，请在 填写您的Key.txt 中配置 AIT_API_KEY（推荐）或 OPENAI_API_KEY")
         return
     
     # 获取图片目录

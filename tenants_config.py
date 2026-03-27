@@ -75,7 +75,21 @@ def tenant_audit_log_path(tenant_id: str) -> Path:
 
 def resolve_tenant_kb_path(tenant_id: str, fallback: str = "bot_knowledge_base.jsonl") -> Path:
     slices_dir = tenant_slices_dir(tenant_id)
-    candidates = sorted(slices_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # Only accept finalized knowledge-slice files.
+    # Exclude transient progress artifacts like:
+    # - knowledge_slices_<version>.jsonl.progress.jsonl
+    # - knowledge_question_mapping_<version>.progress.jsonl
+    candidates = sorted(
+        [
+            p
+            for p in slices_dir.glob("*.jsonl")
+            if p.name.startswith("knowledge_slices_")
+            and p.name.endswith(".jsonl")
+            and ".progress." not in p.name
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if candidates:
         return candidates[0]
     return Path(fallback)

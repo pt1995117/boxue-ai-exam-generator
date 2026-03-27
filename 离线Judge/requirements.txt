@@ -1,0 +1,17 @@
+# 离线 Judge 核心依赖
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.2.0
+
+# 配置与工具
+pydantic>=2.0.0
+pyyaml>=6.0
+python-dotenv>=1.0.0
+volcenginesdkarkruntime>=0.1.0
+
+# 可选：本地模型支持
+# langchain-community>=0.3.0
+
+# 测试
+pytest>=8.0.0

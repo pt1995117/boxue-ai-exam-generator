@@ -225,6 +225,10 @@ export const getGenerateTask = (tenantId, taskId) =>
 export const cancelGenerateTask = (tenantId, taskId) =>
   client.post(`/${tenantId}/generate/tasks/${encodeURIComponent(taskId)}/cancel`).then((r) => r.data);
 
+/** Resume an incomplete generate task in-place (same task_id). */
+export const resumeGenerateTask = (tenantId, taskId, payload = {}) =>
+  client.post(`/${tenantId}/generate/tasks/${encodeURIComponent(taskId)}/resume`, payload).then((r) => r.data);
+
 export const listGenerateTemplates = (tenantId) =>
   client.get(`/${tenantId}/generate/templates`).then((r) => r.data);
 

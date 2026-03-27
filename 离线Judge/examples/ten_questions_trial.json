@@ -1,0 +1,102 @@
+[
+  {
+    "question_id": "T-001",
+    "question_type": "single_choice",
+    "stem": "张某在北京购买首套普通住宅，以下表述正确的是（ ）。",
+    "options": ["A. 可按首套政策办理", "B. 必须全款", "C. 禁止贷款", "D. 交易无需备案"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京首套普通住宅可按政策办理贷款和税费。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-002",
+    "question_type": "single_choice",
+    "stem": "王先生在北京买房，以下表述正确的是（ ）。",
+    "options": ["A. 可按首套政策办理", "B. 必须全款", "C. 禁止贷款", "D. 交易无需备案"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京首套普通住宅可按政策办理贷款和税费。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-003",
+    "question_type": "single_choice",
+    "stem": "张某在北京购买首套普通住宅，以下表述正确的是（ ）。",
+    "options": ["A. 可按首套政策办理", "B. 必须全款", "C. 禁止贷款", "D. 以上皆是"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京首套普通住宅可按政策办理贷款和税费。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-004",
+    "question_type": "single_choice",
+    "stem": "张某在上海购买住房，以下表述正确的是（ ）。",
+    "options": ["A. 可按首套政策办理", "B. 必须全款", "C. 禁止贷款", "D. 交易无需备案"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京首套普通住宅可按政策办理贷款和税费。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-005",
+    "question_type": "single_choice",
+    "stem": "师傅告诉徒弟，张某买房。以下表述正确的是（ ）。",
+    "options": ["A. 可按首套政策办理", "B. 必须全款", "C. 禁止贷款", "D. 交易无需备案"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京首套普通住宅可按政策办理贷款和税费。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-006",
+    "question_type": "single_choice",
+    "stem": "张某购买普通住宅，以下表述正确的是( )。",
+    "options": ["A. 可按首套政策办理", "B. 必须全款", "C. 禁止贷款", "D. 交易无需备案"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京首套普通住宅可按政策办理贷款和税费。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-007",
+    "question_type": "true_false",
+    "stem": "张某的做法是正确的。（ ）",
+    "options": ["A. 正确", "B. 错误", "C. 无法判断", "D. 信息不足"],
+    "correct_answer": "正确",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为正确",
+    "textbook_slice": "按教材规定，张某该做法符合流程。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-008",
+    "question_type": "single_choice",
+    "stem": "某计算题，以下表述正确的是（ ）。",
+    "options": ["A. 100", "B. 90", "C. 80", "D. 70"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "按规则计算应得结果100。",
+    "is_calculation": true
+  },
+  {
+    "question_id": "T-009",
+    "question_type": "multiple_choice",
+    "stem": "张某在北京购房，以下表述正确的有（ ）。",
+    "options": ["A. 可办理贷款", "B. 需按政策缴税", "C. 可备案交易", "D. 无需签约"],
+    "correct_answer": "A,B,C",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A,B,C",
+    "textbook_slice": "北京购房业务需签约备案、按政策税费执行。",
+    "is_calculation": false
+  },
+  {
+    "question_id": "T-010",
+    "question_type": "single_choice",
+    "stem": "张某购买得房率68%的普通住宅，以下表述正确的是（ ）。",
+    "options": ["A. 该设定符合常识", "B. 该设定需进一步核验", "C. 与常识明显冲突", "D. 无法判断"],
+    "correct_answer": "C",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为C",
+    "textbook_slice": "普通住宅得房率通常不低于70%。",
+    "is_calculation": false
+  }
+]

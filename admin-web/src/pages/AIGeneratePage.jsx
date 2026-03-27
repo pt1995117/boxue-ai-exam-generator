@@ -19,6 +19,7 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import { useNavigate } from 'react-router-dom';
@@ -33,10 +34,23 @@ import {
   listGenerateTasks,
   listGenerateTemplates,
   listMaterials,
+  resumeGenerateTask,
 } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 import QuestionDetailView from '../components/QuestionDetailView';
+import { getFinalQuestionPreviewCardMeta } from '../utils/finalQuestionPreviewMeta';
+
+/**
+ * 教材条目在界面上的展示名：取上传文件名并去掉版本前缀，与任务列表等处一致。
+ * @param {{ file_path?: string, material_version_id?: string, status?: string }} m
+ * @returns {string}
+ */
+function materialLabel(m) {
+  const raw = String(m?.file_path || '').split('/').pop() || '';
+  const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || String(m?.material_version_id || '');
+  return `${name}${m?.status === 'effective' ? '（生效）' : ''}`;
+}
 
 export default function AIGeneratePage() {
   const AUTO_SAVE_PASSED_QUESTIONS = true;
@@ -52,11 +66,13 @@ export default function AIGeneratePage() {
   const [savingToBank, setSavingToBank] = useState(false);
   const [savingSingleKeys, setSavingSingleKeys] = useState([]);
   const [cancellingTaskId, setCancellingTaskId] = useState('');
+  const [resumingTaskId, setResumingTaskId] = useState('');
   const [errors, setErrors] = useState([]);
   const [stats, setStats] = useState({ generated_count: 0, saved_count: 0 });
   const [viewQuestionOpen, setViewQuestionOpen] = useState(false);
   const [viewQuestionRecord, setViewQuestionRecord] = useState(null);
   const [taskItems, setTaskItems] = useState([]);
+  const [taskListLoadError, setTaskListLoadError] = useState('');
   const [taskKeyword, setTaskKeyword] = useState('');
   const [taskStatusFilter, setTaskStatusFilter] = useState('');
   const [taskMaterialFilter, setTaskMaterialFilter] = useState('');
@@ -69,6 +85,8 @@ export default function AIGeneratePage() {
     activeTaskIdRef.current = activeTaskId;
   }, [activeTaskId]);
   const [materials, setMaterials] = useState([]);
+  /** 全量教材版本（含非生效），用于按 ID 反查真实展示名 */
+  const [materialCatalog, setMaterialCatalog] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [materialVersionId, setMaterialVersionId] = useState('');
   const [generateBy, setGenerateBy] = useState('manual'); // manual | template
@@ -102,6 +120,9 @@ export default function AIGeneratePage() {
     '作家润色完成',
     '题目结果',
     '定稿题干',
+    '定稿选项',
+    '定稿解析',
+    '修复摘要',
     '审核通过',
     '审核驳回',
     '审核动作',
@@ -145,6 +166,45 @@ export default function AIGeneratePage() {
       }
     });
     return runIds;
+  };
+  const getLatestRunStatus = (steps) => {
+    const list = Array.isArray(steps) ? steps : [];
+    const runIds = getRunIds(list);
+    let latestRunId = 0;
+    runIds.forEach((rid) => {
+      if (Number.isFinite(rid) && rid > latestRunId) latestRunId = rid;
+    });
+    let latestRunHasCriticTerminal = false;
+    let latestRunHasWriterDone = false;
+    let latestRunHasFinalSnapshot = false;
+    list.forEach((step, idx) => {
+      const rid = runIds[idx];
+      if (rid !== latestRunId) return;
+      const node = String(step?.node || '');
+      const msg = String(step?.message || '');
+      const detail = String(step?.detail || '');
+      if (node === 'critic' && (msg === '审核通过' || msg === '审核驳回')) {
+        latestRunHasCriticTerminal = true;
+      }
+      if (node === 'writer' && (msg === '作家润色完成' || detail.includes('进入 critic'))) {
+        latestRunHasWriterDone = true;
+      }
+      if ((node === 'writer' || node === 'fixer') && (
+        msg === '作家润色完成'
+        || msg.includes('定稿题干')
+        || msg.includes('定稿选项')
+        || msg.includes('定稿解析')
+        || msg === '题目结果'
+      )) {
+        latestRunHasFinalSnapshot = true;
+      }
+    });
+    return {
+      latestRunId,
+      latestRunHasCriticTerminal,
+      latestRunHasWriterDone,
+      latestRunHasFinalSnapshot,
+    };
   };
   const stripOptionPrefix = (line) => String(line || '').replace(/^\s*[A-Ha-h][\.\、\s]+/, '').trim();
   const normalizeOptionLine = (line, idx) => {
@@ -251,8 +311,19 @@ export default function AIGeneratePage() {
     );
   };
   const renderTraceEntries = (item) => {
-    const steps = getVisibleSteps(item.steps);
-    const runIds = getRunIds(steps);
+    const rawSteps = Array.isArray(item?.steps) ? item.steps : [];
+    const rawRunIds = getRunIds(rawSteps);
+    const status = getLatestRunStatus(rawSteps);
+    const latestRunOnly = Boolean(loading && status.latestRunId > 0 && !status.latestRunHasCriticTerminal);
+    const rawIndexed = rawSteps.map((step, idx) => ({ step, runId: rawRunIds[idx], rawIdx: idx }));
+    const scoped = latestRunOnly
+      ? rawIndexed.filter((entry) => entry.runId === status.latestRunId)
+      : rawIndexed;
+    const visibleEntries = getVisibleSteps(scoped.map((entry) => entry.step));
+    const visibleSet = new Set(visibleEntries);
+    const entries = scoped.filter((entry) => visibleSet.has(entry.step));
+    const steps = entries.map((entry) => entry.step);
+    const runIds = entries.map((entry) => entry.runId);
     const groupByKey = new Map();
     const firstQuestionIdxByKey = new Map();
     steps.forEach((step, idx) => {
@@ -326,6 +397,65 @@ export default function AIGeneratePage() {
         : renderQuestionGroup(item, row.group, i)
     );
   };
+
+  /**
+   * 单题折叠区：步骤流水 + writer/fixer 当前完整定稿（含未通过 critic 的最后一版，便于排查）
+   * @param {Record<string, unknown>} item
+   */
+  const renderTracePanelBody = (item) => (
+    <Space direction="vertical" style={{ width: '100%' }} size={4}>
+      {(() => {
+        const status = getLatestRunStatus(item?.steps || []);
+        if (!loading || status.latestRunId <= 0 || status.latestRunHasCriticTerminal) return null;
+        return (
+          <Alert
+            type="info"
+            showIcon
+            message={`当前题已进入第 ${status.latestRunId + 1} 轮重试`}
+            description="为避免把上一轮 writer/fixer 定稿和当前轮 specialist/calculator 初稿混在一起，当前只展示最新轮次。"
+          />
+        );
+      })()}
+      <Typography.Text type="secondary">{item.slice_path || '（无路径）'}</Typography.Text>
+      {traceDetailMode === 'full' ? (
+        <div style={{ maxHeight: 320, overflow: 'auto' }}>
+          <MarkdownWithMermaid text={buildTraceSliceMarkdown(item)} />
+        </div>
+      ) : (
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          （过程详细时可查看切片内容）
+        </Typography.Text>
+      )}
+      {renderTraceEntries(item)}
+      {(() => {
+        const fj = item?.final_json;
+        if (!fj || typeof fj !== 'object' || Array.isArray(fj)) return null;
+        const status = getLatestRunStatus(item?.steps || []);
+        if (loading && status.latestRunId > 0 && !status.latestRunHasCriticTerminal && !status.latestRunHasFinalSnapshot) {
+          return null;
+        }
+        const previewMeta = getFinalQuestionPreviewCardMeta(item);
+        return (
+          <Card
+            size="small"
+            style={{ marginTop: 8 }}
+            title={(
+              <Space wrap>
+                <span>{previewMeta.title}</span>
+                <Tag color={previewMeta.tagColor}>{previewMeta.tag}</Tag>
+                <Tooltip title={previewMeta.tooltip}>
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>(?)</Typography.Text>
+                </Tooltip>
+              </Space>
+            )}
+          >
+            <QuestionDetailView question={fj} />
+          </Card>
+        );
+      })()}
+    </Space>
+  );
+
   const approvedSliceById = useMemo(() => {
     const m = new Map();
     (approvedSlices || []).forEach((row) => {
@@ -352,11 +482,6 @@ export default function AIGeneratePage() {
       .filter(Boolean);
     if (!imageLines.length) return content || '（无切片内容）';
     return `${content || ''}\n\n---\n\n### 切片图片\n${imageLines.join('\n\n')}`;
-  };
-  const materialLabel = (m) => {
-    const raw = String(m?.file_path || '').split('/').pop() || '';
-    const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
-    return `${name}${m?.status === 'effective' ? '（生效）' : ''}`;
   };
   const buildTemplateTaskName = (template) => {
     const base = String(template?.name || '模板出题').trim() || '模板出题';
@@ -405,20 +530,27 @@ export default function AIGeneratePage() {
   // skipSetActiveWhenEmpty: when true, only refresh taskItems; do not set activeTaskId when it is '' (used in create-mode "new task" flow to avoid showing history)
   const loadTaskList = async (tid, keepActive = true, skipSetActiveWhenEmpty = false) => {
     if (!tid) return [];
-    const res = await listGenerateTasks(tid, { limit: 100 });
-    const items = Array.isArray(res?.items) ? res.items : [];
-    setTaskItems(items);
-    if (!items.length) {
-      if (!keepActive && !skipSetActiveWhenEmpty) setActiveTaskId('');
-      return [];
-    }
-    if (!skipSetActiveWhenEmpty && (!keepActive || !activeTaskId)) {
-      setActiveTaskId(String(items[0].task_id || ''));
+    try {
+      const res = await listGenerateTasks(tid, { limit: 100 });
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setTaskItems(items);
+      setTaskListLoadError('');
+      if (!items.length) {
+        if (!keepActive && !skipSetActiveWhenEmpty) setActiveTaskId('');
+        return [];
+      }
+      if (!skipSetActiveWhenEmpty && (!keepActive || !activeTaskId)) {
+        setActiveTaskId(String(items[0].task_id || ''));
+        return items;
+      }
+      const hasActive = items.some((x) => String(x?.task_id || '') === String(activeTaskId));
+      if (!skipSetActiveWhenEmpty && !hasActive) setActiveTaskId(String(items[0].task_id || ''));
       return items;
+    } catch (e) {
+      const msg = e?.response?.data?.error?.message || e?.message || '加载任务列表失败';
+      setTaskListLoadError(msg);
+      return taskItems;
     }
-    const hasActive = items.some((x) => String(x?.task_id || '') === String(activeTaskId));
-    if (!skipSetActiveWhenEmpty && !hasActive) setActiveTaskId(String(items[0].task_id || ''));
-    return items;
   };
 
   const filteredTaskItems = useMemo(() => {
@@ -440,6 +572,28 @@ export default function AIGeneratePage() {
     [templates, selectedTemplateId],
   );
 
+  /** 当前模板绑定教材的展示名（非裸 version id） */
+  const selectedTemplateMaterialDisplayName = useMemo(() => {
+    const mid = String(selectedTemplate?.material_version_id || '').trim();
+    if (!mid) return '';
+    const target = (materialCatalog || []).find((m) => String(m?.material_version_id || '') === mid);
+    return target ? materialLabel(target) : mid;
+  }, [materialCatalog, selectedTemplate]);
+
+  const templateSelectOptions = useMemo(
+    () =>
+      (templates || []).map((item) => {
+        const mid = String(item?.material_version_id || '');
+        const target = (materialCatalog || []).find((m) => String(m?.material_version_id || '') === mid);
+        const matPart = target ? materialLabel(target) : mid;
+        return {
+          label: `${item.name}｜${matPart}｜${item.question_count}题`,
+          value: item.template_id,
+        };
+      }),
+    [templates, materialCatalog],
+  );
+
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
 
   useEffect(() => {
@@ -449,7 +603,7 @@ export default function AIGeneratePage() {
     setSelectedSliceKeys([]);
     setRows([]);
     setRunTrace([]);
-    setTaskItems([]);
+    setTaskListLoadError('');
     setActiveTaskId('');
     setTemplates([]);
     setGenerateBy('manual');
@@ -468,7 +622,7 @@ export default function AIGeneratePage() {
     });
     loadMaterials(tenantId);
     loadTemplates(tenantId);
-    loadTaskList(tenantId, false).catch(() => setTaskItems([]));
+    loadTaskList(tenantId, false).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
 
@@ -501,7 +655,7 @@ export default function AIGeneratePage() {
 
   useEffect(() => {
     if (!tenantId) return undefined;
-    const timer = setInterval(() => {
+      const timer = setInterval(() => {
       // In create mode with no active task (new-task flow), only refresh list; do not set activeTaskId to avoid showing previous task's result
       const skipSetActive = pageMode === 'create' && !activeTaskId;
       loadTaskList(tenantId, true, skipSetActive).catch(() => {});
@@ -562,6 +716,7 @@ export default function AIGeneratePage() {
     try {
       const res = await listMaterials(tid);
       const items = res.items || [];
+      setMaterialCatalog(Array.isArray(items) ? items : []);
       const effectiveItems = items.filter((x) => String(x?.status || '') === 'effective');
       setMaterials(effectiveItems);
       const chosen = (effectiveItems[0] || {}).material_version_id || '';
@@ -577,6 +732,7 @@ export default function AIGeneratePage() {
       await loadPathTree(tid, chosen);
     } catch (e) {
       setMaterials([]);
+      setMaterialCatalog([]);
       setMaterialVersionId('');
       setApprovedSlices([]);
       setMaterialSliceTotal(0);
@@ -927,14 +1083,50 @@ export default function AIGeneratePage() {
     },
     {
       title: '操作',
-      width: 100,
+      width: 200,
       render: (_, r) => (
-        <Button
-          size="small"
-          onClick={() => navigate(`/ai-generate/tasks/${encodeURIComponent(String(r?.task_id || ''))}`)}
-        >
-          出题过程
-        </Button>
+        <Space size={8}>
+          <Button
+            size="small"
+            onClick={() => navigate(`/ai-generate/tasks/${encodeURIComponent(String(r?.task_id || ''))}`)}
+          >
+            出题过程
+          </Button>
+          {(() => {
+            const status = String(r?.status || '').trim();
+            const reqTotal = Number(r?.request?.num_questions || 0);
+            const progressTotal = Number(r?.progress?.total || 0);
+            const targetTotal = Math.max(reqTotal, progressTotal);
+            const generated = Number(r?.generated_count || 0);
+            const hasRemaining = targetTotal > 0 && generated < targetTotal;
+            const canResume = (status === 'failed') || (!['pending', 'running'].includes(status) && hasRemaining);
+            if (!canResume) return null;
+            return (
+              <Button
+                size="small"
+                type="primary"
+                loading={resumingTaskId === String(r?.task_id || '')}
+                disabled={!!resumingTaskId && resumingTaskId !== String(r?.task_id || '')}
+                onClick={async () => {
+                  const taskId = String(r?.task_id || '').trim();
+                  if (!tenantId || !taskId) return;
+                  setResumingTaskId(taskId);
+                  try {
+                    await resumeGenerateTask(tenantId, taskId, {});
+                    message.success('已开始继续出题');
+                    await loadTaskList(tenantId, true);
+                  } catch (e) {
+                    message.error(e?.response?.data?.error?.message || e?.message || '继续出题失败');
+                  } finally {
+                    setResumingTaskId('');
+                  }
+                }}
+              >
+                继续出题
+              </Button>
+            );
+          })()}
+        </Space>
       ),
     },
   ];
@@ -961,6 +1153,15 @@ export default function AIGeneratePage() {
     <>
       {pageMode === 'tasks' && (
         <>
+          {taskListLoadError ? (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={`任务列表加载失败：${taskListLoadError}`}
+              description="已保留当前页面已有任务；可点击“刷新列表”重试。若持续失败，请检查系统号/OIDC Token 或后端服务状态。"
+            />
+          ) : null}
           <Card style={{ marginBottom: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <Space wrap>
@@ -1026,6 +1227,15 @@ export default function AIGeneratePage() {
           </Card>
 
           <Card style={{ marginBottom: 12 }}>
+            {!filteredTaskItems.length && taskItems.length > 0 ? (
+              <Alert
+                type="info"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message="当前筛选条件下没有任务"
+                description="请点击“重置”清空任务名称、状态和教材版本筛选。"
+              />
+            ) : null}
             <Table
               rowKey={(record) => String(record.task_id || '')}
               size="small"
@@ -1055,7 +1265,13 @@ export default function AIGeneratePage() {
             <Typography.Text style={{ color: 'rgba(0, 0, 0, 0.88)', fontWeight: 500 }}>出题方式：</Typography.Text>
             <Segmented
               value={generateBy}
-              onChange={(value) => setGenerateBy(String(value || 'manual'))}
+              onChange={(value) => {
+                const next = String(value || 'manual');
+                setGenerateBy(next);
+                if (next === 'template') {
+                  createForm.setFieldValue('question_type', '随机');
+                }
+              }}
               options={[
                 { label: '手动选切片', value: 'manual' },
                 { label: '按模板出题', value: 'template' },
@@ -1082,10 +1298,7 @@ export default function AIGeneratePage() {
                   createForm.setFieldValue('task_name', buildTemplateTaskName(target));
                 }
               }}
-              options={(templates || []).map((item) => ({
-                label: `${item.name}｜${item.material_version_id}｜${item.question_count}题`,
-                value: item.template_id,
-              }))}
+              options={templateSelectOptions}
             />
             {selectedTemplate ? (
               <>
@@ -1093,29 +1306,19 @@ export default function AIGeneratePage() {
                   type="success"
                   showIcon
                   message={`${selectedTemplate.name}｜题量 ${selectedTemplate.question_count} 题`}
-                  description={`教材：${selectedTemplate.material_version_id}；掌握比例 ${Number(selectedTemplate?.mastery_ratio?.掌握 || 0)}:${Number(selectedTemplate?.mastery_ratio?.熟悉 || 0)}:${Number(selectedTemplate?.mastery_ratio?.了解 || 0)}；路由 ${Number(selectedTemplate?.route_rules?.length || 0)} 条`}
+                  description={`教材：${selectedTemplateMaterialDisplayName || selectedTemplate.material_version_id}；掌握比例 ${Number(selectedTemplate?.mastery_ratio?.掌握 || 0)}:${Number(selectedTemplate?.mastery_ratio?.熟悉 || 0)}:${Number(selectedTemplate?.mastery_ratio?.了解 || 0)}；路由 ${Number(selectedTemplate?.route_rules?.length || 0)} 条`}
                 />
                 <Card size="small" title="快捷开始">
-                  <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
-                    <Space wrap>
-                      <Input
-                        value={String(selectedTemplate?.material_version_id || '')}
-                        readOnly
-                        style={{ width: 240 }}
-                        addonBefore="教材"
-                      />
-                      <Typography.Text type="secondary">
-                        出题会直接使用模板绑定教材。
-                      </Typography.Text>
-                    </Space>
-                    <Button
-                      type="primary"
-                      loading={taskLoading}
-                      disabled={!selectedTemplate}
-                      onClick={() => createForm.submit()}
-                    >
-                      开始出题
-                    </Button>
+                  <Space wrap style={{ width: '100%' }}>
+                    <Input
+                      value={selectedTemplateMaterialDisplayName || String(selectedTemplate?.material_version_id || '')}
+                      readOnly
+                      style={{ width: 420 }}
+                      addonBefore="教材"
+                    />
+                    <Typography.Text type="secondary">
+                      出题会直接使用模板绑定教材。
+                    </Typography.Text>
                   </Space>
                 </Card>
               </>
@@ -1493,10 +1696,8 @@ export default function AIGeneratePage() {
                     <>
                       {(() => {
                         const lastItem = runTrace[runTrace.length - 1];
-                        const steps = lastItem?.steps || [];
-                        const hasWriterDone = steps.some((s) => s?.message === '作家润色完成' || (s?.detail && String(s.detail).includes('进入 critic')));
-                        const hasCriticDone = steps.some((s) => s?.node === 'critic' && (s?.message === '审核通过' || s?.message === '审核驳回'));
-                        if (hasWriterDone && !hasCriticDone) {
+                        const status = getLatestRunStatus(lastItem?.steps || []);
+                        if (status.latestRunHasWriterDone && !status.latestRunHasCriticTerminal) {
                           return (
                             <Alert
                               type="info"
@@ -1513,21 +1714,7 @@ export default function AIGeneratePage() {
                       items={runTrace.map((item) => ({
                         key: String(item.index),
                         label: `第 ${item.index} 题 | 切片 ${item.slice_id} | 耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`,
-                        children: (
-                          <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                            <Typography.Text type="secondary">{item.slice_path || '（无路径）'}</Typography.Text>
-                            {traceDetailMode === 'full' ? (
-                              <div style={{ maxHeight: 320, overflow: 'auto' }}>
-                                <MarkdownWithMermaid text={buildTraceSliceMarkdown(item)} />
-                              </div>
-                            ) : (
-                              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                （过程详细时可查看切片内容）
-                              </Typography.Text>
-                            )}
-                            {renderTraceEntries(item)}
-                          </Space>
-                        ),
+                        children: renderTracePanelBody(item),
                       }))}
                     />
                     </>
@@ -1539,21 +1726,7 @@ export default function AIGeneratePage() {
                         items={runTrace.map((item) => ({
                           key: String(item.index),
                           label: `第 ${item.index} 题 | 切片 ${item.slice_id} | 耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`,
-                          children: (
-                            <Space direction="vertical" style={{ width: '100%' }} size={4}>
-                              <Typography.Text type="secondary">{item.slice_path || '（无路径）'}</Typography.Text>
-                              {traceDetailMode === 'full' ? (
-                                <div style={{ maxHeight: 320, overflow: 'auto' }}>
-                                  <MarkdownWithMermaid text={buildTraceSliceMarkdown(item)} />
-                                </div>
-                              ) : (
-                                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                                  （过程详细时可查看切片内容）
-                                </Typography.Text>
-                              )}
-                              {renderTraceEntries(item)}
-                            </Space>
-                          ),
+                          children: renderTracePanelBody(item),
                         }))}
                       />
                     )}

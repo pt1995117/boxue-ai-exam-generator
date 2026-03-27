@@ -10,8 +10,64 @@ import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 const statusColor = { pending: 'default', approved: 'green' };
 const statusLabel = { pending: '待审核', approved: '已通过' };
 const INVISIBLE_SEG_RE = /[\u200b\u200c\u200d\ufeff\u2060]/g;
+const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const cleanPathSeg = (seg) => String(seg || '').replace(INVISIBLE_SEG_RE, '').trim();
 const pathPrefix = (path, levels = 3) => String(path || '').split(' > ').map((x) => cleanPathSeg(x)).filter(Boolean).slice(0, levels).join(' > ');
+const hasMarkdownTable = (text) => {
+  const lines = String(text || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const h = lines[i];
+    const d = lines[i + 1];
+    if (!h.includes('|') || !d.includes('|')) continue;
+    const delim = d.replace(/\|/g, '').replace(/[:\-\s]/g, '');
+    if (!delim) return true;
+  }
+  return false;
+};
+
+const SliceImagePreview = React.memo(({ tenantId, imagePath, materialVersionId }) => {
+  const [src, setSrc] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = '';
+    const run = async () => {
+      try {
+        const { blob, contentType } = await fetchSliceImageBlob(tenantId, imagePath, materialVersionId);
+        const ct = String(contentType || '').toLowerCase();
+        if (!blob || blob.size <= 0) return;
+        if (ct.includes('application/json') || ct.includes('text/html') || ct.includes('text/plain')) return;
+        objectUrl = window.URL.createObjectURL(blob);
+        if (!cancelled) setSrc(objectUrl);
+      } catch (_e) {
+        if (!cancelled) setSrc('');
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+      if (objectUrl) window.URL.revokeObjectURL(objectUrl);
+    };
+  }, [tenantId, imagePath, materialVersionId]);
+  if (!src) {
+    return <Typography.Text type="secondary">图片加载中...</Typography.Text>;
+  }
+  return (
+    <img
+      src={src}
+      alt={String(imagePath || '').split('/').pop() || 'slice-image'}
+      style={{
+        display: 'block',
+        maxWidth: '100%',
+        maxHeight: 220,
+        marginTop: 6,
+        border: '1px solid #f0f0f0',
+        borderRadius: 6,
+        objectFit: 'contain',
+        background: '#fff',
+      }}
+    />
+  );
+});
 
 const MindmapEditorModal = React.memo(({
   open,
@@ -254,51 +310,35 @@ export default function SliceReviewPage() {
     return Array.from(map.values()).sort((a, b) => b.token.length - a.token.length);
   };
 
-  const renderContentWithImageLinks = (text, row) => {
+  const injectImageLinksToMarkdown = (text, row) => {
     const content = String(text || '');
     if (!content) return '（空）';
     const targets = getImageLinkTargets(row);
     if (!targets.length) return content;
     const lines = content.split('\n');
-    return lines.map((line, lineIdx) => {
-      let chunks = [{ text: line, link: null }];
-      targets.forEach((target) => {
-        chunks = chunks.flatMap((chunk) => {
-          if (chunk.link || !chunk.text || !chunk.text.includes(target.token)) return [chunk];
-          const parts = chunk.text.split(target.token);
-          const out = [];
-          parts.forEach((part, idx) => {
-            if (part) out.push({ text: part, link: null });
-            if (idx < parts.length - 1) out.push({ text: target.token, link: target });
-          });
-          return out;
-        });
+    let inCodeFence = false;
+    const transformed = lines.map((line) => {
+      const t = String(line || '');
+      if (t.trim().startsWith('```')) {
+        inCodeFence = !inCodeFence;
+        return t;
+      }
+      if (inCodeFence) return t;
+      let next = t;
+      const placeholders = [];
+      targets.forEach((target, idx) => {
+        const token = String(target.token || '').trim();
+        if (!token || !next.includes(token)) return;
+        const holder = `__IMG_LINK_${idx}_${token.length}__`;
+        next = next.replace(new RegExp(escapeRegExp(token), 'g'), holder);
+        placeholders.push({ holder, token, url: target.url });
       });
-      return (
-        <React.Fragment key={`line_${lineIdx}`}>
-          {chunks.map((chunk, idx) => {
-            if (!chunk.link) return <React.Fragment key={`txt_${lineIdx}_${idx}`}>{chunk.text}</React.Fragment>;
-            return (
-              <a
-                key={`link_${lineIdx}_${idx}`}
-                href={chunk.link.url}
-                className="slice-inline-image-link"
-                onClick={(e) => {
-                  e.preventDefault();
-                  openSliceImageInNewWindow(
-                    chunk.link.sourcePath || chunk.link.token,
-                    row.material_version_id || materialVersionId
-                  );
-                }}
-              >
-                {chunk.text}
-              </a>
-            );
-          })}
-          {lineIdx < lines.length - 1 ? <br /> : null}
-        </React.Fragment>
-      );
+      placeholders.forEach(({ holder, token, url }) => {
+        next = next.replace(new RegExp(escapeRegExp(holder), 'g'), `[${token}](${url})`);
+      });
+      return next;
     });
+    return transformed.join('\n');
   };
 
   const extractMermaid = (text) => {
@@ -537,7 +577,7 @@ export default function SliceReviewPage() {
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
     const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
-    return `${name}${m?.status === 'effective' ? '（当前生效）' : ''}`;
+    return `${name}${m?.status === 'effective' ? '（生效）' : ''}`;
   };
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
@@ -609,9 +649,12 @@ export default function SliceReviewPage() {
     listMaterials(tenantId)
       .then((res) => {
         const items = res.items || [];
-        const effectiveItems = items.filter((x) => x.status === 'effective');
-        setMaterials(effectiveItems);
-        setMaterialVersionId((effectiveItems[0] || {}).material_version_id || '');
+        const visibleItems = items.filter((x) => (
+          String(x?.status || '') !== 'archived' && String(x?.slice_status || '') === 'success'
+        ));
+        setMaterials(visibleItems);
+        const effective = visibleItems.find((x) => x.status === 'effective');
+        setMaterialVersionId((effective || visibleItems[0] || {}).material_version_id || '');
       })
       .catch(() => {
         setMaterials([]);
@@ -1174,6 +1217,7 @@ export default function SliceReviewPage() {
             {treeData.length ? (
               <Tree
                 checkable
+                checkStrictly
                 checkedKeys={checkedTreeKeys}
                 onCheck={onTreeCheck}
                 onSelect={(_, info) => {
@@ -1289,6 +1333,10 @@ export default function SliceReviewPage() {
                           <Space style={{ minWidth: 0 }} size={8}>
                             {canAddOrReorder && <MenuOutlined style={{ color: '#8c8c8c' }} title="拖拽排序" />}
                             <Tag color={statusColor[row.review_status] || 'default'}>{statusLabel[row.review_status] || row.review_status}</Tag>
+                            {row.generation_blocked && <Tag color="red">已禁用出题</Tag>}
+                            {!row.generation_blocked && Number(row.generation_failure_count || 0) > 0 && (
+                              <Tag color="orange">{`失败 ${Number(row.generation_failure_count || 0)} 次`}</Tag>
+                            )}
                             <Typography.Text strong style={{ minWidth: 0 }}>
                               {`ID: ${row.slice_id} | ${row.path || '（空路径）'}`}
                             </Typography.Text>
@@ -1343,6 +1391,22 @@ export default function SliceReviewPage() {
                             )}
                           </Space>
                         </div>
+                        {row.generation_blocked && (
+                          <Alert
+                            type="error"
+                            showIcon
+                            message="该切片已被禁止继续出题"
+                            description={row.generation_block_reason || '该切片累计非白名单失败超过 10 次，需先修改切片后才能恢复出题。'}
+                          />
+                        )}
+                        {!row.generation_blocked && Number(row.generation_failure_count || 0) > 0 && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message={`该切片累计失败 ${Number(row.generation_failure_count || 0)} 次`}
+                            description={row.generation_last_error_content || '最近一次失败未返回具体错误内容。'}
+                          />
+                        )}
                         <Typography.Text>掌握程度：{row.mastery || '（空）'}</Typography.Text>
                         {editingSliceId === sid ? (
                           <Input.TextArea
@@ -1353,8 +1417,9 @@ export default function SliceReviewPage() {
                         ) : (
                           <div style={{ maxHeight: 220, overflow: 'auto' }}>
                             <MarkdownWithMermaid
-                              text={formatSliceContent(row.slice_content || row.preview)}
+                              text={injectImageLinksToMarkdown(formatSliceContent(row.slice_content || row.preview), row)}
                               disableStrikethrough
+                              plainText
                             />
                           </div>
                         )}
@@ -1369,14 +1434,33 @@ export default function SliceReviewPage() {
                                 if (!p) return null;
                                 return (
                                   <div key={`${sid}_img_${idx}`}>
-                                    <Button
-                                      size="small"
-                                      onClick={() => {
-                                        openSliceImageInNewWindow(p, row.material_version_id || materialVersionId);
-                                      }}
-                                    >
-                                      {title}
-                                    </Button>
+                                    <Space size={8}>
+                                      <a
+                                        href={getSliceImageUrl(tenantId, p, row.material_version_id || materialVersionId)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="slice-inline-image-link"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          openSliceImageInNewWindow(p, row.material_version_id || materialVersionId);
+                                        }}
+                                      >
+                                        🔗 {title}
+                                      </a>
+                                      <Button
+                                        size="small"
+                                        onClick={() => {
+                                          openSliceImageInNewWindow(p, row.material_version_id || materialVersionId);
+                                        }}
+                                      >
+                                        新页查看
+                                      </Button>
+                                    </Space>
+                                    <SliceImagePreview
+                                      tenantId={tenantId}
+                                      imagePath={p}
+                                      materialVersionId={row.material_version_id || materialVersionId}
+                                    />
                                     {extractMermaid(String(img?.analysis || '')) && (
                                       <Button
                                         size="small"
@@ -1408,9 +1492,30 @@ export default function SliceReviewPage() {
                                     >
                                       编辑解析
                                     </Button>
-                                    <div style={{ marginTop: 6 }}>
-                                      <MarkdownWithMermaid text={String(img?.analysis || '（无图片解析）')} disableStrikethrough />
-                                    </div>
+                                    {(() => {
+                                      const analysisText = String(img?.analysis || '（无图片解析）');
+                                      const useMarkdownTable = Boolean(img?.contains_table) || hasMarkdownTable(analysisText);
+                                      if (useMarkdownTable) {
+                                        return <MarkdownWithMermaid text={analysisText} disableStrikethrough />;
+                                      }
+                                      return (
+                                        <pre
+                                          style={{
+                                            marginTop: 6,
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-word',
+                                            fontSize: 13,
+                                            lineHeight: 1.6,
+                                            background: '#fafafa',
+                                            border: '1px solid #f0f0f0',
+                                            borderRadius: 6,
+                                            padding: 10,
+                                          }}
+                                        >
+                                          {analysisText}
+                                        </pre>
+                                      );
+                                    })()}
                                   </div>
                                 );
                               })}

@@ -24,6 +24,21 @@ const emptyRouteRule = () => ({
   ratio: 0,
 });
 
+const cloneRouteRules = (rows) => {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return [emptyRouteRule()];
+  return list.map((item) => ({
+    rule_id: emptyRouteRule().rule_id,
+    path_prefix: String(item?.path_prefix || '').trim(),
+    ratio: Number(item?.ratio || 0),
+  }));
+};
+
+const buildCopiedTemplateName = (name) => {
+  const base = String(name || '').trim() || '未命名模板';
+  return base.includes('副本') ? base : `${base}-副本`;
+};
+
 export default function GenerateTemplatePage() {
   const [form] = Form.useForm();
   const [tenantId, setTenantId] = useState(getGlobalTenantId());
@@ -140,7 +155,7 @@ export default function GenerateTemplatePage() {
 
   const onEdit = async (record) => {
     setEditingId(String(record?.template_id || ''));
-    setRouteRules((record?.route_rules || []).length ? record.route_rules : [emptyRouteRule()]);
+    setRouteRules(cloneRouteRules(record?.route_rules));
     form.setFieldsValue({
       name: record?.name || '',
       description: record?.description || '',
@@ -152,6 +167,26 @@ export default function GenerateTemplatePage() {
     });
     try {
       await loadPathOptions(tenantId, record?.material_version_id || '');
+    } catch (e) {
+      message.error(e?.response?.data?.error?.message || '加载模板路由失败');
+    }
+  };
+
+  const onCopy = async (record) => {
+    setEditingId('');
+    setRouteRules(cloneRouteRules(record?.route_rules));
+    form.setFieldsValue({
+      name: buildCopiedTemplateName(record?.name),
+      description: record?.description || '',
+      material_version_id: record?.material_version_id || undefined,
+      question_count: Number(record?.question_count || 10),
+      mastery_master: Number(record?.mastery_ratio?.掌握 || DEFAULT_MASTERY_RATIO.掌握),
+      mastery_familiar: Number(record?.mastery_ratio?.熟悉 || DEFAULT_MASTERY_RATIO.熟悉),
+      mastery_understand: Number(record?.mastery_ratio?.了解 || DEFAULT_MASTERY_RATIO.了解),
+    });
+    try {
+      await loadPathOptions(tenantId, record?.material_version_id || '');
+      message.success('模板内容已复制到下方表单，保存后会创建新模板');
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '加载模板路由失败');
     }
@@ -249,10 +284,11 @@ export default function GenerateTemplatePage() {
     },
     {
       title: '操作',
-      width: 140,
+      width: 200,
       render: (_, record) => (
         <Space>
           <Button size="small" onClick={() => onEdit(record)}>编辑</Button>
+          <Button size="small" onClick={() => onCopy(record)}>复制</Button>
           <Popconfirm title="删除这个出题模板？" onConfirm={() => onDelete(String(record?.template_id || ''))}>
             <Button size="small" danger loading={deletingId === String(record?.template_id || '')}>删除</Button>
           </Popconfirm>

@@ -1,0 +1,20 @@
+# 离线 Judge 配置文件
+
+llm:
+  provider: openai  # openai | anthropic
+  model: gpt-4o-mini
+  temperature: 0
+  timeout_seconds: 20
+  retries: 2
+
+filter:
+  strict_mode: true
+
+circuit_breaker:
+  reject_on_layer1_blind_solver_fail: true
+  reject_on_format_fail: true
+
+business_rules:
+  reasonable_deal_rate_min: 0.70
+  reasonable_deal_rate_max: 0.95
+  max_duplex_height: 6

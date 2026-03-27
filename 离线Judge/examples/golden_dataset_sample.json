@@ -1,0 +1,24 @@
+[
+  {
+    "question_id": "G-001",
+    "question_type": "single_choice",
+    "stem": "张某在北京购买首套普通住宅，以下表述正确的是（ ）。",
+    "options": ["A. 税费按首套标准计算", "B. 必须全款", "C. 禁止贷款", "D. 交易无须备案"],
+    "correct_answer": "A",
+    "explanation": "1.教材原文\n2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京普通住宅交易可申请贷款并按政策执行。",
+    "is_calculation": false,
+    "expected_decision": "PASS"
+  },
+  {
+    "question_id": "G-002",
+    "question_type": "single_choice",
+    "stem": "张某在北京购买首套普通住宅，税费如何？（ ）",
+    "options": ["A. 税费按首套标准计算", "B. 必须全款", "C. 禁止贷款", "D. 以上皆是"],
+    "correct_answer": "A",
+    "explanation": "2.试题分析\n3.结论\n本题答案为A",
+    "textbook_slice": "北京普通住宅交易可申请贷款并按政策执行。",
+    "is_calculation": false,
+    "expected_decision": "REJECT"
+  }
+]

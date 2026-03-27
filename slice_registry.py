@@ -69,9 +69,6 @@ def set_effective_material_version(tenant_id: str, material_version_id: str) -> 
             rec["status"] = "effective"
             rec["effective_at"] = now
             updated = rec
-        elif rec.get("status") == "effective":
-            # Keep file backup aligned with DB: only one effective material is allowed.
-            rec["status"] = "ready_for_review"
     _save_registry(path, items)
     return updated
 

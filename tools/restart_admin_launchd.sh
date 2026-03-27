@@ -10,10 +10,24 @@ FRONTEND_PORT=8521
 
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 NPM_BIN="$(whence -p npm || true)"
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="$(whence -p python3 || true)"
+
+resolve_python_bin() {
+  local candidate=""
+  for candidate in "${ROOT_DIR}/.venv/bin/python" "$(whence -p python3 || true)" "/usr/bin/python3"; do
+    [[ -n "${candidate}" && -x "${candidate}" ]] || continue
+    if "${candidate}" -c "from flask import Flask" >/dev/null 2>&1; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_BIN="$(resolve_python_bin || true)"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "ERROR: No usable Python interpreter with Flask installed was found"
+  exit 1
 fi
-if [[ -z "${PYTHON_BIN}" ]]; then PYTHON_BIN="/usr/bin/python3"; fi
 if [[ -z "${NPM_BIN}" ]]; then NPM_BIN="/usr/bin/npm"; fi
 
 BACKEND_LABEL="com.boxue.admin_api"

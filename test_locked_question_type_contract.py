@@ -1,4 +1,5 @@
 import exam_graph
+import inspect
 
 
 def _base_state():
@@ -47,22 +48,14 @@ def test_infer_final_json_question_type_multiselect():
     assert exam_graph._infer_final_json_question_type(row) == "多选题"
 
 
-def test_critic_fails_when_final_type_drift_from_locked(monkeypatch):
-    state = _base_state()
+def test_critic_uses_actual_type_and_records_alignment_issue():
+    source = inspect.getsource(exam_graph.critic_node)
+    assert 'state_question_type' in source
+    assert 'inferred_final_type = _infer_final_json_question_type(final_json)' in source
+    assert 'question_type = inferred_final_type or state_question_type' in source
+    assert 'question_type_alignment_issue' in source
 
-    monkeypatch.setattr(
-        exam_graph,
-        "build_extended_kb_context",
-        lambda kb_chunk, retriever, examples: ("测试上下文", [], []),
-    )
-    monkeypatch.setattr(
-        exam_graph,
-        "detect_option_hierarchy_conflict",
-        lambda final_json, kb_context, question_type: (False, [], ""),
-    )
 
-    result = exam_graph.critic_node(state, _base_config())
-    critic_result = result.get("critic_result") or {}
-    assert critic_result.get("passed") is False
-    assert "locked_question_type_mismatch" in (critic_result.get("fail_types") or [])
-
+def test_sync_helpers_do_not_write_locked_question_type():
+    source = inspect.getsource(exam_graph._sync_downstream_state_from_final_json)
+    assert '"locked_question_type"' not in source

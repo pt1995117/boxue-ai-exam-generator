@@ -67,19 +67,56 @@ ARK_BASE_URL = config.get("ARK_BASE_URL") or os.getenv("ARK_BASE_URL", "https://
 ARK_PROJECT_NAME = config.get("ARK_PROJECT_NAME") or os.getenv("ARK_PROJECT_NAME", "")
 
 # Paths (tenant-aware; fallback to existing single-city files)
+def get_tenant_resource_paths(tenant_id: str) -> tuple[str, str, str]:
+    resolved_tenant_id = str(tenant_id or "").strip()
+    return (
+        str(resolve_tenant_kb_path(resolved_tenant_id)),
+        str(resolve_tenant_history_path(resolved_tenant_id)),
+        str(tenant_mapping_path(resolved_tenant_id)),
+    )
+
+
+def build_knowledge_retriever(
+    *,
+    tenant_id: Optional[str] = None,
+    kb_path: Optional[str] = None,
+    history_path: Optional[str] = None,
+    mapping_path: Optional[str] = None,
+    mapping_review_path: Optional[str] = None,
+) -> "KnowledgeRetriever":
+    resolved_tenant_id = str(tenant_id if tenant_id is not None else TENANT_ID).strip()
+    resolved_kb_path = str(kb_path or (resolve_tenant_kb_path(resolved_tenant_id) if resolved_tenant_id else KB_PATH))
+    resolved_history_path = str(
+        history_path or (resolve_tenant_history_path(resolved_tenant_id) if resolved_tenant_id else HISTORY_PATH)
+    )
+    resolved_mapping_path = str(
+        mapping_path or (tenant_mapping_path(resolved_tenant_id) if resolved_tenant_id else MAPPING_PATH)
+    )
+    resolved_mapping_review_path = str(
+        mapping_review_path or (tenant_mapping_review_path(resolved_tenant_id) if resolved_tenant_id else "")
+    )
+    return KnowledgeRetriever(
+        resolved_kb_path,
+        resolved_history_path,
+        resolved_mapping_path,
+        tenant_id=resolved_tenant_id,
+        mapping_review_path=resolved_mapping_review_path,
+    )
+
+
 def set_active_tenant(tenant_id: str) -> None:
+    """
+    Legacy helper for script-style callers.
+    Web request paths should prefer explicit parameters instead of mutating these aliases.
+    """
     global TENANT_ID, KB_PATH, HISTORY_PATH, MAPPING_PATH
-    TENANT_ID = tenant_id
-    KB_PATH = str(resolve_tenant_kb_path(tenant_id))
-    HISTORY_PATH = str(resolve_tenant_history_path(tenant_id))
-    MAPPING_PATH = str(tenant_mapping_path(tenant_id))
+    TENANT_ID = str(tenant_id or "").strip()
+    KB_PATH, HISTORY_PATH, MAPPING_PATH = get_tenant_resource_paths(TENANT_ID)
 
 
-TENANT_ID = resolve_tenant_from_env()
-KB_PATH = "bot_knowledge_base.jsonl"
-HISTORY_PATH = "存量房买卖母卷ABCD.xls"
-MAPPING_PATH = "knowledge_question_mapping.json"
-set_active_tenant(TENANT_ID)
+DEFAULT_TENANT_ID = str(resolve_tenant_from_env() or "").strip()
+TENANT_ID = DEFAULT_TENANT_ID
+KB_PATH, HISTORY_PATH, MAPPING_PATH = get_tenant_resource_paths(TENANT_ID)
 OUTPUT_PATH = "generated_exam_questions.xlsx"
 
 # --- Pydantic Models ---
@@ -99,12 +136,31 @@ class ExamQuestion(BaseModel):
 
 # --- Knowledge Retriever (Unchanged) ---
 class KnowledgeRetriever:
-    def __init__(self, kb_path, history_path, mapping_path: Optional[str] = None):
+    def __init__(
+        self,
+        kb_path,
+        history_path,
+        mapping_path: Optional[str] = None,
+        *,
+        tenant_id: Optional[str] = None,
+        mapping_review_path: Optional[str] = None,
+    ):
         print("Loading Knowledge Base...")
+        self.kb_path = str(kb_path)
+        self.history_path = str(history_path)
         self.kb_data = []
-        self.mapping_path = mapping_path or MAPPING_PATH
+        self.tenant_id = str(tenant_id if tenant_id is not None else TENANT_ID).strip()
+        self.mapping_path = str(
+            mapping_path
+            or (tenant_mapping_path(self.tenant_id) if self.tenant_id else "")
+            or MAPPING_PATH
+        )
         self.mapping_review = {}
-        review_path = tenant_mapping_review_path(TENANT_ID)
+        review_path = str(
+            mapping_review_path
+            or (tenant_mapping_review_path(self.tenant_id) if self.tenant_id else "")
+        ).strip()
+        self.mapping_review_path = review_path
         if os.path.exists(review_path):
             try:
                 with open(review_path, "r", encoding="utf-8") as rf:
@@ -113,7 +169,7 @@ class KnowledgeRetriever:
                     self.mapping_review = raw_review
             except Exception:
                 self.mapping_review = {}
-        with open(kb_path, 'r', encoding='utf-8') as f:
+        with open(self.kb_path, 'r', encoding='utf-8') as f:
             for line in f:
                 item = json.loads(line)
                 # Adapter for new slice format: Construct '核心内容' if missing
@@ -136,7 +192,7 @@ class KnowledgeRetriever:
                 self.kb_data.append(item)
         
         print("Loading Historical Questions...")
-        self.history_df = load_reference_questions(history_path)
+        self.history_df = load_reference_questions(self.history_path)
         self.vectorizer: Optional[TfidfVectorizer] = None
         self.history_corpus: List[str] = []
         self.tfidf_matrix = None
@@ -148,7 +204,7 @@ class KnowledgeRetriever:
             ).tolist()
             self.tfidf_matrix = self.vectorizer.fit_transform(self.history_corpus)
         else:
-            print(f"Warning: no usable reference questions loaded from {history_path}. Generation will continue without mother questions.")
+            print(f"Warning: no usable reference questions loaded from {self.history_path}. Generation will continue without mother questions.")
 
         # Index KB slices for related-slice retrieval
         self.kb_vectorizer = TfidfVectorizer()
@@ -649,7 +705,7 @@ def main():
         return
 
     # Initialize Components
-    retriever = KnowledgeRetriever(KB_PATH, HISTORY_PATH)
+    retriever = build_knowledge_retriever(tenant_id=DEFAULT_TENANT_ID)
     generator = QuestionGenerator(API_KEY, BASE_URL, MODEL_NAME)
     critic = Critic(API_KEY, BASE_URL, MODEL_NAME)
     
