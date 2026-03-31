@@ -36,8 +36,9 @@ KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
 
 ensure_key_file_exists() {
   if [[ ! -f "${KEY_FILE}" ]]; then
-    echo "WARN: 缺少 ${KEY_FILE}，将自动创建空文件。可在管理后台【全局Key配置】中填写。"
-    : > "${KEY_FILE}"
+    echo "ERROR: 缺少 ${KEY_FILE}，部署要求必须提供该文件。"
+    echo "请先从 填写您的Key.txt.example 复制并填写有效 Key 后重试。"
+    exit 1
   fi
   chmod 600 "${KEY_FILE}" 2>/dev/null || true
 }

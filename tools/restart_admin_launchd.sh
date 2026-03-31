@@ -6,7 +6,7 @@ UID_NUM="$(id -u)"
 GUI_DOMAIN="gui/${UID_NUM}"
 LAUNCH_PATH="/opt/homebrew/bin:/Users/panting/miniconda3/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 BACKEND_PORT=8600
-FRONTEND_PORT=8521
+FRONTEND_PORT=8522
 
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 NPM_BIN="$(whence -p npm || true)"
@@ -43,8 +43,9 @@ mkdir -p "${HOME}/Library/LaunchAgents"
 
 ensure_key_file_exists() {
   if [[ ! -f "${KEY_FILE}" ]]; then
-    echo "WARN: 缺少 ${KEY_FILE}，将自动创建空文件。可在管理后台【全局Key配置】中填写。"
-    : > "${KEY_FILE}"
+    echo "ERROR: 缺少 ${KEY_FILE}，部署要求必须提供该文件。"
+    echo "请先从 填写您的Key.txt.example 复制并填写有效 Key 后重试。"
+    exit 1
   fi
   chmod 600 "${KEY_FILE}" 2>/dev/null || true
 }

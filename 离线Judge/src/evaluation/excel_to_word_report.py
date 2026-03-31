@@ -149,6 +149,8 @@ def _compute_batch_llm_negation_check(
 
 def _mock_llm_response(input_value):
     text = str(input_value)
+    if "QUALITY_SCORE" in text or "quality_score" in text:
+        return "<QUALITY_SCORE>8.8</QUALITY_SCORE>"
     if "solver_validation" in text or "Cognitive Auditor" in text:
         return '{"solver_validation": {"passed": true, "predicted_answer": "A", "reasoning_path": "可唯一推出", "ambiguity_found": false}, "semantic_drift": {"passed": true, "evidence_quotes": ["证据句"], "drift_issues": []}}'
     if "distractor_quality" in text or "Value Assessor" in text:

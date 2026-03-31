@@ -55,17 +55,28 @@
 ### 1. 环境要求
 
 - Python 3.8+
+- Node.js 20.x（推荐配合 `nvm use`，项目根目录已提供 `.nvmrc`）
 - 依赖包见 `requirements.txt`
 
 ### 2. 安装依赖
 
 ```bash
-pip install -r requirements.txt
+# 一键初始化（推荐用于服务器，含 Node 版本检查 + npm ci + vite 完整性校验）
+bash tools/bootstrap_server.sh
+```
+
+手动安装方式（不推荐）：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+npm --prefix admin-web ci
 ```
 
 ### 3. 配置 API Key
 
-复制并编辑 `填写您的Key.txt` 文件：
+部署前必须存在 `填写您的Key.txt`（缺失将导致启动脚本直接失败）。  
+可从 `填写您的Key.txt.example` 复制后编辑：
 
 ```
 # 推荐：AIT 配置（当前主流程）
@@ -83,16 +94,15 @@ AIT_MODEL=deepseek-chat
 
 ```bash
 # 终端1：启动后端 API
-python admin_api.py
+.venv/bin/python admin_api.py
 
 # 终端2：启动前端管理台
-cd admin-web
-npm run dev
+npm --prefix admin-web run dev -- --host 127.0.0.1 --port 8522
 ```
 
 默认访问地址：
 - 后端健康检查：`http://127.0.0.1:8600/`
-- 前端管理台：`http://127.0.0.1:8520/`（或 Vite 输出端口）
+- 前端管理台：`http://127.0.0.1:8522/`
 
 ## 📖 使用说明
 

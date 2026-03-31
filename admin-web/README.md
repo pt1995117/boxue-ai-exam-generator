@@ -18,7 +18,13 @@
 当前环境若无外网，`npm install` 会失败。请在可访问 npm 的环境执行：
 
 ```bash
-npm --prefix admin-web install
+npm --prefix admin-web ci
+```
+
+建议固定 Node 版本为 20.x（项目根目录提供 `.nvmrc`）：
+
+```bash
+nvm use
 ```
 
 ## 启动
