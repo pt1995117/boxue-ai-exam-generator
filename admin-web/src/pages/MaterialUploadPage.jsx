@@ -39,6 +39,7 @@ export default function MaterialUploadPage() {
   };
   const materialStatusLabel = (status) => {
     if (status === 'slicing') return '生成中';
+    if (status === 'ready_for_review') return '待生效';
     if (status === 'effective') return '生效';
     if (status === 'archived') return '已下线';
     if (status === 'failed') return '失败';
@@ -151,7 +152,7 @@ export default function MaterialUploadPage() {
   const onSetEffective = async (materialVersionId) => {
     try {
       await setMaterialEffective(tenantId, materialVersionId);
-      message.success('已切换为生效教材');
+      message.success('已设为生效教材');
       await loadMaterials(tenantId);
     } catch (e) {
       const status = e?.response?.status;
@@ -354,6 +355,16 @@ export default function MaterialUploadPage() {
                         {materialStatusLabel(item.status)}
                       </span>
                     </Typography.Text>
+                    {item.status !== 'effective' && !canSetEffective(item) && item?.effective_block_reason ? (
+                      <Typography.Text type="warning">
+                        生效条件未满足：{item.effective_block_reason}
+                      </Typography.Text>
+                    ) : null}
+                    {item.status !== 'effective' && Number.isFinite(Number(item?.dual_review_slice_count)) ? (
+                      <Typography.Text type="secondary">
+                        已满足双核对切片：{Math.max(0, Number(item.dual_review_slice_count || 0))} 条
+                      </Typography.Text>
+                    ) : null}
                     <div className="material-item-actions">
                       <Space size={6} wrap>
                         {item._isPending ? null : (
@@ -491,10 +502,10 @@ export default function MaterialUploadPage() {
                         fileList={referenceFileList}
                         beforeUpload={() => false}
                         onChange={({ fileList: next }) => setReferenceFileList(next.slice(-1))}
-                        accept=".xlsx,.xls"
+                        accept=".xlsx,.xls,.docx,.txt,.md"
                       >
                         <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-                        <p className="ant-upload-text">拖拽参考题库表格到这里，或点击上传</p>
+                        <p className="ant-upload-text">拖拽参考题文件到这里，或点击上传</p>
                       </Upload.Dragger>
                       <Button type="primary" loading={mappingLoading} onClick={onUploadReferenceAndMap}>
                         上传参考题并生成映射

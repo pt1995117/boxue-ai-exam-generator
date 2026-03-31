@@ -5,13 +5,29 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 UID_NUM="$(id -u)"
 GUI_DOMAIN="gui/${UID_NUM}"
 LAUNCH_PATH="/opt/homebrew/bin:/Users/panting/miniconda3/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+BACKEND_PORT=8600
+FRONTEND_PORT=8521
 
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 NPM_BIN="$(whence -p npm || true)"
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="$(whence -p python3 || true)"
+
+resolve_python_bin() {
+  local candidate=""
+  for candidate in "${ROOT_DIR}/.venv/bin/python" "$(whence -p python3 || true)" "/usr/bin/python3"; do
+    [[ -n "${candidate}" && -x "${candidate}" ]] || continue
+    if "${candidate}" -c "from flask import Flask" >/dev/null 2>&1; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_BIN="$(resolve_python_bin || true)"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "ERROR: No usable Python interpreter with Flask installed was found"
+  exit 1
 fi
-if [[ -z "${PYTHON_BIN}" ]]; then PYTHON_BIN="/usr/bin/python3"; fi
 if [[ -z "${NPM_BIN}" ]]; then NPM_BIN="/usr/bin/npm"; fi
 
 BACKEND_LABEL="com.boxue.admin_api"
@@ -20,7 +36,7 @@ BACKEND_PLIST="${HOME}/Library/LaunchAgents/${BACKEND_LABEL}.plist"
 FRONTEND_PLIST="${HOME}/Library/LaunchAgents/${FRONTEND_LABEL}.plist"
 
 BACKEND_LOG="/tmp/admin_api_8600.log"
-FRONTEND_LOG="/tmp/admin_web_8531.log"
+FRONTEND_LOG="/tmp/admin_web_${FRONTEND_PORT}.log"
 KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
 
 mkdir -p "${HOME}/Library/LaunchAgents"
@@ -31,6 +47,72 @@ ensure_key_file_exists() {
     : > "${KEY_FILE}"
   fi
   chmod 600 "${KEY_FILE}" 2>/dev/null || true
+}
+
+kill_port() {
+  local port="$1"
+  local pids
+  pids="$(lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "${pids}" ]]; then
+    echo "Stopping processes on :${port} -> ${pids}"
+    for pid in ${pids}; do
+      kill "${pid}" 2>/dev/null || true
+    done
+    sleep 0.5
+    pids="$(lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null || true)"
+    if [[ -n "${pids}" ]]; then
+      echo "Force killing on :${port} -> ${pids}"
+      for pid in ${pids}; do
+        kill -9 "${pid}" 2>/dev/null || true
+      done
+    fi
+  fi
+}
+
+wait_for_port_free() {
+  local port="$1"
+  local retries=25
+  while (( retries > 0 )); do
+    if ! lsof -nP -iTCP:${port} -sTCP:LISTEN >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.2
+    retries=$((retries - 1))
+  done
+  return 1
+}
+
+wait_for_listen() {
+  local port="$1"
+  local retries=40
+  while (( retries > 0 )); do
+    if lsof -nP -iTCP:${port} -sTCP:LISTEN >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+    retries=$((retries - 1))
+  done
+  return 1
+}
+
+wait_for_http_ok() {
+  local url="$1"
+  local header="${2:-}"
+  local retries=40
+  while (( retries > 0 )); do
+    if [[ -n "${header}" ]]; then
+      if curl -fsS -m 2 -H "${header}" "${url}" >/dev/null 2>&1; then
+        return 0
+      fi
+    else
+      if curl -fsS -m 2 "${url}" >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    sleep 0.25
+    retries=$((retries - 1))
+  done
+  return 1
 }
 
 ensure_key_file_exists
@@ -74,9 +156,9 @@ cat > "${FRONTEND_PLIST}" <<EOF
     <string>dev</string>
     <string>--</string>
     <string>--host</string>
-    <string>0.0.0.0</string>
+    <string>127.0.0.1</string>
     <string>--port</string>
-    <string>8531</string>
+    <string>${FRONTEND_PORT}</string>
   </array>
   <key>WorkingDirectory</key><string>${ROOT_DIR}</string>
   <key>EnvironmentVariables</key>
@@ -95,6 +177,21 @@ launchctl bootout "${GUI_DOMAIN}" "${BACKEND_PLIST}" >/dev/null 2>&1 || true
 launchctl bootout "${GUI_DOMAIN}" "${FRONTEND_PLIST}" >/dev/null 2>&1 || true
 sleep 0.5
 
+kill_port "${BACKEND_PORT}"
+kill_port "${FRONTEND_PORT}"
+
+if ! wait_for_port_free "${BACKEND_PORT}"; then
+  echo "ERROR: :${BACKEND_PORT} still occupied after shutdown"
+  lsof -nP -iTCP:${BACKEND_PORT} -sTCP:LISTEN || true
+  exit 1
+fi
+
+if ! wait_for_port_free "${FRONTEND_PORT}"; then
+  echo "ERROR: :${FRONTEND_PORT} still occupied after shutdown"
+  lsof -nP -iTCP:${FRONTEND_PORT} -sTCP:LISTEN || true
+  exit 1
+fi
+
 launchctl bootstrap "${GUI_DOMAIN}" "${BACKEND_PLIST}"
 launchctl bootstrap "${GUI_DOMAIN}" "${FRONTEND_PLIST}"
 launchctl enable "${GUI_DOMAIN}/${BACKEND_LABEL}" >/dev/null 2>&1 || true
@@ -102,14 +199,36 @@ launchctl enable "${GUI_DOMAIN}/${FRONTEND_LABEL}" >/dev/null 2>&1 || true
 launchctl kickstart -k "${GUI_DOMAIN}/${BACKEND_LABEL}"
 launchctl kickstart -k "${GUI_DOMAIN}/${FRONTEND_LABEL}"
 
-sleep 1
+if ! wait_for_listen "${BACKEND_PORT}"; then
+  echo "ERROR: Backend failed to listen on :${BACKEND_PORT}, see ${BACKEND_LOG}"
+  tail -n 80 "${BACKEND_LOG}" || true
+  exit 1
+fi
+
+if ! wait_for_http_ok "http://127.0.0.1:${BACKEND_PORT}/api/tenants" "X-System-User: admin"; then
+  echo "ERROR: Backend HTTP check failed, see ${BACKEND_LOG}"
+  tail -n 80 "${BACKEND_LOG}" || true
+  exit 1
+fi
+
+if ! wait_for_listen "${FRONTEND_PORT}"; then
+  echo "ERROR: Frontend failed to listen on :${FRONTEND_PORT}, see ${FRONTEND_LOG}"
+  tail -n 80 "${FRONTEND_LOG}" || true
+  exit 1
+fi
+
+if ! wait_for_http_ok "http://127.0.0.1:${FRONTEND_PORT}/"; then
+  echo "ERROR: Frontend HTTP check failed, see ${FRONTEND_LOG}"
+  tail -n 80 "${FRONTEND_LOG}" || true
+  exit 1
+fi
 
 echo "Launchd services started:"
 launchctl print "${GUI_DOMAIN}/${BACKEND_LABEL}" | head -n 12 || true
 launchctl print "${GUI_DOMAIN}/${FRONTEND_LABEL}" | head -n 12 || true
 echo ""
-echo "Backend:  http://127.0.0.1:8600/"
-echo "Frontend: http://127.0.0.1:8531/"
+echo "Backend:  http://127.0.0.1:${BACKEND_PORT}/"
+echo "Frontend: http://127.0.0.1:${FRONTEND_PORT}/"
 echo ""
 echo "Logs:"
 echo "  ${BACKEND_LOG}"

@@ -186,3 +186,7 @@ class QuestionInput(BaseModel):
     question_type: str = "single_choice"
     is_calculation: bool = False
     assessment_type: str = "基础概念/理解记忆"
+    city_name: str = Field(
+        default="",
+        description="命题城市展示名（如上海），用于业务情景量级审核；空则不作城市量级核对",
+    )

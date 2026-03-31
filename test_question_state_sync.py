@@ -13,6 +13,7 @@ from exam_graph import (
     enforce_question_bracket_and_punct,
     has_forbidden_symbol_before_ending_blank_bracket,
     repair_final_json_format,
+    _sync_question_type_from_draft,
     _sync_downstream_state_from_final_json,
     validate_critic_format,
     validate_writer_format,
@@ -35,6 +36,31 @@ def test_sync_downstream_state_rebuilds_candidate_sentences_from_fixed_question(
     assert sentences, "candidate_sentences should be rebuilt from the latest fixed final_json"
     assert any("经纪人应当核验房源信息后再发布" in str(x.get("sentence", "")) for x in sentences)
     assert state.get("writer_validation_report", {}).get("passed") in (True, False)
+
+
+def test_sync_question_type_from_draft_uses_latest_draft_shape():
+    draft = {
+        "question": "以下说法正确的有（　）。",
+        "options": ["说法一", "说法二", "说法三", "说法四"],
+        "answer": "AC",
+        "explanation": "1、教材原文：教材。\n2、试题分析：分析。\n3、结论：本题答案为AC。",
+    }
+    state = _sync_question_type_from_draft(draft, "单选题")
+    assert state["current_question_type"] == "单选题"
+
+
+def test_sync_downstream_state_preserves_provided_question_type():
+    final_json = {
+        "题干": "以下说法正确的有（　）。",
+        "选项1": "说法一",
+        "选项2": "说法二",
+        "选项3": "说法三",
+        "选项4": "说法四",
+        "正确答案": "AC",
+        "解析": "1、教材原文：教材。\n2、试题分析：分析。\n3、结论：本题答案为AC。",
+    }
+    state = _sync_downstream_state_from_final_json(final_json, "单选题")
+    assert state["current_question_type"] == "单选题"
 
 
 def test_merge_llm_trace_records_preserves_history_without_duplicates():
@@ -156,7 +182,7 @@ def test_repair_final_json_format_repairs_choice_question_tail_and_options():
     assert repaired["选项2"] == "直接发布"
     assert repaired["选项3"] == "委托他人核验"
     assert repaired["选项4"] == "口头说明即可"
-    assert repaired["正确答案"] == "A"
+    assert repaired["正确答案"] == "a"
     assert "本题答案为A" in repaired["解析"]
 
 

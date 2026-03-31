@@ -16,44 +16,6 @@ def replace_single_quotes_in_final_json(final_json: Dict) -> Dict:
     return out
 
 
-def apply_numeric_options_ascending(final_json: Dict) -> Dict:
-    """
-    When all options are single numeric with same unit, sort options ascending and remap 正确答案.
-    Returns new dict; no-op if not all options are numeric or units differ.
-    """
-    if not isinstance(final_json, dict):
-        return final_json
-    opts = [
-        str(final_json.get("选项1", "") or "").strip(),
-        str(final_json.get("选项2", "") or "").strip(),
-        str(final_json.get("选项3", "") or "").strip(),
-        str(final_json.get("选项4", "") or "").strip(),
-    ]
-    if not opts or any(not o for o in opts):
-        return final_json
-    parsed = [_parse_numeric_option(o) for o in opts]
-    if not all(p is not None for p in parsed):
-        return final_json
-    units = {p[1] for p in parsed if p is not None}
-    if len(units) != 1:
-        return final_json
-    # (value, original_index, text)
-    indexed = [(parsed[i][0], i, opts[i]) for i in range(4)]
-    indexed.sort(key=lambda x: (x[0], x[1]))
-    if indexed == [(parsed[i][0], i, opts[i]) for i in range(4)]:
-        return final_json  # already ascending
-    out = dict(final_json)
-    for i, (_, _, text) in enumerate(indexed):
-        out[f"选项{i + 1}"] = text
-    # Remap answer: old letter -> old index -> new position -> new letter
-    ans = str(out.get("正确答案", "") or "").strip().upper()
-    if len(ans) == 1 and ans in "ABCD":
-        old_idx = ord(ans) - ord("A")
-        new_pos = next(j for j, (_, oi, _) in enumerate(indexed) if oi == old_idx)
-        out["正确答案"] = chr(ord("A") + new_pos)
-    return out
-
-
 _MD_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
 _MD_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 
@@ -463,6 +425,7 @@ def validate_hard_rules(
                             "HARD_EXPL_TEXTBOOK",
                             "explanation",
                             "教材原文段须包含分级（如掌握/了解/熟悉）",
+                            severity="warning",
                             suggested_fix="在教材原文段中标明知识点分级，例如“（掌握）”或“了解”",
                         )
                     )

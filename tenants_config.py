@@ -65,13 +65,31 @@ def tenant_material_registry_path(tenant_id: str) -> Path:
     return ensure_tenant_dirs(tenant_id) / "materials" / "registry.json"
 
 
+def tenant_generation_template_path(tenant_id: str) -> Path:
+    return ensure_tenant_dirs(tenant_id) / "materials" / "generation_templates.json"
+
+
 def tenant_audit_log_path(tenant_id: str) -> Path:
     return ensure_tenant_dirs(tenant_id) / "audit" / "audit_log.jsonl"
 
 
 def resolve_tenant_kb_path(tenant_id: str, fallback: str = "bot_knowledge_base.jsonl") -> Path:
     slices_dir = tenant_slices_dir(tenant_id)
-    candidates = sorted(slices_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # Only accept finalized knowledge-slice files.
+    # Exclude transient progress artifacts like:
+    # - knowledge_slices_<version>.jsonl.progress.jsonl
+    # - knowledge_question_mapping_<version>.progress.jsonl
+    candidates = sorted(
+        [
+            p
+            for p in slices_dir.glob("*.jsonl")
+            if p.name.startswith("knowledge_slices_")
+            and p.name.endswith(".jsonl")
+            and ".progress." not in p.name
+        ],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if candidates:
         return candidates[0]
     return Path(fallback)
@@ -79,7 +97,7 @@ def resolve_tenant_kb_path(tenant_id: str, fallback: str = "bot_knowledge_base.j
 
 def resolve_tenant_history_path(tenant_id: str, fallback: str = "存量房买卖母卷ABCD.xls") -> Path:
     tenant_materials = ensure_tenant_dirs(tenant_id) / "materials"
-    for name in ("history_questions.xlsx", "history_questions.xls"):
+    for name in ("history_questions.xlsx", "history_questions.xls", "history_questions.docx", "history_questions.txt", "history_questions.md"):
         tenant_candidate = tenant_materials / name
         if tenant_candidate.exists():
             return tenant_candidate

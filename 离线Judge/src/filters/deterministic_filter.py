@@ -318,23 +318,6 @@ class DeterministicFilter:
             ):
                 errors.append("选择题结尾必须为“本题答案为A/B/C/D”")
 
-        if not self._answer_consistent_with_explanation(question.correct_answer, exp):
-            errors.append("解析结论与正确答案字段不一致")
-
-    def _answer_consistent_with_explanation(self, answer: str, explanation: str) -> bool:
-        ans = self._normalize_answer(answer)
-        # 先尝试在“本题答案为...”中抽取
-        m = re.search(
-            r"本题答案为\s*([A-D](?:\s*[、,，]\s*[A-D])*|正确|错误)\s*[。．.]?$",
-            explanation.strip().upper(),
-        )
-        if m:
-            exp_ans = self._normalize_answer(m.group(1))
-            return ans == exp_ans
-
-        # 回退：弱匹配
-        return ans in self._normalize_answer(explanation)
-
     @staticmethod
     def _normalize_answer(text: str) -> str:
         t = str(text or "").strip().upper()

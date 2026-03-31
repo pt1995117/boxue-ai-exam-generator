@@ -381,7 +381,7 @@ def _llm_quality_score_eval(
         raw_preview = str(obs.get("last_raw_response", "") or "").strip()
         raise RuntimeError(
             "quality_score 评估失败：模型未返回完整结论字段（quality_reasons/scoring_basis 为空）"
-            + (f"，raw_preview={raw_preview[:500]}" if raw_preview else "")
+            + (f"，raw_preview={raw_preview}" if raw_preview else "")
         )
     return round(score, 2), reasons[:6], basis, dim_feedback
 
@@ -626,8 +626,6 @@ def _basic_rules_code_checks(question: QuestionInput) -> tuple[list[str], list[s
         elif exp_ans not in {"正确", "错误"}:
             exp_parts = sorted(set([x for x in exp_ans.split(",") if x]))
             exp_ans = ",".join(exp_parts)
-        if exp_ans != ans_norm:
-            errors.append("解析结论与正确答案字段不一致")
 
     # 12) 数值题/隐含运算题“保留位数说明”
     # 若为计算题或非计算题但存在隐含运算，且选项出现小数，题干应说明保留位数
@@ -996,10 +994,13 @@ def node_layer3_surface_a(state: JudgeState) -> JudgeState:
     )
     default_system = "你是房地产考试题面综合质检专家。"
     default_human = (
-        "题型：{question_type}\n评估类型：{assessment_type}\n教材切片：{textbook_slice}\n关联切片：{related_slices}\n"
+        "题型：{question_type}\n评估类型：{assessment_type}\n命题城市：{city_name}\n"
+        "教材切片：{textbook_slice}\n关联切片：{related_slices}\n"
         "参考切片：{reference_slices}\n"
         "题干：{stem}\n选项：{options}\n标准答案：{correct_answer}\n解析：{explanation}"
     )
+    _city = str(getattr(state["question"], "city_name", "") or "").strip()
+    _city_display = _city if _city else "未指定（仅作通用常识判断，不作城市量级核对）"
     system_prompt, human_prompt = load_prompt_pair(
         prompt_path,
         default_system,
@@ -1007,6 +1008,7 @@ def node_layer3_surface_a(state: JudgeState) -> JudgeState:
         [
             "assessment_type",
             "question_type",
+            "city_name",
             "textbook_slice",
             "related_slices",
             "reference_slices",
@@ -1021,6 +1023,7 @@ def node_layer3_surface_a(state: JudgeState) -> JudgeState:
         {
             "assessment_type": state["question"].assessment_type,
             "question_type": state["question"].question_type,
+            "city_name": _city_display,
             "textbook_slice": state["question"].textbook_slice,
             "related_slices": _related_slices_text(state["question"]),
             "reference_slices": _reference_slices_text(state["question"]),

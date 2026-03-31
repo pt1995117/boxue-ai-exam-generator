@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { Breadcrumb, Button, Input, Layout, Menu, Select, Space, Typography, message } from 'antd';
-import { FileSearchOutlined, LinkOutlined, DashboardOutlined, UploadOutlined, RobotOutlined, DatabaseOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined, BookOutlined, LineChartOutlined, TagOutlined, OrderedListOutlined, KeyOutlined } from '@ant-design/icons';
+import { FileSearchOutlined, LinkOutlined, DashboardOutlined, UploadOutlined, RobotOutlined, DatabaseOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined, BookOutlined, LineChartOutlined, TagOutlined, OrderedListOutlined, KeyOutlined, ProfileOutlined } from '@ant-design/icons';
 import { getAuthToken, getSystemUser, listTenants, setAuthToken, setSystemUser } from '../services/api';
 import { getGlobalTenantId, setGlobalTenantId } from '../services/tenantScope';
 
@@ -13,6 +13,7 @@ const items = [
   { key: '/slice-review', icon: <FileSearchOutlined />, label: <Link to="/slice-review">切片核对</Link> },
   { key: '/mapping-review', icon: <LinkOutlined />, label: <Link to="/mapping-review">映射确认</Link> },
   { key: '/ai-generate', icon: <RobotOutlined />, label: <Link to="/ai-generate">AI出题</Link> },
+  { key: '/generate-templates', icon: <ProfileOutlined />, label: <Link to="/generate-templates">出题模板</Link> },
   { key: '/qa-evaluation', icon: <LineChartOutlined />, label: <Link to="/qa-evaluation">质量评估</Link> },
   { key: '/judge-tasks', icon: <OrderedListOutlined />, label: <Link to="/judge-tasks">Judge任务</Link> },
   { key: '/version-management', icon: <TagOutlined />, label: <Link to="/version-management">版本管理</Link> },
@@ -38,6 +39,7 @@ export default function AdminLayout() {
     '/slice-review': '切片核对',
     '/mapping-review': '映射确认',
     '/ai-generate': 'AI出题',
+    '/generate-templates': '出题模板',
     '/qa-evaluation': '质量评估',
     '/judge-tasks': 'Judge任务',
     '/version-management': '版本管理',
@@ -116,14 +118,22 @@ export default function AdminLayout() {
               <Input
                 value={globalSystemUser}
                 style={{ width: 140 }}
-                onChange={(e) => setGlobalSystemUser(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setGlobalSystemUser(next);
+                  setSystemUser(next);
+                }}
                 onBlur={() => setSystemUser(globalSystemUser)}
               />
               <Input.Password
                 value={globalAuthToken}
                 placeholder="OIDC Token(可选)"
                 style={{ width: 220 }}
-                onChange={(e) => setGlobalAuthToken(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setGlobalAuthToken(next);
+                  setAuthToken(next);
+                }}
                 onBlur={() => setAuthToken(globalAuthToken)}
               />
             </Space>

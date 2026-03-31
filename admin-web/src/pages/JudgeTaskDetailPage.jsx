@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Descriptions, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { cancelJudgeTask, getJudgeTask, getQaRunDetail } from '../services/api';
@@ -187,11 +187,14 @@ export default function JudgeTaskDetailPage() {
   const [cancelling, setCancelling] = useState(false);
   const [task, setTask] = useState({});
   const [runDetail, setRunDetail] = useState({});
+  const detailLoadingRef = useRef(false);
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
 
   const loadDetail = async ({ silent = false } = {}) => {
     if (!tenantId || !taskId) return;
+    if (detailLoadingRef.current) return;
+    detailLoadingRef.current = true;
     if (!silent) setLoading(true);
     try {
       const res = await getJudgeTask(tenantId, taskId);
@@ -207,6 +210,7 @@ export default function JudgeTaskDetailPage() {
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '加载 Judge 任务详情失败');
     } finally {
+      detailLoadingRef.current = false;
       if (!silent) setLoading(false);
     }
   };

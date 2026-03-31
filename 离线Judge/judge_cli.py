@@ -72,6 +72,7 @@ def _normalize_input(row: dict) -> dict:
                 break
     for src, targets in [
         ("assessment_type", ("题目类型标签", "assessment_type")),
+        ("city_name", ("命题城市", "城市", "tenant_display_name")),
         ("reference_slices", ("参考切片", "参考切片原文", "reference_textbook_slices")),
         ("mother_question", ("母题", "母题题干", "关联母题", "parent_question")),
         ("examples", ("范例", "examples")),

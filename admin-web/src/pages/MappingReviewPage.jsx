@@ -130,6 +130,9 @@ export default function MappingReviewPage() {
   const [editingMapKey, setEditingMapKey] = useState('');
   const [editingTargetId, setEditingTargetId] = useState('');
   const [editingComment, setEditingComment] = useState('');
+  const [editingManualStem, setEditingManualStem] = useState('');
+  const [editingManualOptions, setEditingManualOptions] = useState('');
+  const [editingManualExplanation, setEditingManualExplanation] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [approvingAll, setApprovingAll] = useState(false);
   const [mappingJob, setMappingJob] = useState(null);
@@ -260,21 +263,43 @@ export default function MappingReviewPage() {
     return { total, pending, approved };
   }, [rows]);
 
+  const splitOptionsText = (text) => String(text || '')
+    .split('\n')
+    .map((x) => String(x || '').replace(/^[A-Ha-h][\.\、\s]+/, '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+
+  const isRowReadyForReview = (row) => {
+    if (row?.review_ready === true) return true;
+    const stem = String(row?.question_stem || '').trim();
+    const explanation = String(row?.question_explanation || '').trim();
+    const options = Array.isArray(row?.question_options)
+      ? row.question_options.map((x) => String(x || '').trim()).filter(Boolean)
+      : [];
+    return Boolean(stem && explanation && options.length > 0);
+  };
+
   const onBatchSubmit = async (values) => {
     if (!selectedRowKeys.length) {
       message.warning('请先选择记录');
       return;
     }
+    const selectedRows = rows.filter((x) => selectedRowKeys.includes(String(x.map_key || '')));
+    const readyRows = selectedRows.filter((x) => isRowReadyForReview(x));
+    if (!readyRows.length) {
+      message.warning('所选映射未补全母题题干/选项/解析，无法审核');
+      return;
+    }
     try {
       await batchReviewMappings(tenantId, {
-        map_keys: selectedRowKeys,
+        map_keys: readyRows.map((x) => String(x.map_key)),
         confirm_status: values.confirm_status,
         comment: values.comment || '',
         reviewer: systemUser,
         target_mother_question_id: values.target_mother_question_id || '',
         material_version_id: materialVersionId || undefined,
       });
-      message.success(`已更新 ${selectedRowKeys.length} 条映射`);
+      message.success(`已更新 ${readyRows.length} 条映射`);
       await loadData();
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '批量确认失败');
@@ -282,9 +307,9 @@ export default function MappingReviewPage() {
   };
 
   const onApproveAllInCurrentTree = async () => {
-    const ids = rows.map((x) => String(x.map_key || '')).filter(Boolean);
+    const ids = rows.filter((x) => isRowReadyForReview(x)).map((x) => String(x.map_key || '')).filter(Boolean);
     if (!ids.length) {
-      message.warning('当前筛选下没有可审核映射');
+      message.warning('当前筛选下没有可审核映射（需先补全母题题干/选项/解析）');
       return;
     }
     setApprovingAll(true);
@@ -309,6 +334,13 @@ export default function MappingReviewPage() {
   };
 
   const onQuickConfirm = async (mapKey, confirmStatus = 'approved') => {
+    if (confirmStatus === 'approved') {
+      const row = rows.find((x) => String(x.map_key || '') === String(mapKey));
+      if (!row || !isRowReadyForReview(row)) {
+        message.warning('请先补全母题题干/选项/解析，再执行通过审核');
+        return;
+      }
+    }
     try {
       await batchReviewMappings(tenantId, {
         map_keys: [mapKey],
@@ -329,8 +361,13 @@ export default function MappingReviewPage() {
     try {
       await onQuickConfirm(mapKey, 'pending');
       setEditingMapKey(mapKey);
-      setEditingTargetId(String(row.question_index || ''));
+      setEditingTargetId(String(row.target_mother_question_id || row.question_index || ''));
       setEditingComment(String(row.review_comment || ''));
+      setEditingManualStem(String(row.manual_question_stem || row.question_stem || ''));
+      setEditingManualOptions(Array.isArray(row.manual_question_options) && row.manual_question_options.length
+        ? row.manual_question_options.join('\n')
+        : ((Array.isArray(row.question_options) ? row.question_options : []).join('\n')));
+      setEditingManualExplanation(String(row.manual_question_explanation || row.question_explanation || ''));
       message.info('已进入修改状态，映射已置为待审核');
     } catch (e) {
       // onQuickConfirm already toast
@@ -342,18 +379,25 @@ export default function MappingReviewPage() {
     if (!mapKey) return;
     setSavingEdit(true);
     try {
+      const manualOptions = splitOptionsText(editingManualOptions);
       await batchReviewMappings(tenantId, {
         map_keys: [mapKey],
         confirm_status: 'pending',
         reviewer: systemUser,
         comment: editingComment || '',
         target_mother_question_id: editingTargetId || '',
+        manual_question_stem: editingManualStem || '',
+        manual_question_options: manualOptions,
+        manual_question_explanation: editingManualExplanation || '',
         material_version_id: materialVersionId || undefined,
       });
       message.success(`映射 ${mapKey} 已保存，状态为待审核`);
       setEditingMapKey('');
       setEditingTargetId('');
       setEditingComment('');
+      setEditingManualStem('');
+      setEditingManualOptions('');
+      setEditingManualExplanation('');
       await loadData();
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '保存映射失败');
@@ -404,8 +448,29 @@ export default function MappingReviewPage() {
   const scopedPreviewRows = useMemo(() => {
     if (!previewMapKeys.length) return [];
     const set = new Set(previewMapKeys.map((x) => String(x)));
-    return rows.filter((x) => set.has(String(x.map_key)));
+    return rows
+      .filter((x) => set.has(String(x.map_key)))
+      .slice()
+      .sort((a, b) => {
+        const aSid = Number(a?.slice_id);
+        const bSid = Number(b?.slice_id);
+        const aQid = Number(a?.question_index);
+        const bQid = Number(b?.question_index);
+        if (Number.isFinite(aSid) && Number.isFinite(bSid) && aSid !== bSid) return aSid - bSid;
+        if (Number.isFinite(aQid) && Number.isFinite(bQid) && aQid !== bQid) return aQid - bQid;
+        return String(a?.map_key || '').localeCompare(String(b?.map_key || ''));
+      });
   }, [rows, previewMapKeys]);
+
+  const scopedReadyRows = useMemo(
+    () => scopedPreviewRows.filter((row) => isRowReadyForReview(row)),
+    [scopedPreviewRows]
+  );
+
+  const scopedUnreadyRows = useMemo(
+    () => scopedPreviewRows.filter((row) => !isRowReadyForReview(row)),
+    [scopedPreviewRows]
+  );
 
   const checkedTreeKeys = useMemo(() => {
     const keys = [];
@@ -569,12 +634,16 @@ export default function MappingReviewPage() {
             className="slice-preview-card"
             title="内容预览"
             loading={loading}
-            extra={<Typography.Text type="secondary">当前目录下切片：{scopedPreviewRows.length} 条</Typography.Text>}
+            extra={(
+              <Typography.Text type="secondary">
+                当前目录映射：可审核 {scopedReadyRows.length} 条 ｜ 待补全 {scopedUnreadyRows.length} 条
+              </Typography.Text>
+            )}
           >
             {!activeMapKey && <Empty description="请在左侧目录树选择映射" />}
             {!!activeMapKey && (
               <div className="slice-preview-list">
-                {scopedPreviewRows.map((row) => {
+                {scopedReadyRows.map((row) => {
                   const mk = String(row.map_key || '');
                   const isEditing = editingMapKey === mk;
                   return (
@@ -584,6 +653,7 @@ export default function MappingReviewPage() {
                           <Space style={{ minWidth: 0 }} size={8}>
                             <Tag color={statusColor[row.confirm_status] || 'default'}>{statusLabel[row.confirm_status] || row.confirm_status}</Tag>
                             {row.meta_conflict && <Tag color="orange">元数据冲突</Tag>}
+                            {row.question_source === 'manual' && <Tag color="blue">手动母题</Tag>}
                             <Typography.Text strong style={{ minWidth: 0 }}>
                               {`Map: ${mk} | ${row.path || '（空路径）'}`}
                             </Typography.Text>
@@ -627,6 +697,24 @@ export default function MappingReviewPage() {
                               placeholder="目标母题ID（重映射）"
                               value={editingTargetId}
                               onChange={(e) => setEditingTargetId(e.target.value)}
+                            />
+                            <Input.TextArea
+                              placeholder={'母题题干（手动填写后视为已关联）'}
+                              value={editingManualStem}
+                              rows={3}
+                              onChange={(e) => setEditingManualStem(e.target.value)}
+                            />
+                            <Input.TextArea
+                              placeholder={'母题选项（每行一个，支持 A. 前缀）'}
+                              value={editingManualOptions}
+                              rows={4}
+                              onChange={(e) => setEditingManualOptions(e.target.value)}
+                            />
+                            <Input.TextArea
+                              placeholder={'母题解析（手动填写）'}
+                              value={editingManualExplanation}
+                              rows={4}
+                              onChange={(e) => setEditingManualExplanation(e.target.value)}
                             />
                             <Input
                               placeholder="备注"
@@ -742,6 +830,12 @@ export default function MappingReviewPage() {
                         <Typography.Paragraph style={{ whiteSpace: 'pre-line', marginBottom: 0 }}>
                           {row.question_stem || '（空）'}
                         </Typography.Paragraph>
+                        <Typography.Text strong>选项（完整）</Typography.Text>
+                        <Typography.Paragraph style={{ whiteSpace: 'pre-line', marginBottom: 0 }}>
+                          {(Array.isArray(row.question_options) ? row.question_options : [])
+                            .map((opt, idx) => `${String.fromCharCode(65 + idx)}. ${opt}`)
+                            .join('\n') || '（空）'}
+                        </Typography.Paragraph>
                         <Typography.Text strong>正确答案</Typography.Text>
                         <Typography.Paragraph style={{ whiteSpace: 'pre-line', marginBottom: 0 }}>
                           {row.question_answer || '（空）'}
@@ -754,6 +848,34 @@ export default function MappingReviewPage() {
                     </div>
                   );
                 })}
+                {!!scopedUnreadyRows.length && (
+                  <Card size="small" style={{ marginTop: 12 }}>
+                    <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                      <Typography.Text strong>待补全母题内容（不进入审核）</Typography.Text>
+                      {scopedUnreadyRows.map((row) => {
+                        const mk = String(row.map_key || '');
+                        const isEditing = editingMapKey === mk;
+                        return (
+                          <div key={`${mk}_unready`} style={{ border: '1px dashed #f0f0f0', borderRadius: 6, padding: 10 }}>
+                            <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                              <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+                                <Typography.Text>{`Map: ${mk} | ${row.path || '（空路径）'}`}</Typography.Text>
+                                {isEditing ? (
+                                  <Button size="small" type="primary" loading={savingEdit} onClick={() => onSaveMapping(row)}>保存</Button>
+                                ) : (
+                                  <Button size="small" onClick={() => onEditMapping(row)}>修改</Button>
+                                )}
+                              </Space>
+                              <Typography.Text type="warning">
+                                缺少：{(Array.isArray(row.review_missing_fields) ? row.review_missing_fields : ['题干', '选项', '解析']).join(' / ')}
+                              </Typography.Text>
+                            </Space>
+                          </div>
+                        );
+                      })}
+                    </Space>
+                  </Card>
+                )}
               </div>
             )}
           </Card>

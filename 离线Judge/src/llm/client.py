@@ -133,12 +133,8 @@ class ReliableLLMClient:
         parsed = _extract_json_block(raw)
         if not isinstance(parsed, dict):
             raw_text = str(raw or "")
-            truncated = False
-            if len(raw_text) > 2000:
-                raw_text = raw_text[:2000]
-                truncated = True
             _OBS["last_raw_response"] = raw_text
-            _OBS["last_raw_truncated"] = truncated
+            _OBS["last_raw_truncated"] = False
             return fallback
 
         merged = dict(fallback)

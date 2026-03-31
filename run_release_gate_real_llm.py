@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import exam_factory
-from exam_factory import API_KEY, BASE_URL, MODEL_NAME, KnowledgeRetriever, set_active_tenant
+from exam_factory import API_KEY, BASE_URL, MODEL_NAME, KnowledgeRetriever, build_knowledge_retriever
 from exam_graph import (
     app as graph_app,
     critic_node,
@@ -44,8 +44,16 @@ def _ensure_runtime_ready() -> None:
         raise RuntimeError("未配置可用 API Key，无法执行真实 LLM 门禁")
 
 
-def _build_retriever(kb_path: Optional[str] = None, history_path: Optional[str] = None) -> KnowledgeRetriever:
-    return KnowledgeRetriever(kb_path or exam_factory.KB_PATH, history_path or exam_factory.HISTORY_PATH)
+def _build_retriever(
+    tenant_id: Optional[str] = None,
+    kb_path: Optional[str] = None,
+    history_path: Optional[str] = None,
+) -> KnowledgeRetriever:
+    return build_knowledge_retriever(
+        tenant_id=tenant_id,
+        kb_path=kb_path,
+        history_path=history_path,
+    )
 
 
 def _base_config(retriever: KnowledgeRetriever, question_type: str = "随机") -> Dict[str, Any]:
@@ -87,7 +95,7 @@ def _find_chunk(retriever: KnowledgeRetriever, want_calc: bool) -> Dict[str, Any
                 return chunk
         return candidates[0][1]
     raise RuntimeError(
-        f"未找到 {'计算' if want_calc else '非计算'} 场景切片。当前 KB 共有 {len(retriever.kb_data)} 条，KB_PATH={exam_factory.KB_PATH}"
+        f"未找到 {'计算' if want_calc else '非计算'} 场景切片。当前 KB 共有 {len(retriever.kb_data)} 条"
     )
 
 
@@ -336,9 +344,7 @@ def run_release_gate(
     only: Optional[List[str]] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
     _ensure_runtime_ready()
-    if tenant_id:
-        set_active_tenant(tenant_id)
-    retriever = _build_retriever(kb_path=kb_path, history_path=history_path)
+    retriever = _build_retriever(tenant_id=tenant_id, kb_path=kb_path, history_path=history_path)
     config = _base_config(retriever)
     non_calc_chunk = _find_chunk(retriever, want_calc=False)
     calc_chunk = _find_chunk(retriever, want_calc=True)
@@ -384,8 +390,8 @@ def run_release_gate(
         "finished_at": time.time(),
         "model": MODEL_NAME,
         "base_url": BASE_URL,
-        "kb_path": kb_path or exam_factory.KB_PATH,
-        "history_path": history_path or exam_factory.HISTORY_PATH,
+        "kb_path": getattr(retriever, "kb_path", kb_path or ""),
+        "history_path": getattr(retriever, "history_path", history_path or ""),
         "tenant_id": tenant_id,
         "report_type": "release_gate_real_llm",
         "ok": ok,

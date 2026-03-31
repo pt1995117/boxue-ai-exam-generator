@@ -147,11 +147,14 @@ def _plan_calculation(question: QuestionInput, llm: Any) -> dict[str, Any]:
                 "  \"extracted_params\": {{\"k\":\"v\"}},\n"
                 "  \"reason\": \"...\"\n"
                 "}}\n"
-                "规则：\n"
-                "1) 若 need_calculation=true，python_code 必须完整可运行，且最后将结果赋值给 result。\n"
-                "2) 代码不依赖外部函数，需处理边界情况（如除零）。\n"
-                "3) 若范例含计算题，优先生成计算代码。\n"
-                "4) 若不需要计算，python_code 置空字符串。",
+                "规则（与出题流水线 CalculatorAgent 对齐）：\n"
+                "1) **need_calculation 仅由本题是否需要「算术/公式/分步数值推导」决定**，不要靠题干关键词猜测。\n"
+                "   - true：必须用可执行数值链（如税费、成数、月供、指数、多步代入）才能对齐选项中的数。\n"
+                "   - false：纯法条或规则适用、**仅在题干已给数字之间取最小/最大/孰短孰长**、无新运算链条、"
+                "或答案不依赖再跑一遍 Python 才能确定时；此时 python_code 必须为空字符串。\n"
+                "2) 若 need_calculation=true，python_code 必须完整可运行，不依赖外部函数，最后将最终结果赋值给 result，并处理除零等边界。\n"
+                "3) 「范例是否含计算题」只作风格参考，**不得**仅因范例含数字或「计算」字样就强行 need_calculation=true。\n"
+                "4) 若 need_calculation=false，python_code 置空字符串。",
             ),
         ]
     )
@@ -823,6 +826,7 @@ def layer1_blind_solver_agent(
             "extracted_params": calc_context.get("extracted_params", {}),
             "result": calc_context.get("result"),
             "code_status": calc_context.get("code_status"),
+            "need_calculation": calc_context.get("need_calculation"),
         },
         "execution_result": calc_context.get("result"),
         "generated_code": calc_context.get("generated_code", ""),

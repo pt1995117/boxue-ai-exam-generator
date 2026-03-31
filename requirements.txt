@@ -1,4 +1,8 @@
 pandas
+Flask
+gunicorn
+python-docx
+xlrd
 openpyxl
 pydantic
 openai

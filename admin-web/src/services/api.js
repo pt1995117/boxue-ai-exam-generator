@@ -225,6 +225,26 @@ export const getGenerateTask = (tenantId, taskId) =>
 export const cancelGenerateTask = (tenantId, taskId) =>
   client.post(`/${tenantId}/generate/tasks/${encodeURIComponent(taskId)}/cancel`).then((r) => r.data);
 
+/** Resume an incomplete generate task in-place (same task_id). */
+export const resumeGenerateTask = (tenantId, taskId, payload = {}) =>
+  client.post(`/${tenantId}/generate/tasks/${encodeURIComponent(taskId)}/resume`, payload).then((r) => r.data);
+
+/** Toggle task auto-bank policy and sync current passed questions. */
+export const updateGenerateTaskBankPolicy = (tenantId, taskId, payload) =>
+  client.post(`/${tenantId}/generate/tasks/${encodeURIComponent(taskId)}/bank-policy`, payload).then((r) => r.data);
+
+export const listGenerateTemplates = (tenantId) =>
+  client.get(`/${tenantId}/generate/templates`).then((r) => r.data);
+
+export const createGenerateTemplate = (tenantId, payload) =>
+  client.post(`/${tenantId}/generate/templates`, payload).then((r) => r.data);
+
+export const updateGenerateTemplate = (tenantId, templateId, payload) =>
+  client.put(`/${tenantId}/generate/templates/${encodeURIComponent(templateId)}`, payload).then((r) => r.data);
+
+export const deleteGenerateTemplate = (tenantId, templateId) =>
+  client.delete(`/${tenantId}/generate/templates/${encodeURIComponent(templateId)}`).then((r) => r.data);
+
 const parseSseChunk = (raw) => {
   const lines = String(raw || '').split('\n');
   let eventName = 'message';

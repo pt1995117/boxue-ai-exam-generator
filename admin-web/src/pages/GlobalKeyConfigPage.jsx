@@ -14,6 +14,13 @@ CALC_MODEL=
 
 # 离线 Judge 专用模型（不填则默认 gpt-5.2）
 AIT_JUDGE_MODEL=
+
+# 可选：版本发布一键 Git 提交凭证（HTTPS 仓库时必填；SSH 可不填）
+GIT_REPO_URL=git@git.lianjia.com:confucius/huaqiao_vibe/boxue-ai-exam-generator.git
+GIT_USERNAME=
+GIT_TOKEN=
+GIT_USER_EMAIL=
+GIT_USER_NAME=
 `;
 
 export default function GlobalKeyConfigPage() {
@@ -86,6 +93,8 @@ export default function GlobalKeyConfigPage() {
             <Tag color={meta?.has_openai_api_key ? 'green' : 'default'}>OPENAI_API_KEY {meta?.has_openai_api_key ? '已配置' : '未配置'}</Tag>
             <Tag color={meta?.has_deepseek_api_key ? 'green' : 'default'}>DEEPSEEK_API_KEY {meta?.has_deepseek_api_key ? '已配置' : '未配置'}</Tag>
             <Tag color={meta?.has_critic_api_key ? 'green' : 'default'}>CRITIC_API_KEY {meta?.has_critic_api_key ? '已配置' : '未配置'}</Tag>
+            <Tag color={meta?.has_git_username ? 'green' : 'default'}>GIT_USERNAME {meta?.has_git_username ? '已配置' : '未配置'}</Tag>
+            <Tag color={meta?.has_git_token ? 'green' : 'orange'}>GIT_TOKEN {meta?.has_git_token ? '已配置' : '未配置'}</Tag>
           </Space>
           <Form form={form} layout="vertical" onFinish={onSave}>
             <Form.Item
@@ -109,4 +118,3 @@ export default function GlobalKeyConfigPage() {
     </Space>
   );
 }
-

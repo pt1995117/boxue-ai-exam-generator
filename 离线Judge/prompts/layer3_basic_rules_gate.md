@@ -13,6 +13,7 @@
    - 若名字长度不理想（明显非2~3字通俗名），记为 warning（issue_key: name_length_nonideal）
    - 若出现疑似生僻字命名风险，记为 warning（issue_key: rare_character_name_risk）
    - 若出现负面违法/事故场景，优先使用“某”指代（但如果需要考核此人是否有负面违法/事故场景的，人名不能出现“某”）-> 不符合时 issue_key=name_rule_still_invalid（error）
+   - 一般业务情景避免通篇「某经纪人/某业主/某人/某客户」作主语；需要区分当事人时宜用「角色+通俗两字名」（如经纪人王强、客户李娜），否则可直接写「客户」「经纪人」等而不堆砌「某+身份」；法规/合同/教材条文**原文引用**除外。若滥用导致当事人难区分或题干明显生硬，记为 warning（issue_key: redundancy_semantic_warning，在 evidence 中给出改写建议）
    - 若题目不需要姓名也可成立，但仍硬命名，记为 warning（issue_key: name_unnecessary_but_used）
    - 姓名核心硬违规（恶搞名/伦理冲突/称谓式等）记为 error（issue_key: name_rule_still_invalid）
    - 上述姓名判定证据统一写入对应 atomic_check.evidence；兼容证据字段写入 name_rule_evidence/name_length_evidence/rare_character_name_evidence/name_unnecessary_evidence。
@@ -32,6 +33,7 @@
    - 检查题干是否存在主谓搭配不当、指代对象错误、语义指向错位等问题（如“住宅处于施工阶段”应为“项目处于施工阶段”）。
    - 若该表述会影响知识点严谨理解，记为 error，并给出证据与建议表达。
    - 若题目意图是考察“识别不严谨表达”，则题干中的待辨识错误表述可作为命题素材，不应据此判错。
+   - 业务情景叙述中指买方/需求方却使用「某购房人」「某客户」等含糊主语，记为 error（建议改为「客户」或「客户+通俗两字名」等）；法规/合同/教材条文**原文引用**除外。
 【严格禁止输出的内容】
 - 禁止输出括号/句号/标点/单双引号/A-B-C-D标签/答案字段映射等“格式”问题；
 - 若你发现上述问题，也必须忽略，不得写入 errors/warnings。

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Card, Form, Input, message, Select, Space, Table, Tag, Tooltip, Typography } from 'antd';
 import { Link } from 'react-router-dom';
 import { createJudgeTask, getQaRunDetail, listJudgeTasks, listQaRuns } from '../services/api';
@@ -20,6 +20,21 @@ function getJudgeBaselineScore(offlineJudge) {
   return null;
 }
 
+function getTemplateJudgeAggregateKey(run, allRuns = []) {
+  const rid = String(run?.run_id || '').trim();
+  const taskName = String(run?.task_name || '').trim();
+  if (!rid) return '';
+  const parentTaskName = taskName.includes('#') ? taskName.split('#', 1)[0].trim() : taskName;
+  const hasTemplateChildren = !!(parentTaskName && (Array.isArray(allRuns) ? allRuns : []).some((item) => {
+    const itemTaskName = String(item?.task_name || '').trim();
+    return itemTaskName.startsWith(`${parentTaskName}#`);
+  }));
+  if (/#(?:p\d+|repair\d+|resume[\w_]+)$/i.test(taskName) || hasTemplateChildren) {
+    return `task:${parentTaskName}`;
+  }
+  return `run:${rid}`;
+}
+
 export default function JudgeTaskPage() {
   const [tenantId, setTenantId] = useState(getGlobalTenantId());
   const [pageMode, setPageMode] = useState('tasks'); // tasks | create
@@ -35,6 +50,8 @@ export default function JudgeTaskPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [form] = Form.useForm();
   const selectedRunIds = Form.useWatch('run_ids', form) || [];
+  const tasksLoadingRef = useRef(false);
+  const allLoadingRef = useRef(false);
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
 
@@ -47,19 +64,28 @@ export default function JudgeTaskPage() {
 
   const loadTasks = async (tid) => {
     if (!tid) return;
-    const res = await listJudgeTasks(tid, { limit: 200 });
-    const items = Array.isArray(res?.items) ? res.items : [];
-    setTaskItems(items);
+    if (tasksLoadingRef.current) return;
+    tasksLoadingRef.current = true;
+    try {
+      const res = await listJudgeTasks(tid, { limit: 200 });
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setTaskItems(items);
+    } finally {
+      tasksLoadingRef.current = false;
+    }
   };
 
   const loadAll = async (tid) => {
     if (!tid) return;
+    if (allLoadingRef.current) return;
+    allLoadingRef.current = true;
     setLoading(true);
     try {
       await Promise.all([loadRuns(tid), loadTasks(tid)]);
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '加载 Judge 任务失败');
     } finally {
+      allLoadingRef.current = false;
       setLoading(false);
     }
   };
@@ -87,6 +113,23 @@ export default function JudgeTaskPage() {
     }
     return m;
   }, [runs]);
+
+  const getCanonicalRunIds = (runIds) => {
+    const buckets = new Map();
+    (Array.isArray(runIds) ? runIds : []).forEach((ridRaw) => {
+      const rid = String(ridRaw || '').trim();
+      if (!rid) return;
+      const run = runMap.get(rid) || {};
+      const aggregateKey = getTemplateJudgeAggregateKey(run, runs) || `run:${rid}`;
+      const prev = buckets.get(aggregateKey);
+      const savedCount = Number(run?.saved_count || 0);
+      const prevSavedCount = Number(prev?.saved_count || 0);
+      if (!prev || savedCount > prevSavedCount) {
+        buckets.set(aggregateKey, { rid, saved_count: savedCount });
+      }
+    });
+    return Array.from(buckets.values()).map((item) => item.rid);
+  };
 
   const filteredTasks = useMemo(() => {
     return (taskItems || []).filter((t) => {
@@ -156,14 +199,15 @@ export default function JudgeTaskPage() {
       const runIds = Array.isArray(selectedRunIds)
         ? selectedRunIds.map((x) => String(x || '').trim()).filter(Boolean)
         : [];
-      if (!tenantId || !runIds.length) {
+      const canonicalRunIds = getCanonicalRunIds(runIds);
+      if (!tenantId || !canonicalRunIds.length) {
         setSelectedQuestions([]);
         return;
       }
       setPreviewLoading(true);
       try {
         const details = await Promise.all(
-          runIds.map(async (rid) => {
+          canonicalRunIds.map(async (rid) => {
             const res = await getQaRunDetail(tenantId, rid);
             return { runId: rid, detail: res || {} };
           })
@@ -204,7 +248,7 @@ export default function JudgeTaskPage() {
             rows.push({
               key: `${runId}::${String(q?.question_id || idx + 1)}`,
               run_id: runId,
-              run_seq: runIds.indexOf(runId) + 1,
+              run_seq: canonicalRunIds.indexOf(runId) + 1,
               q_seq: idx + 1,
               question_id: String(q?.question_id || ''),
               stem,
@@ -231,7 +275,7 @@ export default function JudgeTaskPage() {
     return () => {
       cancelled = true;
     };
-  }, [pageMode, selectedRunIds, tenantId]);
+  }, [pageMode, selectedRunIds, tenantId, runMap]);
 
   const selectedQuestionColumns = [
     { title: 'run序', dataIndex: 'run_seq', width: 70 },
@@ -318,7 +362,13 @@ export default function JudgeTaskPage() {
   const onSubmit = async (values) => {
     if (!tenantId) return;
     const name = String(values.task_name || '').trim();
-    const runIds = Array.isArray(values.run_ids) ? values.run_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    const runIdsRaw = Array.isArray(values.run_ids) ? values.run_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+    const canonicalRunIds = getCanonicalRunIds(runIdsRaw);
+    const previewRunIds = Array.from(new Set((selectedQuestions || []).map((row) => String(row?.run_id || '').trim()).filter(Boolean)));
+    const runIds = previewRunIds.length
+      ? canonicalRunIds.filter((rid) => previewRunIds.includes(String(rid || '').trim()))
+      : canonicalRunIds;
+    const skippedRunIds = canonicalRunIds.filter((rid) => !runIds.includes(rid));
     if (!name) {
       message.warning('请输入任务名称');
       return;
@@ -351,6 +401,9 @@ export default function JudgeTaskPage() {
       } else {
         message.warning(`已创建 ${ok} 个，失败 ${fail} 个`);
         if (failMsgs.length) message.error(failMsgs.slice(0, 3).join(' ; '));
+      }
+      if (skippedRunIds.length) {
+        message.warning(`已跳过 ${skippedRunIds.length} 个无可预览题目的 run`);
       }
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '创建 Judge 任务失败');
@@ -420,7 +473,10 @@ export default function JudgeTaskPage() {
               />
             </Form.Item>
             {Array.isArray(selectedRunIds) && selectedRunIds.length > 0 && (
-              <Card size="small" title={`已选题目预览（共 ${selectedQuestions.length} 题）`} style={{ marginBottom: 12 }}>
+              <Card size="small" title={`已选题目预览（去重后共 ${selectedQuestions.length} 题）`} style={{ marginBottom: 12 }}>
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                  模板任务的 `#p / #repair / #resume` 子 run 会自动按父任务合并，避免同一批题被重复 Judge。
+                </Typography.Paragraph>
                 <Table
                   rowKey={(r) => r.key}
                   columns={selectedQuestionColumns}

@@ -35,6 +35,13 @@ export default function VersionManagementPage() {
   const [releaseNotes, setReleaseNotes] = useState('');
   const [runIds, setRunIds] = useState([]);
   const [triggerGitCommit, setTriggerGitCommit] = useState(false);
+  const [gitRepoUrl, setGitRepoUrl] = useState('git@git.lianjia.com:confucius/huaqiao_vibe/boxue-ai-exam-generator.git');
+  const [gitUserEmail, setGitUserEmail] = useState('panting047@ke.com');
+  const [gitUserName, setGitUserName] = useState('panting047');
+  const [gitUsername, setGitUsername] = useState('');
+  const [gitToken, setGitToken] = useState('');
+  const [gitCommitMessage, setGitCommitMessage] = useState('[紧急]fix');
+  const [gitPushBranch, setGitPushBranch] = useState('main');
   const [publishing, setPublishing] = useState(false);
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
@@ -101,10 +108,19 @@ export default function VersionManagementPage() {
         release_notes: notes,
         run_ids: selectedRunIds,
         trigger_git_commit: triggerGitCommit,
+        git_repo_url: gitRepoUrl,
+        git_user_email: gitUserEmail,
+        git_user_name: gitUserName,
+        git_username: gitUsername,
+        git_token: gitToken,
+        git_commit_message: gitCommitMessage,
+        git_push_branch: gitPushBranch,
       });
       message.success(`版本 ${v} 已发布`);
       if (res?.git?.ok === false && res?.git?.error) {
         message.warning(`Git 提交未执行: ${res.git.message || res.git.error}`);
+      } else if (res?.git?.ok === true && res?.git?.warning) {
+        message.warning(`Git 提交提示: ${res.git.warning}`);
       }
       setVersion('');
       setReleaseNotes('');
@@ -154,12 +170,62 @@ export default function VersionManagementPage() {
           />
           <Space>
             <Checkbox checked={triggerGitCommit} onChange={(e) => setTriggerGitCommit(e.target.checked)}>
-              同时提交 Git（将发布记录提交到当前仓库）
+              同时提交 Git（真实 push 到目标仓库）
             </Checkbox>
             <Button type="primary" loading={publishing} onClick={onPublish} disabled={!version || runIds.length === 0}>
               发布版本
             </Button>
           </Space>
+          {triggerGitCommit && (
+            <Card size="small" title="Git 提交配置" style={{ maxWidth: 900 }}>
+              <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Input
+                  value={gitRepoUrl}
+                  onChange={(e) => setGitRepoUrl(e.target.value)}
+                  placeholder="目标仓库 URL"
+                />
+                <Space wrap style={{ width: '100%' }}>
+                  <Input
+                    style={{ width: 260 }}
+                    value={gitUserEmail}
+                    onChange={(e) => setGitUserEmail(e.target.value)}
+                    placeholder="git user.email"
+                  />
+                  <Input
+                    style={{ width: 200 }}
+                    value={gitUserName}
+                    onChange={(e) => setGitUserName(e.target.value)}
+                    placeholder="git user.name"
+                  />
+                  <Input
+                    style={{ width: 160 }}
+                    value={gitPushBranch}
+                    onChange={(e) => setGitPushBranch(e.target.value)}
+                    placeholder="推送分支"
+                  />
+                </Space>
+                <Space wrap style={{ width: '100%' }}>
+                  <Input
+                    style={{ width: 220 }}
+                    value={gitUsername}
+                    onChange={(e) => setGitUsername(e.target.value)}
+                    placeholder="Git 用户名（可选）"
+                  />
+                  <Input.Password
+                    style={{ width: 340 }}
+                    value={gitToken}
+                    onChange={(e) => setGitToken(e.target.value)}
+                    placeholder="Git Token/密码（可选）"
+                  />
+                </Space>
+                <Input
+                  value={gitCommitMessage}
+                  onChange={(e) => setGitCommitMessage(e.target.value)}
+                  placeholder='commit message（如 "[紧急]fix"）'
+                />
+              </Space>
+            </Card>
+          )}
         </Space>
       </Card>
 
@@ -189,6 +255,19 @@ export default function VersionManagementPage() {
             },
             { title: '发布时间', dataIndex: 'published_at', width: 220 },
             { title: '发布人', dataIndex: 'published_by', width: 120 },
+            {
+              title: 'Git结果',
+              dataIndex: 'git',
+              width: 260,
+              render: (_, r) => {
+                const g = r?.git || {};
+                const ok = g?.ok;
+                if (ok === true && g?.warning) return <Text type="warning">成功（有提示）：{g?.warning}</Text>;
+                if (ok === true) return <Text type="success">成功：{g?.commit_message || '-'}</Text>;
+                if (ok === false) return <Text type="danger">失败：{g?.error || g?.message || '-'}</Text>;
+                return '未执行';
+              },
+            },
           ]}
         />
         {lastRelease && (

@@ -122,12 +122,27 @@ function getSourceSliceContent(question) {
   return '';
 }
 
+function getAllSliceContent(question) {
+  const q = question || {};
+  const candidates = [
+    q['全部切片原文'],
+    q.all_slice_text,
+    q['关联切片原文'],
+  ];
+  for (const v of candidates) {
+    const text = String(v || '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
 export default function QuestionDetailView({ question }) {
   const q = question || {};
   const optionRows = getOptionRows(q);
   const motherQuestionText = getMotherQuestionText(q);
   const relatedSlicePaths = getRelatedSlicePaths(q);
   const sourceSliceContent = getSourceSliceContent(q);
+  const allSliceContent = getAllSliceContent(q);
   const textWrapStyle = { whiteSpace: 'pre-wrap', wordBreak: 'break-all' };
   return (
     <Space direction="vertical" style={{ width: '100%' }} size={10}>
@@ -145,6 +160,11 @@ export default function QuestionDetailView({ question }) {
         <Descriptions.Item label="来源切片原文" span={3}>
           <Typography.Text style={textWrapStyle}>
             {sourceSliceContent || '（空）'}
+          </Typography.Text>
+        </Descriptions.Item>
+        <Descriptions.Item label="全部切片原文" span={3}>
+          <Typography.Text style={textWrapStyle}>
+            {allSliceContent || '（空）'}
           </Typography.Text>
         </Descriptions.Item>
         <Descriptions.Item label="关联母题" span={3}>

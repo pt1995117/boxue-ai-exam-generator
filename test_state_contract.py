@@ -56,6 +56,7 @@ def test_router_reroute_preserves_prev():
     assert "prev_final_json" in source
     assert "prev_critic_feedback" in source
     assert "prev_critic_result" in source
+    assert "prev_critic_required_fixes" in source
     print("  PASS: Router reroute preserves prev_final_json and prev_critic_*")
 
 @pytest.mark.parametrize(
@@ -82,6 +83,19 @@ def test_router_reroute_preserves_prev():
             },
             "fix",
         ),
+        (
+            {
+                "critic_result": {
+                    "passed": False,
+                    "issue_type": "minor",
+                    "fix_strategy": "fix_explanation",
+                    "fail_types": ["explanation_fail"],
+                },
+                "retry_count": 1,
+                "final_json": {"_was_fixed": True},
+            },
+            "fix",
+        ),
         ({"critic_result": {"passed": False, "issue_type": "major"}}, "fix"),
         ({"critic_result": {"passed": False, "issue_type": "minor"}, "retry_count": 3}, "self_heal"),
     ],
@@ -91,6 +105,7 @@ def test_router_reroute_preserves_prev():
         "first_major_failure_without_fix_marker_still_goes_to_fixer",
         "major_failure_after_fix_reroutes",
         "judge_reverse_solve_fail_stays_on_fixer",
+        "fixed_explanation_only_issue_stays_on_fixer",
         "first_major_failure_defaults_to_fix",
         "retry_exhausted_self_heals",
     ],
@@ -155,6 +170,19 @@ def run_all():
                 },
                 "retry_count": 1,
                 "current_question_type": "判断题",
+                "final_json": {"_was_fixed": True},
+            },
+            "fix",
+        ),
+        (
+            {
+                "critic_result": {
+                    "passed": False,
+                    "issue_type": "minor",
+                    "fix_strategy": "fix_explanation",
+                    "fail_types": ["explanation_fail"],
+                },
+                "retry_count": 1,
                 "final_json": {"_was_fixed": True},
             },
             "fix",

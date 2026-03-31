@@ -577,7 +577,7 @@ export default function SliceReviewPage() {
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
     const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
-    return `${name}${m?.status === 'effective' ? '（当前生效）' : ''}`;
+    return `${name}${m?.status === 'effective' ? '（生效）' : ''}`;
   };
 
   useEffect(() => subscribeGlobalTenant((tid) => setTenantId(tid)), []);
@@ -1333,6 +1333,10 @@ export default function SliceReviewPage() {
                           <Space style={{ minWidth: 0 }} size={8}>
                             {canAddOrReorder && <MenuOutlined style={{ color: '#8c8c8c' }} title="拖拽排序" />}
                             <Tag color={statusColor[row.review_status] || 'default'}>{statusLabel[row.review_status] || row.review_status}</Tag>
+                            {row.generation_blocked && <Tag color="red">已禁用出题</Tag>}
+                            {!row.generation_blocked && Number(row.generation_failure_count || 0) > 0 && (
+                              <Tag color="orange">{`失败 ${Number(row.generation_failure_count || 0)} 次`}</Tag>
+                            )}
                             <Typography.Text strong style={{ minWidth: 0 }}>
                               {`ID: ${row.slice_id} | ${row.path || '（空路径）'}`}
                             </Typography.Text>
@@ -1387,6 +1391,22 @@ export default function SliceReviewPage() {
                             )}
                           </Space>
                         </div>
+                        {row.generation_blocked && (
+                          <Alert
+                            type="error"
+                            showIcon
+                            message="该切片已被禁止继续出题"
+                            description={row.generation_block_reason || '该切片累计非白名单失败超过 10 次，需先修改切片后才能恢复出题。'}
+                          />
+                        )}
+                        {!row.generation_blocked && Number(row.generation_failure_count || 0) > 0 && (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message={`该切片累计失败 ${Number(row.generation_failure_count || 0)} 次`}
+                            description={row.generation_last_error_content || '最近一次失败未返回具体错误内容。'}
+                          />
+                        )}
                         <Typography.Text>掌握程度：{row.mastery || '（空）'}</Typography.Text>
                         {editingSliceId === sid ? (
                           <Input.TextArea

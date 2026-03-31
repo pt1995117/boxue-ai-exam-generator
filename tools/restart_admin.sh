@@ -4,11 +4,25 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_PORT=8600
 FRONTEND_PORT=8522
-PYTHON_BIN="$(whence -p python3 || true)"
+PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 NPM_BIN="$(whence -p npm || true)"
 
+resolve_python_bin() {
+  local candidate=""
+  for candidate in "${ROOT_DIR}/.venv/bin/python" "$(whence -p python3 || true)" "/usr/bin/python3"; do
+    [[ -n "${candidate}" && -x "${candidate}" ]] || continue
+    if "${candidate}" -c "from flask import Flask" >/dev/null 2>&1; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON_BIN="$(resolve_python_bin || true)"
 if [[ -z "${PYTHON_BIN}" ]]; then
-  PYTHON_BIN="/usr/bin/python3"
+  echo "ERROR: No usable Python interpreter with Flask installed was found"
+  exit 1
 fi
 if [[ -z "${NPM_BIN}" ]]; then
   NPM_BIN="/usr/bin/npm"

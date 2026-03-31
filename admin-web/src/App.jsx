@@ -7,6 +7,7 @@ import SliceReviewPage from './pages/SliceReviewPage';
 import MappingReviewPage from './pages/MappingReviewPage';
 import AIGeneratePage from './pages/AIGeneratePage';
 import AIGenerateTaskDetailPage from './pages/AIGenerateTaskDetailPage';
+import GenerateTemplatePage from './pages/GenerateTemplatePage';
 import QuestionBankPage from './pages/QuestionBankPage';
 import CityAdminPage from './pages/CityAdminPage';
 import GlobalKeyConfigPage from './pages/GlobalKeyConfigPage';
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="slice-review" element={<SliceReviewPage />} />
         <Route path="mapping-review" element={<MappingReviewPage />} />
         <Route path="ai-generate" element={<AIGeneratePage />} />
+        <Route path="generate-templates" element={<GenerateTemplatePage />} />
         <Route path="ai-generate/tasks/:taskId" element={<AIGenerateTaskDetailPage />} />
         <Route path="qa-evaluation" element={<QualityEvaluationPage />} />
         <Route path="judge-tasks" element={<JudgeTaskPage />} />

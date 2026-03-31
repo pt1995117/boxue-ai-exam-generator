@@ -130,13 +130,102 @@ def find_images_in_paragraph(paragraph, rels) -> List[Dict]:
 
 # --- Structure Extraction ---
 
-def is_heading(paragraph) -> Tuple[bool, int]:
-    """Determine if paragraph is a heading and return level."""
-    style_name = paragraph.style.name.lower() if paragraph.style else ""
-    if 'heading' in style_name or '标题' in style_name:
-        match = re.search(r'heading\s*(\d+)|标题\s*(\d+)', style_name, re.IGNORECASE)
+def _heading_level_from_style(style) -> int:
+    """Infer heading level from style inheritance chain."""
+    seen = set()
+    current = style
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        name = (getattr(current, "name", "") or "").strip()
+        match = re.search(r"heading\s*(\d+)|标题\s*(\d+)", name, re.IGNORECASE)
         if match:
-            return True, int(match.group(1) or match.group(2))
+            return int(match.group(1) or match.group(2))
+        current = getattr(current, "base_style", None)
+    return 0
+
+
+def _style_font_size_pt(style) -> float | None:
+    seen = set()
+    current = style
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        try:
+            size = current.font.size
+        except Exception:
+            size = None
+        if size is not None:
+            try:
+                return float(size.pt)
+            except Exception:
+                pass
+        current = getattr(current, "base_style", None)
+    return None
+
+
+def _paragraph_font_size_pt(paragraph) -> float | None:
+    sizes: list[float] = []
+    for run in getattr(paragraph, "runs", []) or []:
+        try:
+            size = run.font.size
+        except Exception:
+            size = None
+        if size is not None:
+            try:
+                sizes.append(float(size.pt))
+            except Exception:
+                pass
+    if sizes:
+        return max(sizes)
+    return _style_font_size_pt(getattr(paragraph, "style", None))
+
+
+def _body_font_baseline_pt(doc) -> float | None:
+    samples: list[float] = []
+    normal_style = None
+    try:
+        normal_style = doc.styles["Normal"]
+    except Exception:
+        normal_style = None
+    normal_size = _style_font_size_pt(normal_style)
+    if normal_size is not None:
+        samples.append(normal_size)
+
+    for para in getattr(doc, "paragraphs", []) or []:
+        text = (getattr(para, "text", "") or "").strip()
+        if not text:
+            continue
+        if _heading_level_from_style(getattr(para, "style", None)) > 0:
+            continue
+        size = _paragraph_font_size_pt(para)
+        if size is not None:
+            samples.append(size)
+        if len(samples) >= 200:
+            break
+    if not samples:
+        return None
+    samples.sort()
+    return samples[len(samples) // 2]
+
+
+def _is_visual_heading_candidate(paragraph, text: str, body_font_pt: float | None) -> bool:
+    if not text or body_font_pt is None:
+        return False
+    if len(text) > 40:
+        return False
+    if text.endswith(("；", "。", "，", ";", ".", ",")):
+        return False
+    para_size = _paragraph_font_size_pt(paragraph)
+    if para_size is None:
+        return False
+    # 通用兜底：字号明显大于正文，视为可单独切片的标题候选。
+    return para_size >= body_font_pt + 3.0 or para_size >= body_font_pt * 1.3
+
+
+def is_heading(paragraph, body_font_pt: float | None = None) -> Tuple[bool, int]:
+    """Determine if paragraph is a heading and return level."""
+    style_level = _heading_level_from_style(paragraph.style if paragraph else None)
+    if style_level > 0:
+        return True, style_level
     
     # if hasattr(paragraph, 'paragraph_format') and paragraph.paragraph_format.level is not None:
     #      return True, paragraph.paragraph_format.level
@@ -169,8 +258,35 @@ def is_heading(paragraph) -> Tuple[bool, int]:
     if re.match(r'^[一二三四五六七八九十]+[、.]', text): return True, 4
     if re.match(r'^（[一二三四五六七八九十]+）', text): return True, 5
     if re.match(r'^（\d+）|^\d+[、.]', text): return True, 6
+    if _is_visual_heading_candidate(paragraph, text, body_font_pt):
+        return True, 4
     
     return False, 0
+
+
+def _normalize_toc_heading_text(text: str) -> str:
+    s = (text or "").replace("\xa0", " ").strip()
+    s = re.sub(r"\t+\s*\d+\s*$", "", s)
+    s = re.sub(r"\s+\d+\s*$", "", s)
+    return s.strip()
+
+
+def _toc_alias_map(doc) -> Dict[int, Dict[str, str]]:
+    alias_map: Dict[int, Dict[str, str]] = {1: {}, 2: {}, 3: {}}
+    for para in getattr(doc, "paragraphs", []) or []:
+        text = _normalize_toc_heading_text(getattr(para, "text", "") or "")
+        if not text:
+            continue
+        style_name = (getattr(getattr(para, "style", None), "name", "") or "").strip().lower()
+        m = re.fullmatch(r"toc\s*([123])", style_name)
+        if not m:
+            continue
+        level = int(m.group(1))
+        alias_map[level][text] = text
+        prefix_match = re.match(r"^(第[一二三四五六七八九十\d]+[篇章节])\s*(.+)$", text)
+        if prefix_match:
+            alias_map[level][prefix_match.group(2).strip()] = text
+    return alias_map
 
 def process_document(
     docx_path: str,
@@ -187,6 +303,8 @@ def process_document(
 ):
     print(f"Reading {docx_path}...")
     doc = Document(docx_path)
+    toc_alias_map = _toc_alias_map(doc)
+    body_font_pt = _body_font_baseline_pt(doc)
     disable_image_ocr = str(os.getenv("SLICE_DISABLE_IMAGE_OCR", "")).strip().lower() in {
         "1",
         "true",
@@ -495,13 +613,14 @@ def process_document(
                         processed_images.append(img_obj)
             
             # Heading Login
-            is_head, level = is_heading(para)
+            is_head, level = is_heading(para, body_font_pt=body_font_pt)
             if is_head and level > 0:
                 # Extract mastery
                 m = re.search(r'[（(](掌握|熟悉|了解)[)）]', text)
                 if m:
                     last_mastery = m.group(1)
                     text = re.sub(r'[（(](掌握|熟悉|了解)[)）]', '', text).strip()
+                text = toc_alias_map.get(level, {}).get(text, text)
                 text = _clean_path_seg(text)
                 if not text:
                     # Skip empty headings to prevent blank path levels.

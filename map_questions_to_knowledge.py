@@ -10,6 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import re
 import os
 from typing import Tuple
+from reference_loader import load_reference_questions
 
 # Paths
 KB_PATH = "bot_knowledge_base.jsonl"
@@ -186,7 +187,7 @@ def load_data():
     print(f"Loaded {len(kb_data)} KB entries")
     
     print("Loading historical questions...")
-    history_df = pd.read_excel(HISTORY_PATH)
+    history_df = load_reference_questions(HISTORY_PATH)
     print(f"Loaded {len(history_df)} historical questions")
     
     return kb_data, history_df

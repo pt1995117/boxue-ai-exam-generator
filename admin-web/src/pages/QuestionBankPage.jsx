@@ -15,11 +15,11 @@ export default function QuestionBankPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [viewQuestionOpen, setViewQuestionOpen] = useState(false);
   const [viewQuestionRecord, setViewQuestionRecord] = useState(null);
-  const [pagination, setPagination] = useState({ current: 1, pageSize: 20, total: 0 });
+  const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
     const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
-    return `${name}${m?.status === 'effective' ? '（当前生效）' : ''}`;
+    return `${name}${m?.status === 'effective' ? '（生效）' : ''}`;
   };
 
   const loadData = async (page = pagination.current, pageSize = pagination.pageSize) => {

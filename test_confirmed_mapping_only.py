@@ -2,13 +2,12 @@ import json
 
 import pandas as pd
 
-from exam_factory import KnowledgeRetriever, set_active_tenant
+from exam_factory import KnowledgeRetriever
 from tenants_config import tenant_mapping_review_path
 
 
 def test_retriever_uses_confirmed_mapping_only(tmp_path):
     tenant_id = "ut_confirmed"
-    set_active_tenant(tenant_id)
 
     kb_path = tmp_path / "kb.jsonl"
     mapping_path = tmp_path / "knowledge_question_mapping.json"
@@ -51,7 +50,7 @@ def test_retriever_uses_confirmed_mapping_only(tmp_path):
     )
     df.to_excel(history_path, index=False)
 
-    retriever = KnowledgeRetriever(str(kb_path), str(history_path), str(mapping_path))
+    retriever = KnowledgeRetriever(str(kb_path), str(history_path), str(mapping_path), tenant_id=tenant_id)
     examples = retriever.get_examples_by_knowledge_point(kb_entry, k=5)
 
     assert len(examples) == 1
