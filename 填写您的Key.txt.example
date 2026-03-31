@@ -2,28 +2,11 @@ AIT_API_KEY=
 AIT_BASE_URL=https://openapi-ait.ke.com
 AIT_MODEL=
 
-# DeepSeek 直连（保留）
-DEEPSEEK_API_KEY=
-DEEPSEEK_BASE_URL=https://openapi-ait.ke.com
-DEEPSEEK_MODEL=deepseek-reasoner
-
-# Ark 链路（GPT / Doubao）
-# 推荐填写 ARK_API_KEY；AK/SK 仅兜底
-ARK_API_KEY=
-VOLC_ACCESS_KEY_ID=
-VOLC_SECRET_ACCESS_KEY=
-ARK_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-ARK_PROJECT_NAME=
-
-CRITIC_PROVIDER=ait
-CRITIC_MODEL=doubao-seed-1.8
-
-CODE_GEN_PROVIDER=ait
-CODE_GEN_MODEL=doubao-seed-1.8
-
-IMAGE_PROVIDER=ait
-IMAGE_MODEL=doubao-seed-1.8
+# 可选：不同节点使用不同模型（不填则默认使用 AIT_MODEL）
 ROUTER_MODEL=
 SPECIALIST_MODEL=
 WRITER_MODEL=
 CALC_MODEL=
+
+# 离线 Judge 专用模型（不填则默认 gpt-5.2）
+AIT_JUDGE_MODEL=
