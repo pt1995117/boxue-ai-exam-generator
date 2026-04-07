@@ -179,6 +179,12 @@ export default function VersionManagementPage() {
           {triggerGitCommit && (
             <Card size="small" title="Git 提交配置" style={{ maxWidth: 900 }}>
               <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                <Text type="secondary">
+                  提交步骤：1）目标仓库使用 git@git.lianjia.com:confucius/huaqiao_vibe/boxue-ai-exam-generator.git；
+                  2）git user.email 使用 panting047@ke.com；
+                  3）commit message 使用 [紧急]fix；
+                  4）push 前请确认目标分支符合 lianjia/KeOnes 提交规范。
+                </Text>
                 <Input
                   value={gitRepoUrl}
                   onChange={(e) => setGitRepoUrl(e.target.value)}
