@@ -1,1 +1,0 @@
-{"timestamp": "2026-02-25T01:02:59.141552+00:00", "tenant_id": "ut_force_del", "actor": "admin", "action": "material.delete", "resource_type": "material", "resource_id": "v20990101_000001", "before": {}, "after": {"force": true, "deleted_files": 1, "deleted_bank_questions": 0}}

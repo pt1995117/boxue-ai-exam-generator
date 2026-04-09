@@ -28,6 +28,7 @@ from audit_log import write_audit_log
 from governance import circuit_breaker, rate_limiter, select_release_channel
 from mapping_review_store import load_mapping_review
 from observability import init_observability, start_span
+from runtime_paths import ensure_parent, resolve_primary_key_file, runtime_key_file
 from slice_registry import (
     archive_material_version,
     delete_material_version,
@@ -78,16 +79,17 @@ ALLOWED_ORIGINS = set(
     ).split(",")
     if x.strip()
 )
-PRIMARY_KEY_FILE = Path(__file__).resolve().parent / "填写您的Key.txt"
+PRIMARY_KEY_FILE = runtime_key_file()
 _KEY_PLACEHOLDER_MARKERS = ("请将您的Key", "在这里填写", "your_key", "YOUR_KEY")
 
 
 def _load_primary_key_config() -> dict[str, str]:
     cfg: dict[str, str] = {}
-    if not PRIMARY_KEY_FILE.exists():
+    key_file = resolve_primary_key_file()
+    if not key_file.exists():
         return cfg
     try:
-        for line in PRIMARY_KEY_FILE.read_text(encoding="utf-8").splitlines():
+        for line in key_file.read_text(encoding="utf-8").splitlines():
             raw = str(line).strip()
             if not raw or raw.startswith("#") or "=" not in raw:
                 continue
@@ -145,7 +147,7 @@ def _save_primary_key_config_text(content: str) -> dict[str, Any]:
     normalized = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
     if normalized and not normalized.endswith("\n"):
         normalized += "\n"
-    PRIMARY_KEY_FILE.write_text(normalized, encoding="utf-8")
+    ensure_parent(PRIMARY_KEY_FILE).write_text(normalized, encoding="utf-8")
     try:
         os.chmod(PRIMARY_KEY_FILE, 0o600)
     except Exception:

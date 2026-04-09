@@ -2,14 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME_DIR="${BOXUE_RUNTIME_DIR:-${ROOT_DIR}/.local/runtime}"
+CACHE_DIR="${BOXUE_CACHE_DIR:-${ROOT_DIR}/.local/cache}"
 BACKEND_PORT=8600
 FRONTEND_PORT=8522
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-NPM_BIN="$(whence -p npm || true)"
+NPM_BIN="$(command -v npm || true)"
 
 resolve_python_bin() {
   local candidate=""
-  for candidate in "${ROOT_DIR}/.venv/bin/python" "$(whence -p python3 || true)" "/usr/bin/python3"; do
+  for candidate in "${ROOT_DIR}/.venv/bin/python" "$(command -v python3 || true)" "/usr/bin/python3"; do
     [[ -n "${candidate}" && -x "${candidate}" ]] || continue
     if "${candidate}" -c "from flask import Flask" >/dev/null 2>&1; then
       echo "${candidate}"
@@ -32,13 +34,13 @@ BACKEND_LOG="/tmp/admin_api_8600.log"
 FRONTEND_LOG="/tmp/admin_web_8522.log"
 BACKEND_PID_FILE="/tmp/admin_api_8600.pid"
 FRONTEND_PID_FILE="/tmp/admin_web_8522.pid"
-KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
+KEY_FILE="${BOXUE_KEY_FILE:-${RUNTIME_DIR}/config/填写您的Key.txt}"
 
 ensure_key_file_exists() {
+  mkdir -p "$(dirname "${KEY_FILE}")" "${CACHE_DIR}"
   if [[ ! -f "${KEY_FILE}" ]]; then
-    echo "ERROR: 缺少 ${KEY_FILE}，部署要求必须提供该文件。"
-    echo "请先从 填写您的Key.txt.example 复制并填写有效 Key 后重试。"
-    exit 1
+    echo "WARN: 缺少 ${KEY_FILE}，将自动创建空文件。可在管理后台【全局Key配置】中填写。"
+    : > "${KEY_FILE}"
   fi
   chmod 600 "${KEY_FILE}" 2>/dev/null || true
 }
@@ -65,13 +67,15 @@ kill_port() {
 
 start_backend() {
   cd "${ROOT_DIR}"
-  nohup "${PYTHON_BIN}" admin_api.py >"${BACKEND_LOG}" 2>&1 &
+  BOXUE_RUNTIME_DIR="${RUNTIME_DIR}" BOXUE_CACHE_DIR="${CACHE_DIR}" BOXUE_KEY_FILE="${KEY_FILE}" \
+    nohup "${PYTHON_BIN}" admin_api.py >"${BACKEND_LOG}" 2>&1 &
   echo $! >"${BACKEND_PID_FILE}"
 }
 
 start_frontend() {
   cd "${ROOT_DIR}"
-  nohup "${NPM_BIN}" --prefix admin-web run dev -- --host 127.0.0.1 --port "${FRONTEND_PORT}" >"${FRONTEND_LOG}" 2>&1 &
+  BOXUE_RUNTIME_DIR="${RUNTIME_DIR}" BOXUE_CACHE_DIR="${CACHE_DIR}" BOXUE_KEY_FILE="${KEY_FILE}" \
+    nohup "${NPM_BIN}" --prefix admin-web run dev -- --host 127.0.0.1 --port "${FRONTEND_PORT}" >"${FRONTEND_LOG}" 2>&1 &
   echo $! >"${FRONTEND_PID_FILE}"
 }
 
@@ -181,3 +185,6 @@ echo ""
 echo "Logs:"
 echo "  ${BACKEND_LOG}"
 echo "  ${FRONTEND_LOG}"
+echo "Runtime Dir: ${RUNTIME_DIR}"
+echo "Cache Dir:   ${CACHE_DIR}"
+echo "Key File:    ${KEY_FILE}"

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec python3 scripts/git_pre_commit_guard.py

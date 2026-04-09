@@ -10,6 +10,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 from db_store import DBStore
+from runtime_paths import runtime_db_path
 
 
 TABLES = ("slice_review", "mapping_review", "material_registry", "audit_log")
@@ -200,8 +201,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Migrate SQLite admin_p0.db data to PostgreSQL.")
     parser.add_argument(
         "--sqlite-path",
-        default="data/admin_p0.db",
-        help="Path to source sqlite db file. Default: data/admin_p0.db",
+        default=str(runtime_db_path()),
+        help=f"Path to source sqlite db file. Default: {runtime_db_path()}",
     )
     parser.add_argument(
         "--target-database-url",

@@ -52,7 +52,7 @@
 
 ## 🚀 快速开始
 
-内网同事执行请优先查看：`部署说明.md`（已按“可直接执行”整理为上线 Runbook）。
+内网同事执行请优先查看：`部署说明.md`。
 
 ### 1. 环境要求
 
@@ -63,11 +63,10 @@
 ### 2. 安装依赖
 
 ```bash
-# 一键初始化（推荐用于服务器，含 Node 版本检查 + npm ci + vite 完整性校验）
 bash tools/bootstrap_server.sh
 ```
 
-手动安装方式（不推荐）：
+手动安装方式：
 
 ```bash
 python3 -m venv .venv
@@ -77,8 +76,7 @@ npm --prefix admin-web ci
 
 ### 3. 配置 API Key
 
-部署前必须存在 `填写您的Key.txt`（缺失将导致启动脚本直接失败）。  
-可从 `填写您的Key.txt.example` 复制后编辑：
+部署前必须存在 `填写您的Key.txt`。默认推荐放在 `.local/runtime/config/填写您的Key.txt`，也兼容仓库根目录旧位置。可从 `填写您的Key.txt.example` 复制后编辑：
 
 ```
 # 推荐：AIT 配置（当前主流程）
@@ -95,6 +93,13 @@ AIT_MODEL=deepseek-chat
 ### 4. 运行应用（后端 + 管理台）
 
 ```bash
+bash tools/install_git_hooks.sh
+bash tools/restart_admin.sh
+```
+
+或手动运行：
+
+```bash
 # 终端1：启动后端 API
 .venv/bin/python admin_api.py
 
@@ -105,6 +110,14 @@ npm --prefix admin-web run dev -- --host 127.0.0.1 --port 8522
 默认访问地址：
 - 后端健康检查：`http://127.0.0.1:8600/`
 - 前端管理台：`http://127.0.0.1:8522/`
+
+### 5. 运行态目录与 Git 卫生
+
+- 可变数据默认写入 `.local/runtime/`
+- 前端缓存默认写入 `.local/cache/`
+- 提交前建议安装 Git hook：`bash tools/install_git_hooks.sh`
+- 详细说明见 `docs/runtime_and_git_hygiene.md`
+- Git 提交规范见 `docs/git_commit_guide.md`
 
 ## 📖 使用说明
 

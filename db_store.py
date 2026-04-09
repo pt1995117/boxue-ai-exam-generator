@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///data/admin_p0.db")
+from runtime_paths import runtime_db_path
+
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{runtime_db_path()}")
 
 
 class DBStore:
