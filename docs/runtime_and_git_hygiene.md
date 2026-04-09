@@ -42,8 +42,18 @@
 bash tools/install_git_hooks.sh
 ```
 
+此外，项目提供工作区卫生检查脚本，会直接检查当前工区里是否出现了运行态/缓存/导出物脏数据：
+
+```bash
+bash tools/check_worktree_hygiene.sh
+```
+
+建议在开始 coding 前和结束 coding 后各执行一次。
+
 ## 建议工作流
 
 1. 运行服务前，先执行 `bash tools/install_git_hooks.sh`
-2. API Key 放在 `.local/runtime/config/填写您的Key.txt`
-3. 运行后若 `git status` 仍出现 `data/`、`logs/`、`.vite/`，说明还有旧路径未迁移，应优先继续收口到运行目录
+2. 开始改代码前，先执行 `bash tools/check_worktree_hygiene.sh`
+3. coding 过程中若需要临时文件，统一放 `.local/tmp/`
+4. API Key 放在 `.local/runtime/config/填写您的Key.txt`
+5. 运行后若 `git status` 仍出现 `data/`、`logs/`、`.vite/`，说明还有旧路径未迁移，应优先继续收口到运行目录
