@@ -17166,19 +17166,16 @@ def _filter_qa_runs(
     material_version_id: str = "",
     days: int = 0,
     success_only: bool = False,
+    target_count: int = 0,
 ) -> list[dict[str, Any]]:
     """Filter QA runs. When success_only=True, exclude run_fail_* (failed-task placeholder runs)."""
-    runs = _read_jsonl(_qa_runs_path(tenant_id))
     now_ts = datetime.now(timezone.utc).timestamp()
-    out: list[dict[str, Any]] = []
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
+    def _predicate(run: dict[str, Any]) -> bool:
         run_id = str(run.get("run_id", "") or "")
         if success_only and run_id.startswith("run_fail_"):
-            continue
+            return False
         if material_version_id and str(run.get("material_version_id", "")) != material_version_id:
-            continue
+            return False
         if days > 0:
             ended_at = str(run.get("ended_at", "") or "")
             try:
@@ -17186,10 +17183,17 @@ def _filter_qa_runs(
             except Exception:
                 ts = 0.0
             if now_ts - ts > days * 24 * 3600:
-                continue
-        out.append(run)
-    out.sort(key=lambda x: str(x.get("ended_at", "")), reverse=True)
-    return out
+                return False
+        return True
+
+    runs, _ = _collect_recent_jsonl_rows_from_paths(
+        _qa_read_paths(tenant_id, "qa_runs.jsonl"),
+        target_count=max(1, int(target_count or 200)),
+        sort_key=lambda row: str(row.get("ended_at", "") or ""),
+        predicate=_predicate,
+        unique_key=lambda row: str(row.get("run_id", "") or ""),
+    )
+    return runs
 
 
 def _decorate_alert_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -17400,11 +17404,13 @@ def api_qa_runs(tenant_id: str):
     material_version_id = str(request.args.get("material_version_id", "")).strip()
     days = max(0, int(request.args.get("days", 0) or 0))
     success_only = request.args.get("success_only", "1").strip() in ("1", "true", "yes")
+    target_count = max(page * page_size + 1, 200)
     runs = _filter_qa_runs(
         tenant_id,
         material_version_id=material_version_id,
         days=days,
         success_only=success_only,
+        target_count=target_count,
     )
     latest_judge_by_run = _load_latest_judge_task_by_run(tenant_id)
     items: list[dict[str, Any]] = []
@@ -17486,7 +17492,10 @@ def api_qa_runs(tenant_id: str):
                 "latest_judge_duration_sec": judge_duration_sec,
             }
         )
-    payload = _paginate(items, page, page_size)
+    total = len(items) if len(runs) < target_count else max(len(items), target_count)
+    start = (page - 1) * page_size
+    end = start + page_size
+    payload = {"items": items[start:end], "total": total, "page": page, "page_size": page_size}
     payload["material_version_id"] = material_version_id
     payload["days"] = days
     payload["success_only"] = success_only
