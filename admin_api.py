@@ -4866,6 +4866,16 @@ _GEN_TASK_SUMMARY_TAIL_SYNC_BYTES = max(
 _GEN_TASK_SUMMARY_READ_MAX_BYTES = max(
     0, int(os.getenv("GEN_TASK_SUMMARY_READ_MAX_BYTES", str(4 * 1024 * 1024)) or 0)
 )
+_RECENT_JSONL_FULL_READ_MAX_BYTES = max(
+    0, int(os.getenv("RECENT_JSONL_FULL_READ_MAX_BYTES", str(4 * 1024 * 1024)) or 0)
+)
+_RECENT_JSONL_INITIAL_BYTES = max(
+    0, int(os.getenv("RECENT_JSONL_INITIAL_BYTES", str(2 * 1024 * 1024)) or 0)
+)
+_RECENT_JSONL_MAX_BYTES = max(
+    _RECENT_JSONL_INITIAL_BYTES,
+    int(os.getenv("RECENT_JSONL_MAX_BYTES", str(64 * 1024 * 1024)) or 0),
+)
 
 
 def _allow_gen_tasks_full_fallback(tenant_id: str) -> bool:
@@ -4904,6 +4914,72 @@ def _read_jsonl_tail(path: Path, max_bytes: int) -> list[dict[str, Any]]:
         if isinstance(obj, dict):
             rows.append(obj)
     return rows
+
+
+def _paths_total_size(paths: list[Path]) -> int:
+    total = 0
+    for path in paths:
+        try:
+            if path.exists():
+                total += int(path.stat().st_size)
+        except Exception:
+            continue
+    return total
+
+
+def _collect_recent_jsonl_rows_from_paths(
+    paths: list[Path],
+    *,
+    target_count: int,
+    sort_key: Callable[[dict[str, Any]], str],
+    predicate: Callable[[dict[str, Any]], bool] | None = None,
+    unique_key: Callable[[dict[str, Any]], str] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    existing_paths = [path for path in paths if path.exists()]
+    if not existing_paths:
+        return [], True
+
+    def _finalize(source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = [row for row in source_rows if isinstance(row, dict)]
+        if predicate is not None:
+            rows = [row for row in rows if predicate(row)]
+        rows.sort(key=sort_key, reverse=True)
+        if unique_key is None:
+            return rows
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            key = str(unique_key(row) or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+        return out
+
+    total_size = _paths_total_size(existing_paths)
+    if total_size <= _RECENT_JSONL_FULL_READ_MAX_BYTES:
+        source_rows: list[dict[str, Any]] = []
+        for path in existing_paths:
+            source_rows.extend(_read_jsonl(path))
+        return _finalize(source_rows), True
+
+    target = max(1, int(target_count or 1))
+    read_bytes = max(1, _RECENT_JSONL_INITIAL_BYTES)
+    while True:
+        source_rows = []
+        exhausted = True
+        for path in existing_paths:
+            try:
+                file_size = int(path.stat().st_size)
+            except Exception:
+                file_size = 0
+            if file_size > read_bytes:
+                exhausted = False
+            source_rows.extend(_read_jsonl_tail(path, min(read_bytes, file_size)))
+        rows = _finalize(source_rows)
+        if len(rows) >= target or exhausted or read_bytes >= _RECENT_JSONL_MAX_BYTES:
+            return rows, exhausted or read_bytes >= _RECENT_JSONL_MAX_BYTES
+        read_bytes = min(_RECENT_JSONL_MAX_BYTES, read_bytes * 2)
 
 
 def _refresh_gen_task_summary_from_tail(tenant_id: str) -> None:
@@ -17857,7 +17933,18 @@ def api_judge_task_list(tenant_id: str):
             tid = str(task.get("task_id", ""))
             if tid:
                 rows[tid] = _task_snapshot(task)
-    for task in _read_jsonl(_qa_judge_tasks_path(tenant_id)):
+    desired_count = max(limit * 4, 200)
+    persisted_rows, _ = _collect_recent_jsonl_rows_from_paths(
+        _qa_read_paths(tenant_id, "judge_tasks.jsonl"),
+        target_count=desired_count,
+        sort_key=lambda row: str(row.get("created_at", "") or ""),
+        predicate=(
+            (lambda row: str(row.get("run_id", "") or ((row.get("request") or {}).get("run_id", "") if isinstance(row.get("request"), dict) else "")).strip() == run_id_filter)
+            if run_id_filter else None
+        ),
+        unique_key=lambda row: str(row.get("task_id", "") or ""),
+    )
+    for task in persisted_rows:
         if not isinstance(task, dict):
             continue
         tid = str(task.get("task_id", ""))
@@ -17866,7 +17953,10 @@ def api_judge_task_list(tenant_id: str):
             rows[tid] = task
     items = list(rows.values())
     if run_id_filter:
-        items = [x for x in items if str(x.get("run_id", "")) == run_id_filter]
+        items = [
+            x for x in items
+            if str(x.get("run_id", "") or ((x.get("request") or {}).get("run_id", "") if isinstance(x.get("request"), dict) else "")).strip() == run_id_filter
+        ]
     items.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
     items = items[:limit]
     run_task_name_lookup = _load_run_task_name_lookup(tenant_id)
@@ -18480,21 +18570,22 @@ def api_qa_alerts_get(tenant_id: str):
     run_id = str(request.args.get("run_id", "")).strip()
     status = str(request.args.get("status", "")).strip()
     level = str(request.args.get("level", "")).strip()
-    rows = _read_jsonl(_qa_alerts_path(tenant_id))
-    items = []
-    for r in rows:
-        if not isinstance(r, dict):
-            continue
-        if run_id and str(r.get("run_id", "")) != run_id:
-            continue
-        if status and str(r.get("status", "")) != status:
-            continue
-        if level and str(r.get("level", "")) != level:
-            continue
-        items.append(r)
+    target_count = max(page * page_size + 1, 200)
+    items, exhausted = _collect_recent_jsonl_rows_from_paths(
+        _qa_read_paths(tenant_id, "qa_alerts.jsonl"),
+        target_count=target_count,
+        sort_key=lambda row: str(row.get("created_at", "") or ""),
+        predicate=lambda row: (
+            (not run_id or str(row.get("run_id", "")) == run_id)
+            and (not status or str(row.get("status", "")) == status)
+            and (not level or str(row.get("level", "")) == level)
+        ),
+    )
     items = _decorate_alert_rows(items)
-    items.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
-    payload = _paginate(items, page, page_size)
+    total = len(items) if exhausted else max(len(items), target_count)
+    start = (page - 1) * page_size
+    end = start + page_size
+    payload = {"items": items[start:end], "total": total, "page": page, "page_size": page_size}
     return _json_response(payload)
 
 
