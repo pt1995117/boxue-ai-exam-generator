@@ -7996,7 +7996,13 @@ def _load_run_task_name_lookup(tenant_id: str) -> dict[str, str]:
         name = str(row.get("task_name", "") or "").strip()
         if name:
             lookup[rid] = name
-    for row in _read_jsonl(_qa_runs_path(tenant_id)):
+    recent_runs, _ = _collect_recent_jsonl_rows_from_paths(
+        _qa_read_paths(tenant_id, "qa_runs.jsonl"),
+        target_count=400,
+        sort_key=lambda row: str(row.get("ended_at", "") or ""),
+        unique_key=lambda row: str(row.get("run_id", "") or ""),
+    )
+    for row in recent_runs:
         if not isinstance(row, dict):
             continue
         rid = str(row.get("run_id", "") or "").strip()
@@ -8010,7 +8016,13 @@ def _load_run_task_name_lookup(tenant_id: str) -> dict[str, str]:
 
 def _load_latest_judge_task_by_run(tenant_id: str) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
-    for row in _read_jsonl(_qa_judge_tasks_path(tenant_id)):
+    rows, _ = _collect_recent_jsonl_rows_from_paths(
+        _qa_read_paths(tenant_id, "judge_tasks.jsonl"),
+        target_count=400,
+        sort_key=lambda row: str(row.get("created_at", "") or ""),
+        unique_key=lambda row: str(row.get("run_id", "") or ((row.get("request") or {}).get("run_id", "") if isinstance(row.get("request"), dict) else "")).strip(),
+    )
+    for row in rows:
         if not isinstance(row, dict):
             continue
         run_id = str(row.get("run_id", "") or "").strip()
