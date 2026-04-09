@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import random
+import time
 import uuid
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
@@ -15,7 +16,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from copy import deepcopy
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -28,7 +29,7 @@ from audit_log import write_audit_log
 from governance import circuit_breaker, rate_limiter, select_release_channel
 from mapping_review_store import load_mapping_review
 from observability import init_observability, start_span
-from runtime_paths import ensure_parent, resolve_primary_key_file, runtime_key_file
+from runtime_paths import ensure_parent, repo_tenant_data_dir, resolve_primary_key_file, runtime_key_file
 from slice_registry import (
     archive_material_version,
     delete_material_version,
@@ -39,6 +40,7 @@ from slice_registry import (
 )
 from slice_review_store import load_slice_review
 from tenants_config import (
+    TenantDataMissingError,
     delete_tenant,
     list_tenants,
     resolve_tenant_history_path,
@@ -56,7 +58,9 @@ from tenant_context import get_accessible_tenants, assert_tenant_access, enforce
 from exam_factory import KnowledgeRetriever, build_knowledge_retriever
 from exam_graph import (
     app as graph_app,
+    attach_question_wall_clock_budget,
     call_llm,
+    detach_question_wall_clock_budget,
     detect_router_high_risk_slice,
     mark_unstable,
     parse_json_from_response,
@@ -81,6 +85,23 @@ ALLOWED_ORIGINS = set(
 )
 PRIMARY_KEY_FILE = runtime_key_file()
 _KEY_PLACEHOLDER_MARKERS = ("请将您的Key", "在这里填写", "your_key", "YOUR_KEY")
+
+
+def _new_material_version_id(tenant_id: str, now: datetime | None = None) -> str:
+    current = now or datetime.now(timezone.utc)
+    base = current.strftime("v%Y%m%d_%H%M%S")
+    existing = {
+        str(item.get("material_version_id", "")).strip()
+        for item in list_material_versions(tenant_id)
+        if isinstance(item, dict)
+    }
+    if base not in existing:
+        return base
+    for _ in range(8):
+        candidate = f"{base}_{uuid.uuid4().hex[:4]}"
+        if candidate not in existing:
+            return candidate
+    return f"{base}_{uuid.uuid4().hex[:8]}"
 
 
 def _load_primary_key_config() -> dict[str, str]:
@@ -677,7 +698,7 @@ def _build_generation_template_plan(
             available = plan_unit_available_by_mastery.get(path_prefix, {}).get(mastery, 0)
             if available <= 0 or base <= 0:
                 continue
-            assignable = min(base, row_remaining[path_prefix], col_remaining[mastery])
+            assignable = min(base, row_remaining[path_prefix], col_remaining[mastery], available)
             if assignable <= 0:
                 continue
             allocation[(path_prefix, mastery)] += assignable
@@ -688,7 +709,7 @@ def _build_generation_template_plan(
         score = float(cell_scores.get((path_prefix, mastery), 0.0))
         fractional = score - math.floor(score)
         available = plan_unit_available_by_mastery.get(path_prefix, {}).get(mastery, 0)
-        scarcity = 1.0 / max(available, 1)
+        scarcity = -1.0 / max(available, 1)
         route_idx = unit_index_by_prefix.get(path_prefix, 0)
         return (fractional, score, scarcity, -route_idx)
 
@@ -702,7 +723,10 @@ def _build_generation_template_plan(
                     path_prefix = str(unit.get("unit_prefix", ""))
                     if row_remaining.get(path_prefix, 0) <= 0:
                         continue
-                    if plan_unit_available_by_mastery.get(path_prefix, {}).get(mastery, 0) <= 0:
+                    cell_available = plan_unit_available_by_mastery.get(path_prefix, {}).get(mastery, 0)
+                    if cell_available <= 0:
+                        continue
+                    if allocation.get((path_prefix, mastery), 0) >= cell_available:
                         continue
                     candidates.append((_alloc_priority(path_prefix, mastery), path_prefix))
                 if not candidates:
@@ -2125,9 +2149,9 @@ def _should_soft_pass_on_format_only_fuse(critic_result: dict[str, Any]) -> bool
 _CRITIC_ABORT_WHITELIST_FAIL_TYPES = {
     "format_fail",
     "format_bracket",
+    "quality_fail",
     "readability_fail",
     "explanation_fail",
-    "quality_fail",
     "condition_overload",
     "difficulty_out_of_range",
     "focus_overload",
@@ -2135,7 +2159,51 @@ _CRITIC_ABORT_WHITELIST_FAIL_TYPES = {
     "name_semantic_issue",
     "writer_issue",
     "critic_schema_incomplete",
+    "generation_mode",
 }
+
+
+def _is_distractor_weak_issue_text(text: str) -> bool:
+    t = str(text or "").strip()
+    if not t:
+        return False
+    # 仅识别“干扰项偏弱/迷惑性不足”这一类可修复质量问题。
+    if not re.search(r"(干扰项|选项)", t):
+        return False
+    weak_markers = [
+        r"幼稚",
+        r"迷惑性",
+        r"质量不佳",
+        r"无需专业知识即可排除",
+        r"错误原因过于表面",
+    ]
+    if not any(re.search(p, t) for p in weak_markers):
+        return False
+    # 明确排除其他质量失败类型（如直给答案、前提缺失、多解等）。
+    block_markers = [
+        r"直给答案",
+        r"缺少.*前提",
+        r"无法唯一",
+        r"多解",
+        r"答案不一致",
+        r"解析.*不一致",
+        r"计算题无正确答案",
+    ]
+    return not any(re.search(p, t) for p in block_markers)
+
+
+def _is_single_distractor_weak_only_pass(critic_result: dict[str, Any]) -> bool:
+    fail_types = [str(x).strip() for x in (critic_result.get("fail_types") or []) if str(x).strip()]
+    if set(fail_types) != {"quality_fail"}:
+        return False
+
+    quality_issues = [str(x).strip() for x in (critic_result.get("quality_issues") or []) if str(x).strip()]
+    if not quality_issues:
+        return False
+    # 仅允许“一个质量问题且该问题就是干扰项偏弱”。
+    if len(quality_issues) != 1:
+        return False
+    return _is_distractor_weak_issue_text(quality_issues[0])
 
 
 def _extract_critic_issue_record(critic_result: dict[str, Any] | None) -> tuple[list[str], str]:
@@ -2164,6 +2232,8 @@ def _is_abort_whitelist_pass(critic_result: dict[str, Any] | None) -> bool:
     fail_types = [str(x).strip() for x in (critic_result.get("fail_types") or []) if str(x).strip()]
     if not fail_types:
         return False
+    if _is_single_distractor_weak_only_pass(critic_result):
+        return True
     if set(fail_types).issubset(_CRITIC_ABORT_WHITELIST_FAIL_TYPES):
         return True
     return bool(
@@ -2386,6 +2456,7 @@ def _choose_generation_slice_id(
         route_prefix = str(planned_slot.get("route_prefix", "") or "").strip()
         mastery = str(planned_slot.get("mastery", "") or "").strip()
         template_bucket_key = (route_prefix, mastery) if route_prefix and mastery else None
+        same_mastery_all_ids: list[int] = []
         if template_bucket_key in template_bucket_to_ids:
             preferred = _pick_preferred_slice_id(
                 template_bucket_to_ids.get(template_bucket_key, []),
@@ -2396,7 +2467,31 @@ def _choose_generation_slice_id(
             )
             if preferred is not None:
                 return preferred, ""
-        return None, f"模板位次第{success_index + 1}题对应切片已不可用，且同模板路由范围内相同掌握程度无可替代切片"
+        if mastery:
+            for (rp, m), sids in template_bucket_to_ids.items():
+                if m == mastery:
+                    same_mastery_all_ids.extend(sids)
+            if same_mastery_all_ids:
+                preferred = _pick_preferred_slice_id(
+                    same_mastery_all_ids,
+                    usage_counts=usage_counts,
+                    excluded_slice_ids=excluded,
+                    max_questions_per_slice=max_questions_per_slice,
+                    prefer_unused=True,
+                )
+                if preferred is not None:
+                    return preferred, ""
+        same_mastery_pool = len(set(same_mastery_all_ids)) if mastery else 0
+        strict_pool = len(
+            [
+                sid for sid in (template_bucket_to_ids.get(template_bucket_key, []) if template_bucket_key else [])
+                if str(sid).isdigit()
+            ]
+        )
+        return None, (
+            f"模板位次不可替代: target={success_index + 1} route={route_prefix or '-'} mastery={mastery or '-'} "
+            f"strict_candidates={strict_pool} same_mastery_candidates={same_mastery_pool}"
+        )
     available = [int(sid) for sid in candidate_ids if int(sid) not in excluded]
     if not available:
         return None, "当前范围内已无可继续出题的切片"
@@ -2412,6 +2507,56 @@ def _choose_generation_slice_id(
     if target_question_count > len(available):
         return available[(attempt_count - 1) % len(available)], ""
     return random.choice(available), ""
+
+
+def _planned_slot_trace_fields(
+    planned_slots: list[dict[str, Any]] | None,
+    success_index: int,
+) -> dict[str, Any]:
+    """
+    从出题计划位次取出路由前缀与掌握程度，写入 process_trace，便于详情页核对模板比例。
+
+    :param planned_slots: 与 api_generate 内 success_index 对齐的计划位次列表
+    :param success_index: 当前题在 planned_slots 中的 0-based 下标
+    :return: 供合并进 trace 的字典（无计划时为空）
+    """
+    if not isinstance(planned_slots, list):
+        return {}
+    idx = int(success_index)
+    if idx < 0 or idx >= len(planned_slots):
+        return {}
+    slot = planned_slots[idx]
+    if not isinstance(slot, dict):
+        return {}
+    rp = str(slot.get("route_prefix", "") or "").strip()
+    mastery = str(slot.get("mastery", "") or "").strip()
+    out: dict[str, Any] = {}
+    if rp:
+        out["planned_route_prefix"] = rp
+    if mastery:
+        out["planned_mastery"] = mastery
+    return out
+
+
+def _planned_slot_target_index(
+    planned_slots: list[dict[str, Any]] | None,
+    success_index: int,
+) -> int:
+    """Resolve 1-based global template target index for the current local success_index."""
+    default_idx = int(success_index) + 1
+    if not isinstance(planned_slots, list):
+        return default_idx
+    idx = int(success_index)
+    if idx < 0 or idx >= len(planned_slots):
+        return default_idx
+    slot = planned_slots[idx]
+    if not isinstance(slot, dict):
+        return default_idx
+    try:
+        gti = int(slot.get("_global_target_index", 0) or 0)
+    except (TypeError, ValueError):
+        gti = 0
+    return int(gti if gti > 0 else default_idx)
 
 
 def _is_template_same_mastery_hard_gap(
@@ -2445,6 +2590,104 @@ def _is_template_same_mastery_hard_gap(
     return len(peers) == 0
 
 
+def _template_slot_candidate_ids(
+    *,
+    planned_slots: list[dict[str, Any]] | None,
+    target_index: int,
+    candidate_lookup: dict[str, Any] | None,
+    include_cross_route_same_mastery: bool = True,
+) -> list[int]:
+    slots = [slot for slot in (planned_slots or []) if isinstance(slot, dict)]
+    idx = int(target_index or 0)
+    if idx <= 0 or idx > len(slots):
+        return []
+    slot = slots[idx - 1] if isinstance(slots[idx - 1], dict) else {}
+    route_prefix = str(slot.get("route_prefix", "") or "").strip()
+    mastery = str(slot.get("mastery", "") or "").strip()
+    if not route_prefix or not mastery:
+        return []
+    lookup = candidate_lookup or {}
+    template_bucket_to_ids = (
+        lookup.get("template_bucket_to_ids")
+        if isinstance(lookup.get("template_bucket_to_ids"), dict)
+        else {}
+    )
+    candidate_ids: list[int] = []
+    for sid in (template_bucket_to_ids.get((route_prefix, mastery), []) or []):
+        if str(sid).isdigit():
+            candidate_ids.append(int(sid))
+    if include_cross_route_same_mastery:
+        for (rp, m), sids in template_bucket_to_ids.items():
+            if m != mastery or rp == route_prefix:
+                continue
+            for sid in (sids or []):
+                if str(sid).isdigit():
+                    candidate_ids.append(int(sid))
+    # keep order while removing duplicates
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for sid in candidate_ids:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        deduped.append(sid)
+    return deduped
+
+
+def _describe_template_target_gap(
+    *,
+    target_index: int,
+    planned_slots: list[dict[str, Any]] | None,
+    candidate_lookup: dict[str, Any] | None,
+    process_trace: list[dict[str, Any]] | None = None,
+) -> str:
+    slots = [slot for slot in (planned_slots or []) if isinstance(slot, dict)]
+    idx = int(target_index or 0)
+    if idx <= 0 or idx > len(slots):
+        return f"target={idx} 超出模板位次范围"
+    slot = slots[idx - 1] if isinstance(slots[idx - 1], dict) else {}
+    route_prefix = str(slot.get("route_prefix", "") or "").strip() or "-"
+    mastery = str(slot.get("mastery", "") or "").strip() or "-"
+    strict_count = len(
+        _template_slot_candidate_ids(
+            planned_slots=slots,
+            target_index=idx,
+            candidate_lookup=candidate_lookup,
+            include_cross_route_same_mastery=False,
+        )
+    )
+    fallback_count = len(
+        _template_slot_candidate_ids(
+            planned_slots=slots,
+            target_index=idx,
+            candidate_lookup=candidate_lookup,
+            include_cross_route_same_mastery=True,
+        )
+    )
+    attempted: list[int] = []
+    for row in (process_trace or []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            row_target_index = int(row.get("target_index", 0) or 0)
+        except (TypeError, ValueError):
+            row_target_index = 0
+        if row_target_index != idx:
+            continue
+        try:
+            sid = int(row.get("slice_id", 0) or 0)
+        except (TypeError, ValueError):
+            sid = 0
+        if sid > 0 and sid not in attempted:
+            attempted.append(sid)
+    attempted_text = ",".join(str(x) for x in attempted[:12]) if attempted else "-"
+    return (
+        f"target={idx} route={route_prefix} mastery={mastery} "
+        f"strict_candidates={strict_count} same_mastery_candidates={fallback_count} "
+        f"attempted_slice_ids={attempted_text}"
+    )
+
+
 def _sort_template_target_indexes_by_ease(
     *,
     indexes: list[int],
@@ -2456,22 +2699,15 @@ def _sort_template_target_indexes_by_ease(
     if not unique_indexes:
         return []
     slots = [slot for slot in (planned_slots or []) if isinstance(slot, dict)]
-    lookup = candidate_lookup or {}
-    template_bucket_to_ids = (
-        lookup.get("template_bucket_to_ids")
-        if isinstance(lookup.get("template_bucket_to_ids"), dict)
-        else {}
-    )
     def _candidate_count(idx: int) -> int:
-        if idx <= 0 or idx > len(slots):
-            return 0
-        slot = slots[idx - 1] if isinstance(slots[idx - 1], dict) else {}
-        route_prefix = str(slot.get("route_prefix", "") or "").strip()
-        mastery = str(slot.get("mastery", "") or "").strip()
-        if not route_prefix or not mastery:
-            return 0
-        ids = template_bucket_to_ids.get((route_prefix, mastery), [])
-        return len([sid for sid in ids if str(sid).isdigit()])
+        return len(
+            _template_slot_candidate_ids(
+                planned_slots=slots,
+                target_index=idx,
+                candidate_lookup=candidate_lookup,
+                include_cross_route_same_mastery=True,
+            )
+        )
     return sorted(unique_indexes, key=lambda idx: (-_candidate_count(idx), idx))
 
 
@@ -3665,7 +3901,41 @@ def _reconcile_template_bank_formal_selection(
     official_count = 0
     backup_count = 0
     updated_count = 0
-    for row in rows:
+    def _normalize_route_bucket(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "").strip())
+
+    required_pair_counts: dict[tuple[str, str], int] = {}
+    pair_target_indexes: dict[tuple[str, str], list[int]] = {}
+    required_route_counts: dict[str, int] = {}
+    required_mastery_counts: dict[str, int] = {}
+    for idx, slot in enumerate(planned_slots or [], start=1):
+        if not isinstance(slot, dict):
+            continue
+        rp = _normalize_route_bucket(slot.get("route_prefix", ""))
+        ms = str(slot.get("mastery", "") or "").strip()
+        if not rp or not ms:
+            continue
+        key = (rp, ms)
+        required_pair_counts[key] = int(required_pair_counts.get(key, 0) or 0) + 1
+        pair_target_indexes.setdefault(key, []).append(int(idx))
+        required_route_counts[rp] = int(required_route_counts.get(rp, 0) or 0) + 1
+        required_mastery_counts[ms] = int(required_mastery_counts.get(ms, 0) or 0) + 1
+
+    def _resolve_row_template_pair(row: dict[str, Any]) -> tuple[str, str]:
+        # 优先按题目真实归属重新分桶，避免复用历史收口写入的旧模板桶导致再次偏配。
+        route_prefix = str(row.get("一级知识点", "") or "").strip()
+        if not route_prefix:
+            route_prefix = _path_prefix(row.get("来源路径", ""), 1)
+        if not route_prefix:
+            route_prefix = str(row.get("模板路由", "") or "").strip()
+        route_prefix = _normalize_route_bucket(route_prefix)
+        mastery = str(row.get("掌握程度", "") or "").strip()
+        if not mastery:
+            mastery = str(row.get("模板掌握度", "") or "").strip()
+        return route_prefix, mastery
+
+    eligible_row_indexes: list[int] = []
+    for row_idx, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
         row_task_name = str(row.get("出题任务名称") or row.get("task_name") or "").strip()
@@ -3673,12 +3943,22 @@ def _reconcile_template_bank_formal_selection(
             continue
         if bool(row.get("待修复")) or str(row.get("审计状态", "") or "").strip() == "needs_fix":
             continue
+        eligible_row_indexes.append(int(row_idx))
         stem = str(row.get("题干", "") or "").strip()
         run_id = str(row.get("出题RunID") or row.get("source_run_id") or row.get("run_id") or "").strip()
         slice_id = str(row.get("来源切片ID", "") or "").strip()
         official_trace = official_by_key.get((run_id, stem, slice_id))
         row["模板任务"] = True
         row["模板父任务名称"] = name
+        # 服务重启/子任务降级时，部分题目可能缺失模板桶元数据。
+        # 在正式题收口阶段回填模板路由/掌握度，保证配额重选可继续执行。
+        route_fallback, mastery_fallback = _resolve_row_template_pair(row)
+        if route_fallback and not str(row.get("模板路由", "") or "").strip():
+            row["模板路由"] = route_fallback
+            changed = True
+        if mastery_fallback and not str(row.get("模板掌握度", "") or "").strip():
+            row["模板掌握度"] = mastery_fallback
+            changed = True
         if isinstance(official_trace, dict):
             target_index = int(official_trace.get("target_index", 0) or 0)
             route_prefix = ""
@@ -3742,6 +4022,225 @@ def _reconcile_template_bank_formal_selection(
             if before != after:
                 changed = True
                 updated_count += 1
+
+    # Fallback reselection:
+    # When target_index mapping is noisy, prefer "generate more then select best 100 by template quotas".
+    if required_pair_counts and eligible_row_indexes:
+        def _row_sort_key(i: int) -> tuple[str, str, str]:
+            return (
+                str(rows[i].get("出题RunID") or rows[i].get("source_run_id") or rows[i].get("run_id") or ""),
+                str(rows[i].get("题干", "") or ""),
+                str(rows[i].get("来源切片ID", "") or ""),
+            )
+
+        def _apply_selected_indexes(selected_indexes: set[int]) -> None:
+            route_target_indexes: dict[str, list[int]] = {}
+            for pos, slot in enumerate(planned_slots or [], start=1):
+                if not isinstance(slot, dict):
+                    continue
+                rp = _normalize_route_bucket(slot.get("route_prefix", ""))
+                if rp:
+                    route_target_indexes.setdefault(rp, []).append(int(pos))
+            selected_by_route: dict[str, list[int]] = {}
+            for idx in selected_indexes:
+                route_prefix, _ = _resolve_row_template_pair(rows[idx])
+                selected_by_route.setdefault(route_prefix, []).append(idx)
+            for route_prefix, idxs in selected_by_route.items():
+                selected_by_route[route_prefix] = sorted(idxs, key=_row_sort_key, reverse=True)
+
+            for idx in eligible_row_indexes:
+                row = rows[idx]
+                route_prefix, mastery = _resolve_row_template_pair(row)
+                row["模板任务"] = True
+                row["模板父任务名称"] = name
+                if route_prefix:
+                    row["模板路由"] = route_prefix
+                if mastery:
+                    row["模板掌握度"] = mastery
+                if idx in selected_indexes:
+                    targets = route_target_indexes.get(route_prefix, [])
+                    selected_list = selected_by_route.get(route_prefix, [])
+                    if idx in selected_list:
+                        pos = selected_list.index(idx)
+                        if 0 <= pos < len(targets):
+                            row["模板目标位次"] = int(targets[pos])
+                    row["模板正式题"] = True
+                    row["模板备选题"] = False
+                    row["是否正式通过"] = True
+                    if str(row.get("审计状态", "") or "").strip() not in {"whitelist_pass"}:
+                        row["审计状态"] = "passed"
+                    row.pop("模板备选原因", None)
+                else:
+                    row["模板正式题"] = False
+                    row["模板备选题"] = True
+                    row["是否正式通过"] = False
+                    row["审计状态"] = "template_backup_pass"
+                    row["模板备选原因"] = "未进入模板正式题集合"
+
+        current_pair_counts: dict[tuple[str, str], int] = {}
+        for idx in eligible_row_indexes:
+            row = rows[idx]
+            if not bool(row.get("模板正式题")):
+                continue
+            pair = _resolve_row_template_pair(row)
+            if not pair[0] or not pair[1]:
+                continue
+            current_pair_counts[pair] = int(current_pair_counts.get(pair, 0) or 0) + 1
+
+        if current_pair_counts != required_pair_counts:
+            pair_to_candidates: dict[tuple[str, str], list[int]] = {}
+            for idx in eligible_row_indexes:
+                row = rows[idx]
+                pair = _resolve_row_template_pair(row)
+                if not pair[0] or not pair[1]:
+                    continue
+                pair_to_candidates.setdefault(pair, []).append(idx)
+
+            feasible = all(len(pair_to_candidates.get(pair, [])) >= need for pair, need in required_pair_counts.items())
+            if feasible:
+                selected_indexes: set[int] = set()
+                for pair, need in required_pair_counts.items():
+                    cands = pair_to_candidates.get(pair, [])
+                    cands_sorted = sorted(cands, key=_row_sort_key, reverse=True)
+                    selected_indexes.update(cands_sorted[: int(need)])
+                _apply_selected_indexes(selected_indexes)
+                changed = True
+            else:
+                # Relaxed fallback:
+                # Keep route counts hard, keep global mastery counts hard; do not require per-route mastery ratio.
+                route_keys = [k for k in required_route_counts.keys() if str(k).strip()]
+                mastery_keys = [k for k in required_mastery_counts.keys() if str(k).strip()]
+                avail: dict[tuple[str, str], int] = {
+                    (r, m): 0 for r in route_keys for m in mastery_keys
+                }
+                candidates_by_cell: dict[tuple[str, str], list[int]] = {
+                    (r, m): [] for r in route_keys for m in mastery_keys
+                }
+                for idx in eligible_row_indexes:
+                    route_prefix, mastery = _resolve_row_template_pair(rows[idx])
+                    if route_prefix not in required_route_counts or mastery not in required_mastery_counts:
+                        continue
+                    key = (route_prefix, mastery)
+                    avail[key] = int(avail.get(key, 0) or 0) + 1
+                    candidates_by_cell.setdefault(key, []).append(idx)
+
+                for key, cands in candidates_by_cell.items():
+                    candidates_by_cell[key] = sorted(cands, key=_row_sort_key, reverse=True)
+
+                route_feasible = all(
+                    sum(avail.get((r, m), 0) for m in mastery_keys) >= int(required_route_counts.get(r, 0) or 0)
+                    for r in route_keys
+                )
+                mastery_feasible = all(
+                    sum(avail.get((r, m), 0) for r in route_keys) >= int(required_mastery_counts.get(m, 0) or 0)
+                    for m in mastery_keys
+                )
+                total_required = sum(int(v or 0) for v in required_route_counts.values())
+                total_available = sum(int(v or 0) for v in avail.values())
+                relaxed_allocation: dict[tuple[str, str], int] | None = None
+
+                if route_feasible and mastery_feasible and total_available >= total_required:
+                    route_needs = {r: int(required_route_counts.get(r, 0) or 0) for r in route_keys}
+                    mastery_needs = {m: int(required_mastery_counts.get(m, 0) or 0) for m in mastery_keys}
+                    remaining_route_order = list(route_keys)
+
+                    def _dfs_route_allocate(
+                        route_pos: int,
+                        current_mastery_needs: dict[str, int],
+                        alloc: dict[tuple[str, str], int],
+                    ) -> dict[tuple[str, str], int] | None:
+                        if route_pos >= len(remaining_route_order):
+                            if all(int(v or 0) == 0 for v in current_mastery_needs.values()):
+                                return dict(alloc)
+                            return None
+                        route = remaining_route_order[route_pos]
+                        need = int(route_needs.get(route, 0) or 0)
+                        if need <= 0:
+                            return _dfs_route_allocate(route_pos + 1, current_mastery_needs, alloc)
+
+                        m0 = mastery_keys[0] if mastery_keys else ""
+                        m1 = mastery_keys[1] if len(mastery_keys) > 1 else ""
+                        m2 = mastery_keys[2] if len(mastery_keys) > 2 else ""
+                        max0 = min(
+                            need,
+                            int(avail.get((route, m0), 0) or 0),
+                            int(current_mastery_needs.get(m0, 0) or 0),
+                        ) if m0 else 0
+                        for x0 in range(max0, -1, -1):
+                            need_after_0 = need - x0
+                            max1 = min(
+                                need_after_0,
+                                int(avail.get((route, m1), 0) or 0),
+                                int(current_mastery_needs.get(m1, 0) or 0),
+                            ) if m1 else 0
+                            for x1 in range(max1, -1, -1):
+                                x2 = need_after_0 - x1
+                                if m2:
+                                    if x2 < 0:
+                                        continue
+                                    if x2 > int(avail.get((route, m2), 0) or 0):
+                                        continue
+                                    if x2 > int(current_mastery_needs.get(m2, 0) or 0):
+                                        continue
+                                elif x2 != 0:
+                                    continue
+
+                                next_needs = dict(current_mastery_needs)
+                                if m0:
+                                    next_needs[m0] = int(next_needs.get(m0, 0) or 0) - int(x0)
+                                if m1:
+                                    next_needs[m1] = int(next_needs.get(m1, 0) or 0) - int(x1)
+                                if m2:
+                                    next_needs[m2] = int(next_needs.get(m2, 0) or 0) - int(x2)
+                                if any(int(v or 0) < 0 for v in next_needs.values()):
+                                    continue
+
+                                # Prune by future capacity.
+                                future_routes = remaining_route_order[route_pos + 1 :]
+                                cap_ok = True
+                                for m in mastery_keys:
+                                    future_cap = sum(int(avail.get((fr, m), 0) or 0) for fr in future_routes)
+                                    if int(next_needs.get(m, 0) or 0) > future_cap:
+                                        cap_ok = False
+                                        break
+                                if not cap_ok:
+                                    continue
+
+                                if m0:
+                                    alloc[(route, m0)] = int(x0)
+                                if m1:
+                                    alloc[(route, m1)] = int(x1)
+                                if m2:
+                                    alloc[(route, m2)] = int(x2)
+                                found = _dfs_route_allocate(route_pos + 1, next_needs, alloc)
+                                if found is not None:
+                                    return found
+                        return None
+
+                    relaxed_allocation = _dfs_route_allocate(0, mastery_needs, {})
+
+                if isinstance(relaxed_allocation, dict):
+                    selected_indexes: set[int] = set()
+                    for route_prefix in route_keys:
+                        for mastery in mastery_keys:
+                            need = int(relaxed_allocation.get((route_prefix, mastery), 0) or 0)
+                            if need <= 0:
+                                continue
+                            cands = candidates_by_cell.get((route_prefix, mastery), [])
+                            selected_indexes.update(cands[:need])
+                    if len(selected_indexes) == total_required:
+                        _apply_selected_indexes(selected_indexes)
+                        changed = True
+
+    # Re-count after potential fallback reselection.
+    official_count = 0
+    backup_count = 0
+    for idx in eligible_row_indexes:
+        row = rows[idx]
+        if bool(row.get("模板正式题")):
+            official_count += 1
+        elif bool(row.get("模板备选题")):
+            backup_count += 1
     if changed:
         _save_bank(bank_path, rows)
     return {
@@ -4113,6 +4612,30 @@ def _qa_gen_tasks_summary_path(tenant_id: str) -> Path:
     return _qa_dir(tenant_id) / "gen_tasks_summary.jsonl"
 
 
+def _qa_read_path(tenant_id: str, filename: str) -> Path:
+    preferred = _qa_dir(tenant_id) / filename
+    if preferred.exists():
+        return preferred
+    legacy = repo_tenant_data_dir(tenant_id) / "audit" / filename
+    if legacy.exists():
+        return legacy
+    return preferred
+
+
+def _qa_read_paths(tenant_id: str, filename: str) -> list[Path]:
+    preferred = _qa_dir(tenant_id) / filename
+    legacy = repo_tenant_data_dir(tenant_id) / "audit" / filename
+    paths: list[Path] = []
+    for candidate in (preferred, legacy):
+        if candidate in paths:
+            continue
+        if candidate.exists():
+            paths.append(candidate)
+    if not paths:
+        paths.append(preferred)
+    return paths
+
+
 def _qa_gen_task_snapshot_dir(tenant_id: str) -> Path:
     path = _qa_dir(tenant_id) / "gen_task_snapshots"
     path.mkdir(parents=True, exist_ok=True)
@@ -4142,6 +4665,7 @@ RETRIEVER_CACHE: dict[tuple[str, str, str, str, str], KnowledgeRetriever] = {}
 RETRIEVER_CACHE_LOCK = threading.Lock()
 RETRIEVER_CACHE_INFLIGHT: dict[tuple[str, str, str, str, str], threading.Event] = {}
 RETRIEVER_CACHE_ERRORS: dict[tuple[str, str, str, str, str], Exception] = {}
+GEN_TASK_NAME_INFLIGHT: set[tuple[str, str]] = set()
 
 
 _REPLACEMENT_FOR_TIMEOUT_MSG = "任务执行失败（当前版本已取消任务执行时间限制；该错误可能来自历史任务记录）"
@@ -4174,8 +4698,70 @@ _ORPHAN_GEN_UNOWNED_RUNNING_SECONDS = max(
 )
 _ORPHAN_JUDGE_GRACE_SECONDS = max(120, int(os.getenv("ORPHAN_JUDGE_GRACE_SECONDS", "1800") or 1800))
 _TASK_MAINTENANCE_INTERVAL_SECONDS = max(30, int(os.getenv("TASK_MAINTENANCE_INTERVAL_SECONDS", "120") or 120))
+_RETRIEVER_CACHE_WAIT_SECONDS = max(5, int(os.getenv("RETRIEVER_CACHE_WAIT_SECONDS", "180") or 180))
+_PARALLEL_CHILD_WAIT_SECONDS = max(10, int(os.getenv("PARALLEL_CHILD_WAIT_SECONDS", "1800") or 1800))
+_PARALLEL_CHILD_TIMEOUT_MIN_SECONDS = max(10, int(os.getenv("PARALLEL_CHILD_TIMEOUT_MIN_SECONDS", "180") or 180))
+_PARALLEL_CHILD_TIMEOUT_MAX_SECONDS = max(
+    _PARALLEL_CHILD_TIMEOUT_MIN_SECONDS,
+    int(os.getenv("PARALLEL_CHILD_TIMEOUT_MAX_SECONDS", "10800") or 10800),
+)
+_PARALLEL_CHILD_TIMEOUT_BASE_SECONDS = max(0, int(os.getenv("PARALLEL_CHILD_TIMEOUT_BASE_SECONDS", "120") or 120))
+_PARALLEL_CHILD_TIMEOUT_PER_Q_BASE_SECONDS = max(
+    1, int(os.getenv("PARALLEL_CHILD_TIMEOUT_PER_Q_BASE_SECONDS", "40") or 40)
+)
+_PARALLEL_CHILD_TIMEOUT_PER_Q_RETRY_SECONDS = max(
+    0, int(os.getenv("PARALLEL_CHILD_TIMEOUT_PER_Q_RETRY_SECONDS", "20") or 20)
+)
+_PARALLEL_CHILD_TIMEOUT_RETRY_CAP = max(
+    1, int(os.getenv("PARALLEL_CHILD_TIMEOUT_RETRY_CAP", "12") or 12)
+)
+_PARALLEL_CHILD_TIMEOUT_SAFETY_MULTIPLIER = max(
+    1.0, float(os.getenv("PARALLEL_CHILD_TIMEOUT_SAFETY_MULTIPLIER", "1.35") or 1.35)
+)
+_PARALLEL_BATCH_TIMEOUT_MAX_SECONDS = max(60, int(os.getenv("PARALLEL_BATCH_TIMEOUT_MAX_SECONDS", "43200") or 43200))
+_PARALLEL_BATCH_TIMEOUT_BUFFER_BASE_SECONDS = max(
+    0, int(os.getenv("PARALLEL_BATCH_TIMEOUT_BUFFER_BASE_SECONDS", "90") or 90)
+)
+_PARALLEL_BATCH_TIMEOUT_BUFFER_PER_SUBTASK_SECONDS = max(
+    0, int(os.getenv("PARALLEL_BATCH_TIMEOUT_BUFFER_PER_SUBTASK_SECONDS", "20") or 20)
+)
 _MAINTENANCE_STARTED = False
 _MAINTENANCE_LOCK = threading.Lock()
+
+
+def _clamp_int(value: int, low: int, high: int) -> int:
+    if low > high:
+        low, high = high, low
+    return max(low, min(high, int(value)))
+
+
+def _estimate_internal_subtask_max_attempts(question_count: int) -> int:
+    q = max(1, int(question_count or 1))
+    return min(400, max(1, q * 6 + 16))
+
+
+def _estimate_parallel_child_timeout_seconds(question_count: int, max_attempts: int | None = None) -> int:
+    q = max(1, int(question_count or 1))
+    attempts = int(max_attempts or 0)
+    if attempts <= 0:
+        attempts = _estimate_internal_subtask_max_attempts(q)
+    attempts_for_timeout = min(max(1, attempts), _PARALLEL_CHILD_TIMEOUT_RETRY_CAP)
+    per_question = _PARALLEL_CHILD_TIMEOUT_PER_Q_BASE_SECONDS + _PARALLEL_CHILD_TIMEOUT_PER_Q_RETRY_SECONDS * max(
+        0, attempts_for_timeout - 1
+    )
+    timeout_seconds = int(
+        (_PARALLEL_CHILD_TIMEOUT_BASE_SECONDS + q * per_question) * _PARALLEL_CHILD_TIMEOUT_SAFETY_MULTIPLIER
+    )
+    return _clamp_int(timeout_seconds, _PARALLEL_CHILD_TIMEOUT_MIN_SECONDS, _PARALLEL_CHILD_TIMEOUT_MAX_SECONDS)
+
+
+def _estimate_parallel_batch_timeout_seconds(child_timeouts: list[int], subtask_count: int) -> int:
+    max_child = max([int(x) for x in child_timeouts if int(x) > 0], default=_PARALLEL_CHILD_TIMEOUT_MIN_SECONDS)
+    # Parent parallel timeout must be 4x the max child timeout.
+    timeout_seconds = int(max_child) * 4
+    timeout_seconds = min(timeout_seconds, _PARALLEL_BATCH_TIMEOUT_MAX_SECONDS)
+    # Keep backward compatibility: honor legacy fixed timeout as a floor if configured larger.
+    return max(int(_PARALLEL_CHILD_WAIT_SECONDS), int(timeout_seconds))
 
 
 def _is_orphan_reconcile_due(task: dict[str, Any], now: datetime, grace_seconds: int) -> bool:
@@ -4230,14 +4816,44 @@ def _is_unowned_running_task_stale(task: dict[str, Any], now: datetime, stale_se
     return (now - last_seen).total_seconds() >= float(max(1, int(stale_seconds or 1)))
 
 
-def _latest_rows_by_task_id(path: Path) -> dict[str, dict[str, Any]]:
+def _latest_rows_by_task_id(
+    path: Path,
+    *,
+    max_bytes: int = 0,
+    stop_after: int = 0,
+) -> dict[str, dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
-    for row in _read_jsonl(path):
+    source_rows = _read_jsonl_tail(path, max_bytes) if max_bytes > 0 else _read_jsonl(path)
+    for row in reversed(source_rows):
         if not isinstance(row, dict):
             continue
         tid = str(row.get("task_id", "")).strip()
-        if tid:
+        if tid and tid not in rows:
             rows[tid] = row
+            if stop_after > 0 and len(rows) >= stop_after:
+                break
+    return rows
+
+
+def _latest_rows_by_task_id_from_paths(
+    paths: list[Path],
+    *,
+    max_bytes: int = 0,
+    stop_after: int = 0,
+) -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for path in paths:
+        remaining = max(0, int(stop_after) - len(rows)) if stop_after > 0 else 0
+        next_rows = _latest_rows_by_task_id(
+            path,
+            max_bytes=max_bytes,
+            stop_after=remaining,
+        )
+        for tid, row in next_rows.items():
+            if tid not in rows:
+                rows[tid] = row
+                if stop_after > 0 and len(rows) >= stop_after:
+                    return rows
     return rows
 
 
@@ -4247,16 +4863,19 @@ _GEN_TASK_FULL_FALLBACK_MAX_BYTES = max(
 _GEN_TASK_SUMMARY_TAIL_SYNC_BYTES = max(
     0, int(os.getenv("GEN_TASK_SUMMARY_TAIL_SYNC_BYTES", str(16 * 1024 * 1024)) or 0)
 )
+_GEN_TASK_SUMMARY_READ_MAX_BYTES = max(
+    0, int(os.getenv("GEN_TASK_SUMMARY_READ_MAX_BYTES", str(4 * 1024 * 1024)) or 0)
+)
 
 
 def _allow_gen_tasks_full_fallback(tenant_id: str) -> bool:
-    path = _qa_gen_tasks_path(tenant_id)
-    if not path.exists():
-        return False
-    try:
-        return path.stat().st_size <= _GEN_TASK_FULL_FALLBACK_MAX_BYTES
-    except Exception:
-        return False
+    for path in _qa_read_paths(tenant_id, "gen_tasks.jsonl"):
+        try:
+            if path.exists() and path.stat().st_size <= _GEN_TASK_FULL_FALLBACK_MAX_BYTES:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _read_jsonl_tail(path: Path, max_bytes: int) -> list[dict[str, Any]]:
@@ -4288,8 +4907,8 @@ def _read_jsonl_tail(path: Path, max_bytes: int) -> list[dict[str, Any]]:
 
 
 def _refresh_gen_task_summary_from_tail(tenant_id: str) -> None:
-    full_path = _qa_gen_tasks_path(tenant_id)
-    summary_path = _qa_gen_tasks_summary_path(tenant_id)
+    full_path = _qa_read_path(tenant_id, "gen_tasks.jsonl")
+    summary_path = _qa_read_path(tenant_id, "gen_tasks_summary.jsonl")
     if not full_path.exists() or _GEN_TASK_SUMMARY_TAIL_SYNC_BYTES <= 0:
         return
     try:
@@ -4320,13 +4939,28 @@ def _refresh_gen_task_summary_from_tail(tenant_id: str) -> None:
         _append_jsonl(summary_path, row)
 
 
-def _latest_gen_task_rows(tenant_id: str, *, allow_full_fallback: bool = False) -> dict[str, dict[str, Any]]:
-    _refresh_gen_task_summary_from_tail(tenant_id)
-    summary_rows = _latest_rows_by_task_id(_qa_gen_tasks_summary_path(tenant_id))
+def _latest_gen_task_rows(
+    tenant_id: str,
+    *,
+    allow_full_fallback: bool = False,
+    refresh_summary: bool = True,
+    prefer_compact_summary: bool = False,
+    stop_after: int = 0,
+) -> dict[str, dict[str, Any]]:
+    if refresh_summary:
+        _refresh_gen_task_summary_from_tail(tenant_id)
+    summary_rows = _latest_rows_by_task_id_from_paths(
+        _qa_read_paths(tenant_id, "gen_tasks_summary.jsonl"),
+        max_bytes=_GEN_TASK_SUMMARY_READ_MAX_BYTES if prefer_compact_summary else 0,
+        stop_after=stop_after,
+    )
     if summary_rows:
         return summary_rows
     if allow_full_fallback and _allow_gen_tasks_full_fallback(tenant_id):
-        return _latest_rows_by_task_id(_qa_gen_tasks_path(tenant_id))
+        return _latest_rows_by_task_id_from_paths(
+            _qa_read_paths(tenant_id, "gen_tasks.jsonl"),
+            stop_after=stop_after,
+        )
     return {}
 
 
@@ -4479,10 +5113,16 @@ def _build_task_questions_from_bank(
         if "模板正式题" in row or "模板备选题" in row or str(row.get("模板父任务名称", "") or "").strip() == name:
             has_template_selection = True
     if has_template_selection:
-        matched_rows = [
+        formal_or_backup_rows = [
             row for row in matched_rows
             if bool(row.get("模板正式题")) or (include_template_backups and _is_bank_row_template_backup_pass(row))
         ]
+        if formal_or_backup_rows:
+            matched_rows = formal_or_backup_rows
+        else:
+            # 模板任务在父任务中断/失败时，可能尚未完成“正式题收口”，此时仅有模板备选题。
+            # 为保证任务详情可回看已产出结果，回退展示“未显式判定失败”的暂存题。
+            matched_rows = [row for row in matched_rows if row.get("是否正式通过") is not False]
     else:
         matched_rows = [row for row in matched_rows if row.get("是否正式通过") is not False]
     questions: list[dict[str, Any]] = []
@@ -4513,6 +5153,39 @@ def _build_task_questions_from_bank(
             }
         )
     return questions
+
+
+def _build_task_questions_from_related_runs(tenant_id: str, task_name: str) -> list[dict[str, Any]]:
+    name = str(task_name or "").strip()
+    if not name:
+        return []
+    out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    running_index = 0
+    for run in _read_jsonl(_qa_runs_path(tenant_id)):
+        if not isinstance(run, dict):
+            continue
+        run_task_name = str(run.get("task_name", "") or ((run.get("config") or {}).get("task_name", "") if isinstance(run.get("config"), dict) else "") or "").strip()
+        if not run_task_name:
+            continue
+        if run_task_name != name and not _parse_template_child_task_name(name, run_task_name):
+            continue
+        questions = run.get("questions") if isinstance(run.get("questions"), list) else []
+        for row in questions:
+            if not isinstance(row, dict):
+                continue
+            qid = str(row.get("question_id", "") or "").strip()
+            if qid and qid in seen_ids:
+                continue
+            if qid:
+                seen_ids.add(qid)
+            running_index += 1
+            item = dict(row)
+            item["index"] = running_index
+            if not str(item.get("question_id", "") or "").strip():
+                item["question_id"] = f"run_task:{running_index}"
+            out.append(item)
+    return out
 
 
 def _resolve_judge_aggregate_task_name(tenant_id: str, run: dict[str, Any]) -> str:
@@ -4751,6 +5424,24 @@ def _build_task_related_run_diagnostics(tenant_id: str, task: dict[str, Any]) ->
     repair_buckets: dict[int, dict[str, Any]] = {}
     seen_keys: set[tuple[str, str]] = set()
     subtask_index: dict[tuple[str, str], dict[str, Any]] = {}
+    latest_rows = _latest_gen_task_rows(tenant_id, allow_full_fallback=True)
+    latest_task_name_to_id: dict[str, str] = {}
+    for tid, row in latest_rows.items():
+        if not isinstance(row, dict):
+            continue
+        tn = str(row.get("task_name", "") or "").strip()
+        if not tn:
+            continue
+        prev_tid = latest_task_name_to_id.get(tn, "")
+        if not prev_tid:
+            latest_task_name_to_id[tn] = str(tid or "")
+            continue
+        prev_row = latest_rows.get(prev_tid) or {}
+        prev_ts = _parse_iso_ts(str(prev_row.get("updated_at", "") or "")) or _parse_iso_ts(str(prev_row.get("started_at", "") or ""))
+        cur_ts = _parse_iso_ts(str(row.get("updated_at", "") or "")) or _parse_iso_ts(str(row.get("started_at", "") or ""))
+        if cur_ts and prev_ts and cur_ts >= prev_ts:
+            latest_task_name_to_id[tn] = str(tid or "")
+
     for run in reversed(_read_jsonl(_qa_runs_path(tenant_id))):
         if not isinstance(run, dict):
             continue
@@ -4773,7 +5464,11 @@ def _build_task_related_run_diagnostics(tenant_id: str, task: dict[str, Any]) ->
         error_count = int(metrics.get("error_count", 0) or len(errors))
         ended_at = str(run.get("ended_at", "") or "").strip()
         status = "running" if not ended_at else ("failed" if error_count > 0 and saved_count <= 0 else "completed")
+        inferred_task_id = str(cfg.get("task_id", "") or "").strip()
+        if not inferred_task_id:
+            inferred_task_id = str(latest_task_name_to_id.get(run_task_name, "") or "").strip()
         row = {
+            "task_id": inferred_task_id,
             "task_name": run_task_name,
             "run_id": run_id,
             "kind": str(parsed.get("kind", "") or "child"),
@@ -4785,10 +5480,27 @@ def _build_task_related_run_diagnostics(tenant_id: str, task: dict[str, Any]) ->
             "generated_count": generated_count,
             "saved_count": saved_count,
             "error_count": error_count,
+            "generated_total_count": int(max(generated_count, 0) + max(error_count, 0)),
             "source_task_id": str(cfg.get("task_id", "") or ""),
             "source_parent_task_id": task_id,
             "latest_error": str(errors[-1]).strip() if errors else "",
         }
+        # Prefer latest persisted task row (O(1) map lookup) to avoid per-subtask heavy snapshot scans.
+        if inferred_task_id:
+            child_task = latest_rows.get(inferred_task_id)
+            if isinstance(child_task, dict):
+                child_errors = [str(x).strip() for x in (child_task.get("errors") or []) if str(x).strip()]
+                row["status"] = str(child_task.get("status", "") or row["status"])
+                row["started_at"] = str(child_task.get("started_at", "") or row["started_at"])
+                row["ended_at"] = str(child_task.get("ended_at", "") or row["ended_at"])
+                row["generated_count"] = int(child_task.get("generated_count", row["generated_count"]) or row["generated_count"])
+                row["saved_count"] = int(child_task.get("saved_count", row["saved_count"]) or row["saved_count"])
+                row["error_count"] = int(child_task.get("error_count", row["error_count"]) or row["error_count"])
+                row["generated_total_count"] = int(max(int(row.get("generated_count", 0) or 0), 0) + max(int(row.get("error_count", 0) or 0), 0))
+                if child_errors:
+                    row["latest_error"] = child_errors[-1]
+        if "generated_total_count" not in row:
+            row["generated_total_count"] = int(max(int(row.get("generated_count", 0) or 0), 0) + max(int(row.get("error_count", 0) or 0), 0))
         subtasks.append(row)
         subtask_index[dedupe_key] = row
         if row["kind"] == "repair" and row["round"] > 0:
@@ -4808,15 +5520,16 @@ def _build_task_related_run_diagnostics(tenant_id: str, task: dict[str, Any]) ->
                 },
             )
             bucket["subtask_count"] = int(bucket.get("subtask_count", 0) or 0) + 1
-            bucket["generated_count"] = int(bucket.get("generated_count", 0) or 0) + generated_count
-            bucket["saved_count"] = int(bucket.get("saved_count", 0) or 0) + saved_count
-            bucket["error_count"] = int(bucket.get("error_count", 0) or 0) + error_count
+            bucket["generated_count"] = int(bucket.get("generated_count", 0) or 0) + int(row.get("generated_count", 0) or 0)
+            bucket["saved_count"] = int(bucket.get("saved_count", 0) or 0) + int(row.get("saved_count", 0) or 0)
+            bucket["error_count"] = int(bucket.get("error_count", 0) or 0) + int(row.get("error_count", 0) or 0)
+            bucket["generated_total_count"] = int(bucket.get("generated_total_count", 0) or 0) + int(row.get("generated_total_count", 0) or 0)
             bucket["run_ids"] = list(bucket.get("run_ids") or []) + ([run_id] if run_id else [])
             bucket["statuses"] = list(bucket.get("statuses") or []) + [status]
 
-    # Bank recovery: some historical template child runs contributed saved questions,
-    # but their qa_run/task snapshots did not preserve parent linkage. Recover them by
-    # task_name prefix so parent cumulative count and child rows use the same source set.
+    # Bank recovery: merge bank-derived shard counters to补齐缺失子任务，并修正每个子任务可复核产出量。
+    bank_subtask_counts: dict[str, int] = {}
+    bank_subtask_meta: dict[str, dict[str, Any]] = {}
     for row in _load_bank(tenant_bank_path(tenant_id)):
         if not isinstance(row, dict):
             continue
@@ -4826,30 +5539,49 @@ def _build_task_related_run_diagnostics(tenant_id: str, task: dict[str, Any]) ->
         parsed = _parse_template_child_task_name(task_name, run_task_name)
         if not isinstance(parsed, dict):
             continue
-        run_id = str(row.get("出题RunID") or row.get("source_run_id") or row.get("run_id") or "").strip()
-        dedupe_key = (run_task_name, run_id)
-        existing = subtask_index.get(dedupe_key)
-        if existing is None:
-            existing = {
-                "task_name": run_task_name,
-                "run_id": run_id,
+        bank_subtask_counts[run_task_name] = int(bank_subtask_counts.get(run_task_name, 0) or 0) + 1
+        if run_task_name not in bank_subtask_meta:
+            bank_subtask_meta[run_task_name] = {
                 "kind": str(parsed.get("kind", "") or "child"),
                 "round": int(parsed.get("round", 0) or 0),
                 "shard_index": int(parsed.get("shard_index", 0) or 0),
-                "status": "completed",
-                "started_at": "",
-                "ended_at": "",
-                "generated_count": 0,
-                "saved_count": 0,
-                "error_count": 0,
-                "source_task_id": "",
-                "source_parent_task_id": task_id,
-                "latest_error": "",
             }
-            subtasks.append(existing)
-            subtask_index[dedupe_key] = existing
-        existing["saved_count"] = int(existing.get("saved_count", 0) or 0) + 1
-        existing["generated_count"] = int(max(int(existing.get("generated_count", 0) or 0), int(existing["saved_count"])))
+
+    by_task_name: dict[str, dict[str, Any]] = {}
+    for row in subtasks:
+        name_key = str(row.get("task_name", "") or "").strip()
+        if name_key and name_key not in by_task_name:
+            by_task_name[name_key] = row
+    for run_task_name, count in bank_subtask_counts.items():
+        if count <= 0:
+            continue
+        existing = by_task_name.get(run_task_name)
+        if isinstance(existing, dict):
+            existing["saved_count"] = int(max(int(existing.get("saved_count", 0) or 0), count))
+            existing["generated_count"] = int(max(int(existing.get("generated_count", 0) or 0), count))
+            existing["generated_total_count"] = int(max(int(existing.get("generated_total_count", 0) or 0), int(existing.get("generated_count", 0) or 0) + int(existing.get("error_count", 0) or 0)))
+            continue
+        meta = bank_subtask_meta.get(run_task_name) or {}
+        recovered = {
+            "task_id": "",
+            "task_name": run_task_name,
+            "run_id": "",
+            "kind": str(meta.get("kind", "") or "child"),
+            "round": int(meta.get("round", 0) or 0),
+            "shard_index": int(meta.get("shard_index", 0) or 0),
+            "status": "completed",
+            "started_at": "",
+            "ended_at": "",
+            "generated_count": int(count),
+            "saved_count": int(count),
+            "error_count": 0,
+            "generated_total_count": int(count),
+            "source_task_id": "",
+            "source_parent_task_id": task_id,
+            "latest_error": "",
+        }
+        subtasks.append(recovered)
+        by_task_name[run_task_name] = recovered
     strategy_map: dict[int, str] = {}
     reason_map: dict[int, str] = {}
     for err in task.get("errors") or []:
@@ -4894,19 +5626,74 @@ def _build_live_subtask_traces(tenant_id: str, task: dict[str, Any]) -> list[dic
     subtasks = [x for x in (task.get("subtasks") or []) if isinstance(x, dict)]
     if not subtasks:
         return []
+    concrete_named_subtasks: set[str] = set()
+    for sub in subtasks:
+        if not isinstance(sub, dict):
+            continue
+        task_name = str(sub.get("task_name", "") or "").strip()
+        if not task_name:
+            continue
+        if str(sub.get("task_id", "") or "").strip() or str(sub.get("run_id", "") or "").strip():
+            concrete_named_subtasks.add(task_name)
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for sub in subtasks:
         child_task_id = str(sub.get("task_id", "") or "").strip()
-        if not child_task_id or child_task_id in seen:
+        sub_run_id = str(sub.get("run_id", "") or "").strip()
+        sub_task_name = str(sub.get("task_name", "") or "").strip()
+        # Prefer concrete task rows. Anonymous summary rows with the same task_name only add duplicate empty traces.
+        if not child_task_id and not sub_run_id and sub_task_name and sub_task_name in concrete_named_subtasks:
             continue
-        seen.add(child_task_id)
-        child = _get_latest_gen_task_snapshot(tenant_id, child_task_id)
-        if not isinstance(child, dict):
-            child = _read_persisted_task(tenant_id, child_task_id)
-        if not isinstance(child, dict):
+        dedupe_id = child_task_id or sub_run_id or sub_task_name
+        if not dedupe_id or dedupe_id in seen:
             continue
-        trace_rows = [x for x in (child.get("process_trace") or []) if isinstance(x, dict)]
+        seen.add(dedupe_id)
+        child = None
+        if child_task_id:
+            child = _get_latest_gen_task_snapshot(tenant_id, child_task_id)
+            if not isinstance(child, dict):
+                child = _read_persisted_task(tenant_id, child_task_id)
+        trace_rows = [x for x in ((child or {}).get("process_trace") or []) if isinstance(x, dict)]
+        run = _get_qa_run_by_id(tenant_id, sub_run_id) if sub_run_id else None
+        if not trace_rows and isinstance(run, dict):
+            run_trace = [x for x in (run.get("process_trace") or []) if isinstance(x, dict)]
+            if run_trace:
+                trace_rows = run_trace
+            else:
+                run_questions = run.get("questions") if isinstance(run.get("questions"), list) else []
+                if run_questions:
+                    trace_rows = _build_minimal_trace_from_qa_questions(run_questions)
+            run_errors = [str(x).strip() for x in (run.get("errors") or []) if str(x).strip()]
+            if run_errors:
+                base_idx = len(trace_rows)
+                for err_idx, err_msg in enumerate(run_errors, start=1):
+                    trace_rows.append(
+                        {
+                            "index": base_idx + err_idx,
+                            "target_index": base_idx + err_idx,
+                            "question_id": f"fail:{sub_run_id or dedupe_id}:{err_idx}",
+                            "slice_id": 0,
+                            "slice_path": "",
+                            "elapsed_ms": 0,
+                            "timing_unknown": True,
+                            "saved": False,
+                            "steps": [
+                                {
+                                    "seq": 1,
+                                    "node": "system",
+                                    "level": "error",
+                                    "message": "出题失败",
+                                    "detail": err_msg,
+                                    "time": "",
+                                    "elapsed_ms": 0,
+                                    "delta_ms": 0,
+                                    "run_id": 0,
+                                }
+                            ],
+                            "final_json": {},
+                            "critic_result": {"passed": False, "reason": err_msg},
+                        }
+                    )
         target_start = int(sub.get("target_start", 0) or 0)
         mapped_trace: list[dict[str, Any]] = []
         for idx, row in enumerate(trace_rows, start=1):
@@ -4918,8 +5705,9 @@ def _build_live_subtask_traces(tenant_id: str, task: dict[str, Any]) -> list[dic
                 if not int(mapped.get("index", 0) or 0):
                     mapped["index"] = global_target
             mapped_trace.append(mapped)
-        if not mapped_trace and str(child.get("status", "") or "").strip().lower() in {"pending", "running"}:
-            current_node = str(child.get("current_node", "") or "").strip() or "system"
+        child_status = str((child or {}).get("status", "") or sub.get("status", "") or "").strip().lower()
+        if not mapped_trace and child_status in {"pending", "running"} and isinstance(child, dict):
+            current_node = str((child or {}).get("current_node", "") or "").strip() or "system"
             current_label = (
                 f"第 {int(target_start)} 题"
                 if int(sub.get("target_start", 0) or 0) == int(sub.get("target_end", 0) or 0) and int(target_start) > 0
@@ -4956,12 +5744,16 @@ def _build_live_subtask_traces(tenant_id: str, task: dict[str, Any]) -> list[dic
                     "critic_result": {},
                 }
             ]
+        # Ended subtasks without replayable traces should not produce noisy placeholder rows in UI.
+        if not mapped_trace and child_status in {"completed", "failed", "cancelled", "canceled"}:
+            continue
         out.append(
             {
-                "task_id": child_task_id,
-                "task_name": str(child.get("task_name", "") or sub.get("task_name", "") or ""),
-                "status": str(child.get("status", "") or sub.get("status", "") or ""),
-                "current_node": str(child.get("current_node", "") or ""),
+                "task_id": child_task_id or sub_run_id or sub_task_name,
+                "task_name": str((child or {}).get("task_name", "") or sub_task_name or ""),
+                "status": str((child or {}).get("status", "") or sub.get("status", "") or ""),
+                "current_node": str((child or {}).get("current_node", "") or ""),
+                "run_id": sub_run_id,
                 "target_start": int(sub.get("target_start", 0) or 0),
                 "target_end": int(sub.get("target_end", 0) or 0),
                 "round": int(sub.get("round", 0) or 0),
@@ -4977,6 +5769,48 @@ def _build_live_subtask_traces(tenant_id: str, task: dict[str, Any]) -> list[dic
         )
     )
     return out
+
+
+def _flatten_live_subtask_traces(live_subtask_traces: list[dict[str, Any]], *, limit: int = 4000) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen_fingerprints: set[tuple[Any, ...]] = set()
+    if not isinstance(live_subtask_traces, list):
+        return rows
+    for sub in live_subtask_traces:
+        if not isinstance(sub, dict):
+            continue
+        sub_trace = [x for x in (sub.get("process_trace") or []) if isinstance(x, dict)]
+        if not sub_trace:
+            continue
+        sub_task_id = str(sub.get("task_id", "") or "").strip()
+        sub_task_name = str(sub.get("task_name", "") or "").strip()
+        for row in sub_trace:
+            mapped = dict(row)
+            if sub_task_id:
+                mapped["subtask_id"] = sub_task_id
+            if sub_task_name:
+                mapped["subtask_name"] = sub_task_name
+            first_step = (mapped.get("steps") or [{}])[0] if isinstance(mapped.get("steps"), list) and mapped.get("steps") else {}
+            fp = (
+                str(mapped.get("question_id", "") or "").strip(),
+                int(mapped.get("target_index", 0) or 0),
+                int(mapped.get("slice_id", 0) or 0),
+                str(sub_task_name or "").strip(),
+                bool(mapped.get("saved")),
+                str(first_step.get("node", "") or "").strip(),
+                str(first_step.get("message", "") or "").strip(),
+                str(first_step.get("detail", "") or "").strip(),
+            )
+            if fp in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fp)
+            rows.append(mapped)
+            if len(rows) >= max(1, int(limit or 1)):
+                break
+        if len(rows) >= max(1, int(limit or 1)):
+            break
+    rows.sort(key=lambda x: (int(x.get("target_index", 0) or 0), int(x.get("index", 0) or 0)))
+    return rows
 
 
 def _derive_current_subcall(task: dict[str, Any]) -> dict[str, Any]:
@@ -5090,10 +5924,26 @@ def _hydrate_task_detail_from_run(tenant_id: str, task: dict[str, Any]) -> dict[
     questions = run.get("questions") if isinstance(run, dict) and isinstance(run.get("questions"), list) else []
     has_task_trace = bool([x for x in (out.get("process_trace") or []) if isinstance(x, dict)])
     has_task_items = bool([x for x in (out.get("items") or []) if isinstance(x, dict)])
-    # 运行中的任务优先展示实时 task snapshot；不要同步扫题库补水，否则
-    # 模板父任务/子任务在高频轮询时会被整库扫描拖死，页面拿不到实时 trace。
+    # 常规回填：终态任务从 run/bank 回填。
     if not questions and not is_live_task and not has_task_trace and not has_task_items:
-        questions = _build_task_questions_from_bank(tenant_id, str(out.get("task_name", "") or ""))
+        task_name = str(out.get("task_name", "") or "")
+        questions = _build_task_questions_from_related_runs(tenant_id, task_name)
+        bank_questions = _build_task_questions_from_bank(tenant_id, task_name)
+        # Prefer the larger recoverable set so detail "可复核"与任务字段口径一致，避免出现 19/33 混淆。
+        if len(bank_questions) > len(questions):
+            questions = bank_questions
+    # 续跑中的父任务也要看到历史记录：当已保存题数>0但当前快照 items/trace 不完整时，补历史回填。
+    if not questions and is_live_task:
+        req = out.get("request") if isinstance(out.get("request"), dict) else {}
+        is_parent = not str(out.get("parent_task_id", "") or "").strip()
+        is_template_task = bool(str(req.get("template_id", "") or out.get("template_id", "") or "").strip())
+        if is_parent and is_template_task and int(out.get("saved_count", 0) or 0) > 0:
+            task_name = str(out.get("task_name", "") or "")
+            bank_questions = _build_task_questions_from_bank(tenant_id, task_name)
+            if bank_questions:
+                questions = bank_questions
+            else:
+                questions = _build_task_questions_from_related_runs(tenant_id, task_name)
     if questions and not (isinstance(out.get("items"), list) and out.get("items")):
         out["items"] = _build_task_items_from_qa_questions(questions)
     if questions and not (isinstance(out.get("process_trace"), list) and out.get("process_trace")):
@@ -5109,6 +5959,9 @@ def _hydrate_task_detail_from_run(tenant_id: str, task: dict[str, Any]) -> dict[
             "current": max(current, int(out["generated_count"])),
             "total": max(total, int((out.get("request") or {}).get("num_questions", 0) or 0)),
         }
+    out["generated_total_count"] = int(
+        max(int(out.get("generated_total_count", 0) or 0), int(out.get("generated_count", 0) or 0) + int(out.get("error_count", 0) or 0))
+    )
     bm = run.get("batch_metrics") if isinstance(run, dict) and isinstance(run.get("batch_metrics"), dict) else {}
     if bm:
         out["batch_metrics"] = bm
@@ -5120,6 +5973,30 @@ def _hydrate_task_detail_from_run(tenant_id: str, task: dict[str, Any]) -> dict[
     if not is_live_task and not live_subtasks:
         diagnostics = _build_task_related_run_diagnostics(tenant_id, out)
         diag_subtasks = diagnostics.get("subtasks") if isinstance(diagnostics.get("subtasks"), list) else []
+    elif is_live_task:
+        # 运行中也补一份历史子任务，保证续跑详情与首次任务同结构可回放。
+        diagnostics = _build_task_related_run_diagnostics(tenant_id, out)
+        diag_subtasks = diagnostics.get("subtasks") if isinstance(diagnostics.get("subtasks"), list) else []
+    if is_live_task and diag_subtasks:
+        live_ids = {
+            str(x.get("task_id", "") or "").strip()
+            for x in live_subtasks
+            if isinstance(x, dict) and str(x.get("task_id", "") or "").strip()
+        }
+        filtered_diag_subtasks: list[dict[str, Any]] = []
+        for row in diag_subtasks:
+            if not isinstance(row, dict):
+                continue
+            st = str(row.get("status", "") or "").strip().lower()
+            tid_row = str(row.get("task_id", "") or "").strip()
+            if st in {"pending", "running"}:
+                if not tid_row:
+                    continue
+                if tid_row not in live_ids:
+                    continue
+            filtered_diag_subtasks.append(row)
+        diag_subtasks = filtered_diag_subtasks
+
     merged_subtasks_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in diag_subtasks:
         if not isinstance(row, dict):
@@ -5138,6 +6015,40 @@ def _hydrate_task_detail_from_run(tenant_id: str, task: dict[str, Any]) -> dict[
             merged["run_id"] = str(base.get("run_id", "") or "")
         merged_subtasks_by_key[key] = merged
     merged_subtasks = list(merged_subtasks_by_key.values())
+    deduped_subtasks: dict[tuple[str, str, int, int, int], dict[str, Any]] = {}
+    for row in merged_subtasks:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            str(row.get("task_name", "") or "").strip(),
+            str(row.get("kind", "") or "").strip(),
+            int(row.get("round", 0) or 0),
+            int(row.get("target_start", 0) or 0),
+            int(row.get("target_end", 0) or 0),
+        )
+        prev = deduped_subtasks.get(key)
+        if not isinstance(prev, dict):
+            deduped_subtasks[key] = row
+            continue
+        prev_has_task_id = bool(str(prev.get("task_id", "") or "").strip())
+        cur_has_task_id = bool(str(row.get("task_id", "") or "").strip())
+        if cur_has_task_id and not prev_has_task_id:
+            deduped_subtasks[key] = row
+            continue
+        prev_updated = str(prev.get("updated_at", "") or prev.get("ended_at", "") or prev.get("started_at", "") or "")
+        cur_updated = str(row.get("updated_at", "") or row.get("ended_at", "") or row.get("started_at", "") or "")
+        if cur_updated >= prev_updated:
+            deduped_subtasks[key] = row
+    merged_subtasks = list(deduped_subtasks.values())
+    for row in merged_subtasks:
+        if not isinstance(row, dict):
+            continue
+        row["generated_total_count"] = int(
+            max(
+                int(row.get("generated_total_count", 0) or 0),
+                int(row.get("generated_count", 0) or 0) + int(row.get("error_count", 0) or 0),
+            )
+        )
     if (
         not (isinstance(out.get("process_trace"), list) and out.get("process_trace"))
         and str(out.get("status", "")).strip().lower() in {"pending", "running"}
@@ -5181,6 +6092,7 @@ def _hydrate_task_detail_from_run(tenant_id: str, task: dict[str, Any]) -> dict[
             }
         ]
     out["subtasks"] = merged_subtasks
+    out["subtask_count"] = len(merged_subtasks)
     out["repair_rounds"] = (
         diagnostics.get("repair_rounds") if isinstance(diagnostics.get("repair_rounds"), list) else []
     )
@@ -5189,6 +6101,18 @@ def _hydrate_task_detail_from_run(tenant_id: str, task: dict[str, Any]) -> dict[
     out["slice_failure_stats"] = _summarize_slice_failure_stats(trace_rows)
     out["current_subcall"] = _derive_current_subcall(out)
     out["live_subtask_traces"] = _build_live_subtask_traces(tenant_id, out)
+    if not trace_rows and isinstance(out.get("live_subtask_traces"), list) and out.get("live_subtask_traces"):
+        stitched_trace = _flatten_live_subtask_traces(out.get("live_subtask_traces") or [])
+        if stitched_trace:
+            out["process_trace"] = stitched_trace
+            trace_rows = [x for x in stitched_trace if isinstance(x, dict)]
+            if not (isinstance(out.get("items"), list) and out.get("items")):
+                out["items"] = [
+                    dict(x.get("final_json"))
+                    for x in trace_rows
+                    if isinstance(x, dict) and bool(x.get("saved")) and isinstance(x.get("final_json"), dict)
+                ]
+            out["slice_failure_stats"] = _summarize_slice_failure_stats(trace_rows)
     return out
 
 
@@ -5502,6 +6426,17 @@ def _make_gen_task(tenant_id: str, system_user: str, body: dict[str, Any]) -> di
             "persist_to_bank": bool(body.get("persist_to_bank", body.get("save_to_bank", True))),
             "save_to_bank": bool(body.get("persist_to_bank", body.get("save_to_bank", True))),
             "slice_ids": [int(x) for x in (body.get("slice_ids") or []) if str(x).isdigit()],
+            "planned_slice_ids": [int(x) for x in (body.get("planned_slice_ids") or []) if str(x).isdigit()],
+            "planned_slots": [
+                {
+                    "slice_id": int(slot.get("slice_id", 0) or 0),
+                    "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
+                    "mastery": str(slot.get("mastery", "") or "").strip(),
+                    "_global_target_index": int(slot.get("_global_target_index", 0) or 0),
+                }
+                for slot in (body.get("planned_slots") or [])
+                if isinstance(slot, dict) and str(slot.get("slice_id", "")).isdigit()
+            ],
             "material_version_id": str(body.get("material_version_id", "")).strip(),
             "resume_from_task_id": str(body.get("resume_from_task_id", "")).strip(),
             "resume_done_count": int(body.get("resume_done_count", 0) or 0),
@@ -5577,10 +6512,19 @@ def _merge_task_trace_by_index(base: list[dict[str, Any]], incoming: list[dict[s
 
 
 def _is_task_cancelled(task_id: str) -> bool:
-    """True if this task has been requested to cancel (used by generate loop to exit early)."""
+    """True if this task (or its parent task) has been requested to cancel."""
     with GEN_TASK_LOCK:
         t = GEN_TASKS.get(str(task_id or ""))
-        return bool(t and t.get("cancel_requested"))
+        if not isinstance(t, dict):
+            return False
+        if bool(t.get("cancel_requested")):
+            return True
+        parent_task_id = str(t.get("parent_task_id", "") or "").strip()
+        if parent_task_id and parent_task_id != str(task_id or "").strip():
+            parent = GEN_TASKS.get(parent_task_id)
+            if isinstance(parent, dict):
+                return bool(parent.get("cancel_requested"))
+        return False
 
 
 def _resolve_task_snapshot_for_policy(tenant_id: str, task_id: str) -> dict[str, Any] | None:
@@ -5622,6 +6566,58 @@ def _is_task_auto_bank_enabled(tenant_id: str, task_id: str, default_enabled: bo
     return bool(req.get("persist_to_bank", req.get("save_to_bank", default_enabled)))
 
 
+def _sync_parent_subtask_stats_from_child(
+    tenant_id: str,
+    child_task_id: str,
+    child_task: dict[str, Any],
+    *,
+    now_iso: str,
+) -> None:
+    """
+    将模板/并发子任务在出题过程中的 generated_count、saved_count 写回父任务 subtasks 对应行。
+    父任务表格原仅在分片 HTTP 返回后更新，导致进行中子任务长期显示 0/0；须在每次子任务 live 更新后同步。
+
+    调用方须已持有 GEN_TASK_LOCK，且 child_task 为内存中已 apply patch 后的任务快照。
+    """
+    parent_id = str((child_task or {}).get("parent_task_id", "") or "").strip()
+    if not parent_id:
+        return
+    parent = GEN_TASKS.get(parent_id)
+    if not isinstance(parent, dict) or str(parent.get("tenant_id", "")) != tenant_id:
+        return
+    subtasks = parent.get("subtasks")
+    if not isinstance(subtasks, list) or not subtasks:
+        return
+    cid = str(child_task_id or "").strip()
+    if not cid:
+        return
+    gen = int((child_task or {}).get("generated_count", 0) or 0)
+    sav = int((child_task or {}).get("saved_count", 0) or 0)
+    err = int((child_task or {}).get("error_count", 0) or 0)
+    child_status = str((child_task or {}).get("status", "") or "").strip().lower()
+    run_id = str((child_task or {}).get("run_id", "") or "").strip()
+    matched = False
+    for sub in subtasks:
+        if not isinstance(sub, dict):
+            continue
+        if str(sub.get("task_id", "") or "").strip() != cid:
+            continue
+        matched = True
+        sub["generated_count"] = gen
+        sub["saved_count"] = sav
+        sub["error_count"] = err
+        if run_id:
+            sub["run_id"] = run_id
+        if child_status in {"pending", "running"}:
+            prev = str(sub.get("status", "") or "").strip().lower()
+            if prev not in {"failed", "cancelled"}:
+                sub["status"] = "running"
+                sub["ended_at"] = ""
+        break
+    if matched:
+        parent["updated_at"] = now_iso
+
+
 def _update_task_live(tenant_id: str, task_id: str, patch: dict[str, Any], trace_updates: list[dict[str, Any]] | None = None) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with GEN_TASK_LOCK:
@@ -5633,6 +6629,7 @@ def _update_task_live(tenant_id: str, task_id: str, patch: dict[str, Any], trace
             task["process_trace"] = _merge_task_trace_by_index(task.get("process_trace") or [], trace_updates)
         task["error_count"] = len(task.get("errors") or [])
         task["updated_at"] = now
+        _sync_parent_subtask_stats_from_child(tenant_id, str(task_id or ""), task, now_iso=now)
 
 
 def _mark_live_final_json_stale(question_trace: dict[str, Any], append_step: Callable[..., None] | None = None) -> None:
@@ -5712,6 +6709,10 @@ def _get_latest_gen_task_snapshot(tenant_id: str, task_id: str) -> dict[str, Any
     if isinstance(live_snap, dict) and live_status in {"pending", "running"}:
         return live_snap
     file_snap = _read_gen_task_snapshot_file(tenant_id, tid)
+    persisted = _read_persisted_task(tenant_id, tid)
+    persisted_snap = dict(persisted) if isinstance(persisted, dict) else None
+    if isinstance(file_snap, dict) and isinstance(persisted_snap, dict):
+        file_snap = _pick_newer_terminal_task_snapshot(file_snap, persisted_snap) or file_snap
     if isinstance(file_snap, dict):
         if isinstance(live_snap, dict):
             live_ts = _parse_iso_ts(str(live_snap.get("updated_at", "") or "")) or _parse_iso_ts(
@@ -5724,8 +6725,6 @@ def _get_latest_gen_task_snapshot(tenant_id: str, task_id: str) -> dict[str, Any
                 return live_snap if live_ts >= file_ts else file_snap
             return live_snap
         return file_snap
-    persisted = _read_persisted_task(tenant_id, tid)
-    persisted_snap = dict(persisted) if isinstance(persisted, dict) else None
     if isinstance(live_snap, dict) and isinstance(persisted_snap, dict):
         live_ts = _parse_iso_ts(str(live_snap.get("updated_at", "") or "")) or _parse_iso_ts(
             str(live_snap.get("started_at", "") or "")
@@ -5742,6 +6741,41 @@ def _get_latest_gen_task_snapshot(tenant_id: str, task_id: str) -> dict[str, Any
     if isinstance(persisted_snap, dict):
         return persisted_snap
     return None
+
+
+def _pick_newer_terminal_task_snapshot(
+    primary_task: dict[str, Any] | None,
+    candidate_task: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """
+    Prefer candidate when primary looks active (pending/running) but candidate is a newer terminal snapshot.
+    This prevents stale live snapshot files from masking persisted failed/cancelled/completed status.
+    """
+    if not isinstance(primary_task, dict):
+        return dict(candidate_task) if isinstance(candidate_task, dict) else primary_task
+    if not isinstance(candidate_task, dict):
+        return dict(primary_task)
+    primary_status = str(primary_task.get("status", "") or "").strip().lower()
+    candidate_status = str(candidate_task.get("status", "") or "").strip().lower()
+    primary_active = primary_status in {"pending", "running"}
+    candidate_terminal = candidate_status in {"completed", "failed", "cancelled", "canceled"}
+    if not (primary_active and candidate_terminal):
+        return dict(primary_task)
+
+    def _task_ts(task: dict[str, Any]) -> datetime | None:
+        for key in ("updated_at", "ended_at", "started_at", "created_at"):
+            ts = _parse_iso_ts(str(task.get(key, "") or ""))
+            if isinstance(ts, datetime):
+                return ts
+        return None
+
+    primary_ts = _task_ts(primary_task)
+    candidate_ts = _task_ts(candidate_task)
+    if candidate_ts and primary_ts:
+        return dict(candidate_task) if candidate_ts >= primary_ts else dict(primary_task)
+    if candidate_ts and not primary_ts:
+        return dict(candidate_task)
+    return dict(primary_task)
 
 
 def _build_resume_task_body_from_source(
@@ -5905,10 +6939,14 @@ def _finalize_internal_child_gen_task(
     )
     target_not_met = expected_total > 0 and int(generated_count) < int(expected_total)
     has_errors = len(merged_errors) > 0
+    # 出题循环会把每次失败尝试都 append 到 errors，重试成功后也不会回滚；若已达成计划题量，不应仅因历史错误标 partial。
+    target_fully_met = expected_total > 0 and int(generated_count) >= int(expected_total)
     if cancelled:
         status = "cancelled"
     elif explicit_error or status_code >= 400 or (not payload_success and not success):
         status = "failed"
+    elif target_fully_met:
+        status = "completed"
     elif payload_partial or target_not_met or has_errors:
         status = "partial"
     else:
@@ -6214,7 +7252,7 @@ def _compute_template_parallel_min_shard_size(template_plan: dict[str, Any], tot
         for item in (row.get("mastery_breakdown") or []):
             if isinstance(item, dict) and int(item.get("count", 0) or 0) > 0:
                 active_combo_count += 1
-    min_size = max(20, active_route_count, active_mastery_count, active_combo_count)
+    min_size = max(4, active_mastery_count)
     return min(max(1, min_size), max(1, int(total or 1)))
 
 
@@ -6223,10 +7261,19 @@ def _split_template_slots_for_parallel(
     shard_count: int,
 ) -> list[list[dict[str, Any]]]:
     if shard_count <= 1:
-        return [[{**slot, "_global_target_index": idx} for idx, slot in enumerate(planned_slots or [], start=1)]]
+        normalized: list[dict[str, Any]] = []
+        for idx, slot in enumerate(planned_slots or [], start=1):
+            global_idx = int(slot.get("_global_target_index", 0) or 0) if isinstance(slot, dict) else 0
+            if global_idx <= 0:
+                global_idx = idx
+            normalized.append({**slot, "_global_target_index": global_idx})
+        return [normalized]
     shards: list[list[dict[str, Any]]] = [[] for _ in range(shard_count)]
-    for global_idx, slot in enumerate(planned_slots or [], start=1):
-        shard_idx = (global_idx - 1) % shard_count
+    for local_idx, slot in enumerate(planned_slots or [], start=1):
+        global_idx = int(slot.get("_global_target_index", 0) or 0) if isinstance(slot, dict) else 0
+        if global_idx <= 0:
+            global_idx = local_idx
+        shard_idx = (local_idx - 1) % shard_count
         shards[shard_idx].append({**slot, "_global_target_index": global_idx})
     return [shard for shard in shards if shard]
 
@@ -6305,6 +7352,36 @@ def _analyze_template_parallel_result(
         if isinstance(candidate_lookup, dict) and isinstance(candidate_lookup.get("template_bucket_to_ids"), dict)
         else {}
     )
+    by_id = (
+        candidate_lookup.get("by_id")
+        if isinstance(candidate_lookup, dict) and isinstance(candidate_lookup.get("by_id"), dict)
+        else {}
+    )
+
+    def _same_mastery_template_slice_ids(m: str) -> set[int]:
+        """Collect slice ids that fall under any template route bucket with mastery ``m``."""
+        out: set[int] = set()
+        for (_rp, mm), sids in template_bucket_to_ids.items():
+            if mm != m:
+                continue
+            for x in sids or []:
+                if str(x).isdigit():
+                    out.add(int(x))
+        return out
+
+    def _cross_route_same_mastery_fallback_ok(*, sid: int, slot_mastery: str) -> bool:
+        """
+        True when ``sid`` is not in the strict (route_prefix, mastery) bucket but still valid:
+        same mastery as the slot and assigned to some template ``route_rules`` prefix (Level-4 pick).
+        """
+        if sid <= 0 or not slot_mastery:
+            return False
+        meta = by_id.get(sid) if isinstance(by_id.get(sid), dict) else {}
+        kb_mastery = str(meta.get("mastery", "") or "").strip()
+        if kb_mastery and kb_mastery != slot_mastery:
+            return False
+        return sid in _same_mastery_template_slice_ids(slot_mastery)
+
     for idx, slot in enumerate(planned_slots, start=1):
         row = by_target.get(idx)
         if not isinstance(row, dict):
@@ -6320,7 +7397,9 @@ def _analyze_template_parallel_result(
                 int(x) for x in (template_bucket_to_ids.get((route_prefix, mastery), []) or [])
                 if str(x).isdigit()
             }
-            if actual_sid not in allowed_ids:
+            if actual_sid not in allowed_ids and not _cross_route_same_mastery_fallback_ok(
+                sid=actual_sid, slot_mastery=mastery
+            ):
                 issues.append(
                     f"模板位次 {idx} 未命中指定桶：期望 route={route_prefix}, mastery={mastery}，实际 slice_id={actual_sid}"
                 )
@@ -6395,6 +7474,83 @@ def _collect_unique_saved_template_traces(
     return [by_target[idx] for idx in sorted(by_target.keys())]
 
 
+def _template_repair_trace_row_has_business_pass(row: dict[str, Any]) -> bool:
+    """判断 trace 是否已达业务可用（与模板聚合口径一致），用于补位轮换时识别「失败过的切片」。"""
+    if not isinstance(row, dict):
+        return False
+    final_json = row.get("final_json")
+    if not isinstance(final_json, dict) or not final_json:
+        return False
+    if bool(row.get("saved")) or bool(row.get("saved_with_issues")):
+        return True
+    critic_result = row.get("critic_result") if isinstance(row.get("critic_result"), dict) else {}
+    if critic_result.get("passed") is True:
+        return True
+    for step in (row.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        if str(step.get("node", "")).strip() == "critic" and str(step.get("message", "")).strip() == "审核通过":
+            return True
+    return False
+
+
+def _rotate_template_repair_slots_for_retry(
+    repair_slots: list[dict[str, Any]],
+    *,
+    merged_traces: list[dict[str, Any]],
+    candidate_lookup: dict[str, Any],
+    rotation_step: int,
+) -> list[dict[str, Any]]:
+    """
+    模板补位重试时在同 (route_prefix, mastery) 桶内轮换 slice_id，
+    避免同一策略+目标组合第二轮立刻被签名去重拦下，且始终粘在首次失败的切片上。
+    """
+    template_bucket_to_ids = (
+        candidate_lookup.get("template_bucket_to_ids")
+        if isinstance(candidate_lookup, dict) and isinstance(candidate_lookup.get("template_bucket_to_ids"), dict)
+        else {}
+    )
+    out: list[dict[str, Any]] = []
+    rs = max(0, int(rotation_step or 0))
+    for slot in repair_slots:
+        if not isinstance(slot, dict):
+            continue
+        gti = int(slot.get("_global_target_index", 0) or 0)
+        route_prefix = str(slot.get("route_prefix", "") or "").strip()
+        mastery = str(slot.get("mastery", "") or "").strip()
+        key = (route_prefix, mastery)
+        allowed_raw = template_bucket_to_ids.get(key)
+        if not isinstance(allowed_raw, list) or not allowed_raw:
+            out.append(dict(slot))
+            continue
+        allowed: list[int] = []
+        for x in allowed_raw:
+            if str(x).isdigit():
+                allowed.append(int(x))
+        if not allowed:
+            out.append(dict(slot))
+            continue
+        failed_sids: set[int] = set()
+        if gti > 0:
+            for tr in merged_traces:
+                if not isinstance(tr, dict):
+                    continue
+                if int(tr.get("target_index", 0) or 0) != gti:
+                    continue
+                if _template_repair_trace_row_has_business_pass(tr):
+                    continue
+                sid = int(tr.get("slice_id", 0) or 0)
+                if sid > 0:
+                    failed_sids.add(sid)
+        prefer = [sid for sid in allowed if sid not in failed_sids]
+        pool = prefer if prefer else allowed
+        pick = pool[rs % len(pool)]
+        new_slot = dict(slot)
+        new_slot["slice_id"] = int(pick)
+        out.append(new_slot)
+    return out
+
+
 def _plan_template_repair_strategy(report: dict[str, Any]) -> tuple[str, str]:
     issue_lines = [str(x).strip() for x in (report.get("issues") or []) if str(x).strip()]
     prompt = f"""
@@ -6424,12 +7580,16 @@ def _plan_template_repair_strategy(report: dict[str, Any]) -> tuple[str, str]:
 - 如果存在错位、重复或错桶，优先选 `retry_invalid_and_missing_slots`
 - 只有在问题无法通过补位/重试局部位次解决时，才选 `abort`
 
-只输出 JSON：
-{{
-  "strategy": "repair_missing_slots/retry_invalid_and_missing_slots/abort",
-  "reason": "一句话说明"
-}}
+输出格式（纯文本，不要 JSON）：
+第一行：STRATEGY=repair_missing_slots 或 retry_invalid_and_missing_slots 或 abort
+第二行：REASON=一句话说明
 """
+    # Rule-first guardrail: when invalid targets exist (duplicate/wrong-bucket/etc),
+    # always use combined repair to avoid LLM picking "missing only" and getting stuck.
+    invalid_targets = report.get("invalid_targets") if isinstance(report.get("invalid_targets"), list) else []
+    if invalid_targets:
+        return "retry_invalid_and_missing_slots", "存在错位/重复位次，优先局部作废并补跑"
+
     try:
         api_key, base_url, model_name = _resolve_generation_llm_from_primary_key()
         if not api_key:
@@ -6445,15 +7605,35 @@ def _plan_template_repair_strategy(report: dict[str, Any]) -> tuple[str, str]:
             max_tokens=200,
             timeout=60,
         )
-        parsed = parse_json_from_response(content)
-        strategy = str(parsed.get("strategy", "") or "").strip()
-        reason = str(parsed.get("reason", "") or "").strip()
+        raw = str(content or "").strip()
+        strategy = ""
+        reason = ""
+        line_candidates = [line.strip() for line in raw.splitlines() if line.strip()]
+        for line in line_candidates:
+            lower = line.lower()
+            if lower.startswith("strategy=") or lower.startswith("strategy:"):
+                strategy = (
+                    line.split("=", 1)[1].strip() if "=" in line else line.split(":", 1)[1].strip()
+                )
+                break
+        if not strategy:
+            # Fallback: find any allowed token in free-form text.
+            for token in ("retry_invalid_and_missing_slots", "repair_missing_slots", "abort"):
+                if token in raw:
+                    strategy = token
+                    break
+        for line in line_candidates:
+            lower = line.lower()
+            if lower.startswith("reason=") or lower.startswith("reason:"):
+                reason = line.split("=", 1)[1].strip() if "=" in line else line.split(":", 1)[1].strip()
+                break
+        if not reason and raw:
+            reason = raw[:120]
     except Exception:
         strategy = ""
         reason = ""
     allowed = {"repair_missing_slots", "retry_invalid_and_missing_slots", "abort"}
     if strategy not in allowed:
-        invalid_targets = report.get("invalid_targets") if isinstance(report.get("invalid_targets"), list) else []
         missing_targets = report.get("missing_target_indexes") if isinstance(report.get("missing_target_indexes"), list) else []
         if invalid_targets:
             strategy = "retry_invalid_and_missing_slots"
@@ -6584,7 +7764,10 @@ def _get_cached_retriever(
             should_build = True
     if not should_build:
         assert wait_event is not None
-        wait_event.wait()
+        if not wait_event.wait(timeout=float(_RETRIEVER_CACHE_WAIT_SECONDS)):
+            raise RuntimeError(
+                f"retriever_cache_wait_timeout[{cache_key[0]}]: waited {_RETRIEVER_CACHE_WAIT_SECONDS}s"
+            )
         with RETRIEVER_CACHE_LOCK:
             cached = RETRIEVER_CACHE.get(cache_key)
             if cached is not None:
@@ -7996,7 +9179,7 @@ def _find_task_trace_for_run_question(
     if tid:
         task_row = _read_persisted_task(tenant_id, tid)
     if not isinstance(task_row, dict):
-        for row in reversed(_read_jsonl(_qa_gen_tasks_path(tenant_id))):
+        for row in reversed(_read_jsonl(_qa_read_path(tenant_id, "gen_tasks.jsonl"))):
             if not isinstance(row, dict):
                 continue
             if str(row.get("run_id", "") or "").strip() == rid:
@@ -8743,19 +9926,32 @@ def _handle_options():
     except AccessDenied as e:
         return _error(str(e), "认证失败，请检查系统号或 OIDC Token", 401)
     g.principal = principal
-    g.request_id = f"{principal.system_user}-{os.getpid()}-{int(os.times().elapsed * 1000)}"
-    g.release_channel = select_release_channel(
-        principal.system_user,
-        forced_channel=(request.headers.get("X-Release-Channel") or ""),
-    )
+    try:
+        request_tick = int(os.times().elapsed * 1000)
+    except Exception:
+        request_tick = int(time.time() * 1000)
+    g.request_id = f"{principal.system_user}-{os.getpid()}-{request_tick}"
+    try:
+        g.release_channel = select_release_channel(
+            principal.system_user,
+            forced_channel=(request.headers.get("X-Release-Channel") or ""),
+        )
+    except Exception:
+        g.release_channel = "stable"
     api_key = f"{principal.system_user}:{request.path}"
-    allowed, retry_after = rate_limiter.allow(api_key)
+    try:
+        allowed, retry_after = rate_limiter.allow(api_key)
+    except Exception:
+        allowed, retry_after = True, 0
     if not allowed:
         resp = _error("RATE_LIMITED", f"请求过于频繁，请 {retry_after}s 后重试", 429)
         resp.headers["Retry-After"] = str(retry_after)
         return resp
-    if not circuit_breaker.allow(request.path):
-        return _error("CIRCUIT_OPEN", "服务正在自动恢复中，请稍后重试", 503)
+    try:
+        if not circuit_breaker.allow(request.path):
+            return _error("CIRCUIT_OPEN", "服务正在自动恢复中，请稍后重试", 503)
+    except Exception:
+        pass
     return None
 
 
@@ -8770,6 +9966,8 @@ def _record_success(response):
 def _unhandled_error(err: Exception):
     if isinstance(err, HTTPException):
         return err
+    if isinstance(err, TenantDataMissingError):
+        return _error("TENANT_DATA_MISSING", str(err), 400)
     circuit_breaker.record_failure(request.path)
     return _error("INTERNAL_ERROR", f"服务异常: {type(err).__name__}", 500)
 
@@ -9799,6 +10997,81 @@ def api_slice_add(tenant_id: str):
         {
             "ok": True,
             "slice_id": new_slice_id,
+            "path": path,
+            "material_version_id": material_version_id,
+        }
+    )
+
+
+@app.post('/api/<tenant_id>/slices/<int:slice_id>/delete')
+def api_slice_delete(tenant_id: str, slice_id: int):
+    try:
+        _check_tenant_permission(tenant_id, "slice.review")
+    except PermissionError as e:
+        return _error(str(e), "无权限删除切片", 403)
+
+    body = request.get_json(silent=True) or {}
+    requested_material_version_id = str(body.get("material_version_id", "")).strip()
+    reviewer = str(body.get("reviewer") or _get_system_user() or "admin")
+
+    material_version_id = _resolve_material_version_id(tenant_id, requested_material_version_id)
+    if requested_material_version_id and not material_version_id:
+        return _error("MATERIAL_NOT_FOUND", "教材版本不存在", 404)
+    if not material_version_id:
+        return _error("MATERIAL_NOT_FOUND", "未找到可用教材版本", 404)
+
+    kb_file = _resolve_slice_file_for_material(tenant_id, material_version_id)
+    if not kb_file:
+        return _error("NO_SLICES_FILE", "当前教材切片文件不存在", 400)
+    kb_items = _load_kb_items_from_file(kb_file)
+    if slice_id < 0 or slice_id >= len(kb_items):
+        return _error("BAD_REQUEST", f"slice_id out of range: {slice_id}", 400)
+    if _is_slice_deleted(kb_items[slice_id]):
+        return _error("BAD_REQUEST", f"slice already deleted: {slice_id}", 400)
+
+    item = kb_items[slice_id] if isinstance(kb_items[slice_id], dict) else {}
+    path = str(item.get("完整路径", "")).strip()
+    path3 = _path_prefix(path, 3)
+    deleted_at = datetime.now(timezone.utc).isoformat()
+
+    item["__deleted__"] = True
+    item["__deleted_at__"] = deleted_at
+    item["核心内容"] = ""
+    kb_items[slice_id] = item
+    _save_kb_items_to_file(kb_file, kb_items)
+
+    review_bucket = _load_slice_review_for_material(tenant_id, material_version_id)
+    if str(slice_id) in review_bucket:
+        review_bucket.pop(str(slice_id), None)
+        _save_material_bucket(_slice_review_file_by_material(tenant_id), material_version_id, review_bucket)
+
+    health_bucket = _load_slice_generation_health_for_material(tenant_id, material_version_id)
+    if str(slice_id) in health_bucket:
+        health_bucket.pop(str(slice_id), None)
+        _save_slice_generation_health_for_material(tenant_id, material_version_id, health_bucket)
+
+    if path3:
+        order_bucket = _load_slice_order_for_material(tenant_id, material_version_id)
+        group_ids = [sid for sid in order_bucket.get(path3, []) if int(sid) != int(slice_id)]
+        if group_ids:
+            order_bucket[path3] = group_ids
+        else:
+            order_bucket.pop(path3, None)
+        _save_slice_order_for_material(tenant_id, material_version_id, order_bucket)
+
+    write_audit_log(
+        tenant_id,
+        reviewer,
+        "slice.delete",
+        "slice_item",
+        str(slice_id),
+        after={"path": path, "path_prefix": path3, "material_version_id": material_version_id},
+    )
+    return _json_response(
+        {
+            "ok": True,
+            "deleted": True,
+            "slice_id": slice_id,
             "path": path,
             "material_version_id": material_version_id,
         }
@@ -10895,7 +12168,7 @@ def api_upload_material(tenant_id: str):
 
     upload_dir = _material_upload_dir(tenant_id)
     now = datetime.now(timezone.utc)
-    version_id = now.strftime("v%Y%m%d_%H%M%S")
+    version_id = _new_material_version_id(tenant_id, now)
     source_file = request.files.get("file")
     raw_text = (request.form.get("text") or "").strip()
     if source_file is None and not raw_text:
@@ -11271,6 +12544,7 @@ def api_generate_questions(tenant_id: str):
                     "slice_id": sid_int,
                     "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
                     "mastery": str(slot.get("mastery", "") or "").strip(),
+                    "_global_target_index": int(slot.get("_global_target_index", 0) or 0),
                 }
             )
         for sid in planned_slice_ids_input:
@@ -11292,7 +12566,8 @@ def api_generate_questions(tenant_id: str):
         return _error("BAD_REQUEST", "题量必须大于0", 400)
     target_question_count = num_questions
     if is_internal_subtask_request:
-        max_attempts = max(1, target_question_count * 2)
+        # 子任务内失败会重试同一位次；attempt 含 critic 熔断、换切片等，2×题量过易 partial，提高上限以便在分片内尽量补满。
+        max_attempts = min(400, max(1, target_question_count * 6 + 16))
     else:
         max_attempts = min(max(target_question_count * 3, target_question_count + 3), 600)
     api_key, base_url, model_name = _resolve_generation_llm_from_primary_key()
@@ -11363,11 +12638,19 @@ def api_generate_questions(tenant_id: str):
     random_difficulty_buckets = _random_difficulty_buckets() if difficulty == "随机" else []
     attempt_count = 0
     task_excluded_slice_ids: set[int] = set(blocked_slice_ids)
+    _template_slot_cursor = 0
+    _template_skipped_slots: set[int] = set()
     while len(generated) < target_question_count and attempt_count < max_attempts:
         if task_id and _is_task_cancelled(task_id):
             cancelled_by_user = True
             break
         success_index = len(generated)
+        if planned_slots:
+            while _template_slot_cursor in _template_skipped_slots:
+                _template_slot_cursor += 1
+            success_index = _template_slot_cursor
+            if success_index >= len(planned_slots):
+                break
         attempt_count += 1
         allow_retry_on_current_slot = bool(template) and _is_template_same_mastery_hard_gap(
             planned_slots=planned_slots,
@@ -11390,6 +12673,9 @@ def api_generate_questions(tenant_id: str):
         )
         if sid is None:
             errors.append(sid_pick_error or "无可用切片")
+            if planned_slots and success_index < len(planned_slots):
+                _template_skipped_slots.add(success_index)
+                continue
             break
         kb_chunk = retriever.kb_data[sid]
         effective_difficulty_range = (
@@ -11407,10 +12693,11 @@ def api_generate_questions(tenant_id: str):
         trace_id = uuid.uuid4().hex
         question_id = f"{tenant_id}:{material_version_id or 'default'}:{attempt_count}:{sid}:{trace_id[:8]}"
         question_llm_trace: list[dict[str, Any]] = []
+        current_target_index = _planned_slot_target_index(planned_slots, success_index)
         question_trace: dict[str, Any] = {
             "run_id": run_id,
             "index": attempt_count,
-            "target_index": success_index + 1,
+            "target_index": current_target_index,
             "slice_id": sid,
             "slice_path": str(kb_chunk.get("完整路径", "")),
             "slice_content": _extract_slice_text(kb_chunk),
@@ -11426,6 +12713,7 @@ def api_generate_questions(tenant_id: str):
             "final_json_expired": False,
             "draft_revision": 0,
             "critic_revision": 0,
+            **_planned_slot_trace_fields(planned_slots, success_index),
         }
 
         def _append_step(message: str, *, node: str = "", level: str = "info", detail: str = "") -> None:
@@ -11504,6 +12792,10 @@ def api_generate_questions(tenant_id: str):
         abort_question_reason = ""
         attempt_error_info: dict[str, Any] | None = None
         whitelist_saved_current = False
+        _wall_token = attach_question_wall_clock_budget(
+            started_at_utc=started_at,
+            max_elapsed_ms=max_question_elapsed_ms,
+        )
         try:
             for event in graph_app.stream(inputs, config=config):
                 for node_name, state_update in event.items():
@@ -11559,11 +12851,6 @@ def api_generate_questions(tenant_id: str):
                         )
                         if router_seen:
                             _mark_live_final_json_stale(question_trace, _append_step)
-                            question_trace["critic_result"] = {}
-                            question_trace["critic_revision"] = 0
-                            question_trace.pop("critic_details", None)
-                            critic_seen = False
-                            critic_passed = False
                             current_run_id += 1  # reroute starts next round; first route remains round 0
                             question_trace["active_run_id"] = current_run_id
                         else:
@@ -11645,7 +12932,7 @@ def api_generate_questions(tenant_id: str):
                     # (no accidental overwrite from other nodes).
                     # Also clear stale critic verdict here: after a new draft/fix is produced and before
                     # next critic pass returns, UI should not show previous-round critic_result.
-                    if node_name in ("writer", "fixer") and isinstance(state_update, dict) and ("final_json" in state_update):
+                    if node_name in ("writer", "fixer") and isinstance(state_update, dict) and state_update.get("final_json"):
                         q_json = state_update.get("final_json")
                         current_draft_revision = int(question_trace.get("draft_revision", 0) or 0) + 1
                         question_trace["draft_revision"] = current_draft_revision
@@ -11660,11 +12947,6 @@ def api_generate_questions(tenant_id: str):
                             question_trace["final_json_expired"] = False
                             question_trace.pop("final_json_expired_at", None)
                             question_trace["final_json_run_id"] = current_run_id
-                        elif q_json is None:
-                            question_trace.pop("final_json", None)
-                            question_trace["final_json_expired"] = True
-                            question_trace["final_json_expired_at"] = datetime.now(timezone.utc).isoformat()
-                            question_trace["final_json_expired_run_id"] = current_run_id
                     _emit_node_highlights(node_name, state_update, _append_step)
                     # Stream yields full state after each step; sync llm_trace to avoid duplicates
                     llm_records = state_update.get("llm_trace") or []
@@ -11778,6 +13060,8 @@ def api_generate_questions(tenant_id: str):
                     )
                     question_trace["final_json"] = deepcopy(q_json)
                 generated.append(q_json)
+                if planned_slots:
+                    _template_slot_cursor = success_index + 1
                 if persist_to_bank and _is_task_auto_bank_enabled(tenant_id, task_id, persist_to_bank):
                     try:
                         _append_bank_item(bank_path, q_json)
@@ -11881,6 +13165,8 @@ def api_generate_questions(tenant_id: str):
                 "basis_paths": [],
                 "solution": "检查对应节点异常堆栈与输入切片，修复后再重跑。",
             }
+        finally:
+            detach_question_wall_clock_budget(_wall_token)
 
         if attempt_error_info and not saved_current:
             err_key = str(attempt_error_info.get("error_key", "attempt_failed")).strip() or "attempt_failed"
@@ -11937,6 +13223,8 @@ def api_generate_questions(tenant_id: str):
                 q_json = saved_item
                 question_trace["final_json"] = deepcopy(saved_item)
                 generated.append(saved_item)
+                if planned_slots:
+                    _template_slot_cursor = success_index + 1
                 saved += 1
                 saved_current = True
                 saved_with_issues_current = True
@@ -12012,7 +13300,7 @@ def api_generate_questions(tenant_id: str):
         }
         errors.append(
             f"子任务熔断：尝试总数(通过+失败)达到 {attempt_count}，"
-            f"已触达约定产题数 {target_question_count} 的2倍上限({max_attempts})，当前通过 {len(generated)} 题"
+            f"已触达子任务尝试次数上限({max_attempts})，目标 {target_question_count} 题，当前通过 {len(generated)} 题"
         )
     if template and not cancelled_by_user and len(generated) < target_question_count:
         saved, template_gap_errors = _persist_template_remaining_failed_slots(
@@ -12216,7 +13504,6 @@ def api_generate_questions_stream(tenant_id: str):
     slice_ids_input = body.get("slice_ids") or []
     template_id = str(body.get("template_id", "")).strip()
     planned_slice_ids_input = body.get("planned_slice_ids") or []
-    planned_slots_input = body.get("planned_slots") or []
     persist_to_bank = bool(body.get("persist_to_bank", body.get("save_to_bank", True)))
     requested_material_version_id = str(body.get("material_version_id", "")).strip()
     task_id = str(body.get("task_id", "")).strip()
@@ -12352,6 +13639,7 @@ def api_generate_questions_stream(tenant_id: str):
                     "slice_id": sid_int,
                     "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
                     "mastery": str(slot.get("mastery", "") or "").strip(),
+                    "_global_target_index": int(slot.get("_global_target_index", 0) or 0),
                 }
             )
         for sid in planned_slice_ids_input:
@@ -12373,7 +13661,8 @@ def api_generate_questions_stream(tenant_id: str):
         return _error("BAD_REQUEST", "题量必须大于0", 400)
     target_question_count = num_questions
     if is_internal_subtask_request:
-        max_attempts = max(1, target_question_count * 2)
+        # 与同步 POST /generate 子任务 attempt 上限一致，见上文说明。
+        max_attempts = min(400, max(1, target_question_count * 6 + 16))
     else:
         max_attempts = min(max(target_question_count * 3, target_question_count + 3), 600)
 
@@ -12422,8 +13711,16 @@ def api_generate_questions_stream(tenant_id: str):
         max_questions_per_slice = max(0, int(body.get("max_questions_per_slice", 2 if template else 0) or 0))
         attempt_count = 0
         task_excluded_slice_ids: set[int] = set(blocked_slice_ids)
+        _template_slot_cursor2 = 0
+        _template_skipped_slots2: set[int] = set()
         while len(generated) < target_question_count and attempt_count < max_attempts:
             success_index = len(generated)
+            if planned_slots:
+                while _template_slot_cursor2 in _template_skipped_slots2:
+                    _template_slot_cursor2 += 1
+                success_index = _template_slot_cursor2
+                if success_index >= len(planned_slots):
+                    break
             attempt_count += 1
             allow_retry_on_current_slot = bool(template) and _is_template_same_mastery_hard_gap(
                 planned_slots=planned_slots,
@@ -12446,6 +13743,9 @@ def api_generate_questions_stream(tenant_id: str):
             )
             if sid is None:
                 errors.append(sid_pick_error or "无可用切片")
+                if planned_slots and success_index < len(planned_slots):
+                    _template_skipped_slots2.add(success_index)
+                    continue
                 break
             kb_chunk = retriever.kb_data[sid]
             effective_difficulty_range = (
@@ -12460,10 +13760,11 @@ def api_generate_questions_stream(tenant_id: str):
             trace_id = uuid.uuid4().hex
             question_id = f"{tenant_id}:{material_version_id or 'default'}:{attempt_count}:{sid}:{trace_id[:8]}"
             question_llm_trace: list[dict[str, Any]] = []
+            current_target_index = _planned_slot_target_index(planned_slots, success_index)
             question_trace: dict[str, Any] = {
                 "run_id": run_id,
                 "index": attempt_count,
-                "target_index": success_index + 1,
+                "target_index": current_target_index,
                 "slice_id": sid,
                 "slice_path": str(kb_chunk.get("完整路径", "")),
                 "slice_content": _extract_slice_text(kb_chunk),
@@ -12479,15 +13780,17 @@ def api_generate_questions_stream(tenant_id: str):
                 "final_json_expired": False,
                 "draft_revision": 0,
                 "critic_revision": 0,
+                **_planned_slot_trace_fields(planned_slots, success_index),
             }
             yield _sse(
                 "question_start",
                 {
                     "index": attempt_count,
-                    "target_index": success_index + 1,
+                    "target_index": current_target_index,
                     "slice_id": sid,
                     "slice_path": question_trace["slice_path"],
                     "slice_content": question_trace["slice_content"],
+                    **_planned_slot_trace_fields(planned_slots, success_index),
                 },
             )
 
@@ -12565,6 +13868,10 @@ def api_generate_questions_stream(tenant_id: str):
             abort_question_reason = ""
             attempt_error_info: dict[str, Any] | None = None
             whitelist_saved_current = False
+            _wall_token = attach_question_wall_clock_budget(
+                started_at_utc=started_at,
+                max_elapsed_ms=max_question_elapsed_ms,
+            )
             try:
                 for event in graph_app.stream(inputs, config=config):
                     for node_name, state_update in event.items():
@@ -12596,11 +13903,6 @@ def api_generate_questions_stream(tenant_id: str):
                             )
                             if router_seen:
                                 _mark_live_final_json_stale(question_trace, _append_step)
-                                question_trace["critic_result"] = {}
-                                question_trace["critic_revision"] = 0
-                                question_trace.pop("critic_details", None)
-                                critic_seen = False
-                                critic_passed = False
                                 current_run_id += 1  # reroute starts next round; first route remains round 0
                                 question_trace["active_run_id"] = current_run_id
                             else:
@@ -12679,7 +13981,7 @@ def api_generate_questions_stream(tenant_id: str):
                                 _append_step(text, node=node_name)
                         # Only take final_json from writer/fixer so stored content matches last fix.
                         # Also clear stale critic verdict until new critic result arrives.
-                        if node_name in ("writer", "fixer") and isinstance(state_update, dict) and ("final_json" in state_update):
+                        if node_name in ("writer", "fixer") and isinstance(state_update, dict) and state_update.get("final_json"):
                             q_json = state_update.get("final_json")
                             current_draft_revision = int(question_trace.get("draft_revision", 0) or 0) + 1
                             question_trace["draft_revision"] = current_draft_revision
@@ -12693,11 +13995,6 @@ def api_generate_questions_stream(tenant_id: str):
                                 question_trace["final_json_expired"] = False
                                 question_trace.pop("final_json_expired_at", None)
                                 question_trace["final_json_run_id"] = current_run_id
-                            elif q_json is None:
-                                question_trace.pop("final_json", None)
-                                question_trace["final_json_expired"] = True
-                                question_trace["final_json_expired_at"] = datetime.now(timezone.utc).isoformat()
-                                question_trace["final_json_expired_run_id"] = current_run_id
                         _emit_node_highlights(node_name, state_update, _append_step)
                         # Stream yields full state after each step; sync llm_trace to avoid duplicates
                         llm_records = state_update.get("llm_trace") or []
@@ -12811,6 +14108,8 @@ def api_generate_questions_stream(tenant_id: str):
                         )
                         question_trace["final_json"] = deepcopy(q_json)
                     generated.append(q_json)
+                    if planned_slots:
+                        _template_slot_cursor2 = success_index + 1
                     if persist_to_bank and _is_task_auto_bank_enabled(tenant_id, task_id, persist_to_bank):
                         try:
                             _append_bank_item(bank_path, q_json)
@@ -12914,6 +14213,8 @@ def api_generate_questions_stream(tenant_id: str):
                     "basis_paths": [],
                     "solution": "检查对应节点异常堆栈与输入切片，修复后再重跑。",
                 }
+            finally:
+                detach_question_wall_clock_budget(_wall_token)
 
             if attempt_error_info and not saved_current:
                 err_key = str(attempt_error_info.get("error_key", "attempt_failed")).strip() or "attempt_failed"
@@ -12972,6 +14273,8 @@ def api_generate_questions_stream(tenant_id: str):
                     q_json = saved_item
                     question_trace["final_json"] = deepcopy(saved_item)
                     generated.append(saved_item)
+                    if planned_slots:
+                        _template_slot_cursor2 = success_index + 1
                     saved += 1
                     saved_current = True
                     saved_with_issues_current = True
@@ -13013,7 +14316,7 @@ def api_generate_questions_stream(tenant_id: str):
                 "question_done",
                 {
                     "index": attempt_count,
-                    "target_index": success_index + 1,
+                    "target_index": current_target_index,
                     "elapsed_ms": elapsed_ms,
                     "item": q_json if isinstance(q_json, dict) and critic_passed else None,
                     "trace": question_trace,
@@ -13043,7 +14346,7 @@ def api_generate_questions_stream(tenant_id: str):
             }
             errors.append(
                 f"子任务熔断：尝试总数(通过+失败)达到 {attempt_count}，"
-                f"已触达约定产题数 {target_question_count} 的2倍上限({max_attempts})，当前通过 {len(generated)} 题"
+                f"已触达子任务尝试次数上限({max_attempts})，目标 {target_question_count} 题，当前通过 {len(generated)} 题"
             )
         if template and len(generated) < target_question_count:
             saved, template_gap_errors = _persist_template_remaining_failed_slots(
@@ -13201,6 +14504,13 @@ def _build_gen_task_summary(task: dict[str, Any]) -> dict[str, Any]:
         "run_id": str(task.get("run_id", "")),
         "material_version_id": str(task.get("material_version_id", "")),
         "generated_count": int(task.get("generated_count", 0) or 0),
+        "generated_total_count": int(
+            task.get(
+                "generated_total_count",
+                int(task.get("generated_count", 0) or 0) + int(task.get("error_count", 0) or 0),
+            )
+            or 0
+        ),
         "saved_count": int(task.get("saved_count", 0) or 0),
         "error_count": int(task.get("error_count", 0) or 0),
         "progress": task.get("progress") if isinstance(task.get("progress"), dict) else {"current": 0, "total": 0},
@@ -13224,6 +14534,45 @@ def _build_gen_task_summary(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _recover_task_counts_from_subtasks(task: dict[str, Any]) -> dict[str, Any]:
+    """
+    Recover parent-task counters from child subtasks.
+    Used for template/parallel runs where parent may stop before final aggregation.
+    """
+    if not isinstance(task, dict):
+        return task
+    # Child task itself should not aggregate from its own subtasks.
+    if str(task.get("parent_task_id", "") or "").strip():
+        return task
+    live_subtask_traces = [x for x in (task.get("live_subtask_traces") or []) if isinstance(x, dict)]
+    if not live_subtask_traces:
+        return task
+    sub_generated_total = 0
+    sub_saved_total = 0
+    for sub in live_subtask_traces:
+        trace_rows = [x for x in (sub.get("process_trace") or []) if isinstance(x, dict)]
+        valid_saved_rows = [
+            x for x in trace_rows
+            if bool(x.get("saved")) and isinstance(x.get("final_json"), dict) and bool(x.get("final_json"))
+        ]
+        sub_generated_total += len(valid_saved_rows)
+        sub_saved_total += len(valid_saved_rows)
+    if sub_generated_total <= 0 and sub_saved_total <= 0:
+        return task
+    patched = dict(task)
+    patched["generated_count"] = int(max(int(task.get("generated_count", 0) or 0), sub_generated_total))
+    patched["saved_count"] = int(max(int(task.get("saved_count", 0) or 0), sub_saved_total))
+    req = patched.get("request") if isinstance(patched.get("request"), dict) else {}
+    progress = patched.get("progress") if isinstance(patched.get("progress"), dict) else {}
+    total = int(progress.get("total", 0) or req.get("num_questions", 0) or 0)
+    current = int(progress.get("current", 0) or 0)
+    patched["progress"] = {
+        "current": int(max(current, int(patched["generated_count"]))),
+        "total": int(max(total, int(req.get("num_questions", 0) or 0), 0)),
+    }
+    return patched
+
+
 def _is_internal_child_gen_task(task: dict[str, Any]) -> bool:
     if not isinstance(task, dict):
         return False
@@ -13243,11 +14592,16 @@ def _is_internal_child_gen_task(task: dict[str, Any]) -> bool:
 
 
 def _read_persisted_task(tenant_id: str, task_id: str) -> dict[str, Any] | None:
-    for row in reversed(_read_jsonl(_qa_gen_tasks_path(tenant_id))):
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("task_id", "")) == task_id:
-            return row
+    latest_rows = _latest_gen_task_rows(tenant_id, allow_full_fallback=True)
+    latest = latest_rows.get(str(task_id or "").strip())
+    if isinstance(latest, dict):
+        return latest
+    for path in _qa_read_paths(tenant_id, "gen_tasks.jsonl"):
+        for row in reversed(_read_jsonl(path)):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("task_id", "")) == task_id:
+                return row
     return None
 
 
@@ -13366,6 +14720,12 @@ def _persist_failed_task_qa_run(
 
 def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any], system_user: str) -> None:
     started_at = datetime.now(timezone.utc).isoformat()
+    if bool((body or {}).get("resume_inplace")):
+        latest = _get_latest_gen_task_snapshot(tenant_id, task_id) or {}
+        prev_started = str(latest.get("started_at", "") or "").strip()
+        if prev_started:
+            # 续跑沿用原 started_at，任务总耗时按同一任务累计展示。
+            started_at = prev_started
     _update_task_live(tenant_id, task_id, {"status": "running", "started_at": started_at})
     _persist_live_task_snapshot(tenant_id, task_id)
     try:
@@ -13377,6 +14737,7 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
         seed_items: list[dict[str, Any]] = []
         seed_errors: list[str] = []
         seed_trace: list[dict[str, Any]] = []
+        seed_subtasks: list[dict[str, Any]] = []
         if resume_inplace:
             with GEN_TASK_LOCK:
                 seed_task = GEN_TASKS.get(task_id)
@@ -13386,6 +14747,7 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                     seed_items = [x for x in (seed_task.get("items") or []) if isinstance(x, dict)]
                     seed_errors = [str(x) for x in (seed_task.get("errors") or []) if str(x).strip()]
                     seed_trace = [x for x in (seed_task.get("process_trace") or []) if isinstance(x, dict)]
+                    seed_subtasks = [x for x in (seed_task.get("subtasks") or []) if isinstance(x, dict)]
         total = int(body_with_task.get("num_questions", 0) or 0)
         total_for_progress = int(body_with_task.get("resume_original_total", 0) or 0) if resume_inplace else total
         if total_for_progress <= 0:
@@ -13422,11 +14784,63 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 )
                 _persist_live_task_snapshot(tenant_id, task_id)
                 return
-        default_concurrency = max(1, int(os.getenv("GENERATE_TASK_CONCURRENCY", "3") or 3))
-        concurrency = 1 if resume_inplace else min(default_concurrency, max(1, total))
+            if resume_inplace and isinstance(template_parallel_context, dict):
+                resume_slots_raw = [
+                    slot for slot in (body_with_task.get("planned_slots") or [])
+                    if isinstance(slot, dict) and str(slot.get("slice_id", "")).isdigit()
+                ]
+                if resume_slots_raw:
+                    normalized_resume_slots: list[dict[str, Any]] = []
+                    for idx, slot in enumerate(resume_slots_raw, start=1):
+                        mapped_slot = dict(slot)
+                        global_target_index = int(mapped_slot.get("_global_target_index", 0) or 0)
+                        if global_target_index <= 0:
+                            global_target_index = seed_generated_count + idx
+                        mapped_slot["_global_target_index"] = int(global_target_index)
+                        normalized_resume_slots.append(mapped_slot)
+                    template_parallel_context = {
+                        **template_parallel_context,
+                        "planned_slots": normalized_resume_slots,
+                        "planned_slice_ids": [
+                            int(slot.get("slice_id"))
+                            for slot in normalized_resume_slots
+                            if str(slot.get("slice_id", "")).isdigit()
+                        ],
+                    }
+        default_concurrency = max(1, int(os.getenv("GENERATE_TASK_CONCURRENCY", "5") or 5))
+        concurrency = min(default_concurrency, max(1, total))
+
+        def _normalize_resume_runtime_payload(payload: dict[str, Any]) -> dict[str, Any]:
+            req_payload = dict(payload or {})
+            if not resume_inplace:
+                return req_payload
+            slots = [slot for slot in (req_payload.get("planned_slots") or []) if isinstance(slot, dict)]
+            cleaned_slots: list[dict[str, Any]] = []
+            for slot in slots:
+                try:
+                    sid = int(slot.get("slice_id"))
+                except (TypeError, ValueError):
+                    continue
+                cleaned_slots.append(
+                    {
+                        "slice_id": sid,
+                        "route_prefix": str(slot.get("route_prefix", "") or "").strip(),
+                        "mastery": str(slot.get("mastery", "") or "").strip(),
+                        "_global_target_index": int(slot.get("_global_target_index", 0) or 0),
+                    }
+                )
+            if not cleaned_slots:
+                return req_payload
+            req_payload["planned_slots"] = cleaned_slots
+            req_payload["planned_slice_ids"] = [int(slot.get("slice_id")) for slot in cleaned_slots]
+            req_payload["num_questions"] = int(len(cleaned_slots))
+            # 续跑执行层仅按传入 planned_slots 生成，避免 template_id 触发全量模板重建。
+            req_payload.pop("template_id", None)
+            req_payload.pop("template_name", None)
+            return req_payload
 
         def _invoke_generate_payload(payload: dict[str, Any], *, detach_from_parent_task: bool = False):
-            req_payload = dict(payload or {})
+            req_payload = _normalize_resume_runtime_payload(payload)
             # 续跑场景下，不让子运行直接写父任务，避免中途失败时覆盖历史 process_trace/errors。
             if detach_from_parent_task:
                 req_payload.pop("task_id", None)
@@ -13442,7 +14856,7 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
             resp = None
             explicit_error = ""
             try:
-                req_payload = dict(payload or {})
+                req_payload = _normalize_resume_runtime_payload(payload)
                 req_payload["task_id"] = str(child_task_id or "")
                 with app.test_request_context(
                     f"/api/{tenant_id}/generate",
@@ -13471,12 +14885,15 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 planned_slots = []
                 for slot_idx, slot in enumerate(planned_slots_raw, start=1):
                     mapped_slot = dict(slot)
-                    mapped_slot["_global_target_index"] = seed_generated_count + slot_idx
+                    global_target_index = int(mapped_slot.get("_global_target_index", 0) or 0)
+                    if global_target_index <= 0:
+                        global_target_index = seed_generated_count + slot_idx
+                    mapped_slot["_global_target_index"] = int(global_target_index)
                     planned_slots.append(mapped_slot)
                 merged_traces: list[dict[str, Any]] = []
                 merged_errors: list[str] = []
                 merged_run_ids: list[str] = []
-                resume_live_subtasks: list[dict[str, Any]] = []
+                resume_live_subtasks: list[dict[str, Any]] = [dict(x) for x in seed_subtasks]
                 merged_saved_targets: set[int] = set()
                 resume_batch_round_limit = max(1, int(os.getenv("RESUME_TEMPLATE_SUBTASK_ROUNDS", "4") or 4))
                 resume_template_batch_size = max(1, int(os.getenv("RESUME_TEMPLATE_SUBTASK_SIZE", "3") or 3))
@@ -13599,11 +15016,79 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         _persist_live_task_snapshot(tenant_id, task_id)
                         sub_ex = ThreadPoolExecutor(max_workers=1)
                         future = sub_ex.submit(_invoke_generate_child_task, shard_payload, child_task_id)
+                        child_q = int(shard_payload.get("num_questions", len(cleaned_slots)) or len(cleaned_slots) or 1)
+                        child_max_attempts = int(
+                            shard_payload.get("max_attempts", _estimate_internal_subtask_max_attempts(child_q))
+                            or _estimate_internal_subtask_max_attempts(child_q)
+                        )
+                        child_timeout_seconds = _estimate_parallel_child_timeout_seconds(
+                            question_count=child_q,
+                            max_attempts=child_max_attempts,
+                        )
+                        resp = None
+                        timed_out = False
+                        deadline = time.monotonic() + float(child_timeout_seconds)
+                        heartbeat_interval = max(1.0, min(5.0, float(os.getenv("RESUME_SUBTASK_HEARTBEAT_SECONDS", "2") or 2)))
+                        while not future.done():
+                            if time.monotonic() >= deadline:
+                                timed_out = True
+                                future.cancel()
+                                merged_errors.append(
+                                    f"续跑子批次超时({child_timeout_seconds}s)：第 {batch_start_target}-{batch_end_target} 题第 {batch_round} 轮"
+                                )
+                                break
+                            child_latest = _get_latest_gen_task_snapshot(tenant_id, child_task_id) or {}
+                            child_errors = [str(x) for x in (child_latest.get("errors") or []) if str(x).strip()]
+                            child_status = str(child_latest.get("status", "") or "running")
+                            for sub in resume_live_subtasks:
+                                if str(sub.get("task_id", "") or "") != child_task_id:
+                                    continue
+                                sub["run_id"] = str(child_latest.get("run_id", "") or sub.get("run_id", "") or "")
+                                sub["generated_count"] = int(child_latest.get("generated_count", sub.get("generated_count", 0)) or 0)
+                                sub["saved_count"] = int(child_latest.get("saved_count", sub.get("saved_count", 0)) or 0)
+                                sub["error_count"] = int(child_latest.get("error_count", sub.get("error_count", 0)) or 0)
+                                sub["status"] = child_status
+                                if child_errors:
+                                    sub["latest_error"] = child_errors[-1]
+                                if str(child_latest.get("ended_at", "") or "").strip():
+                                    sub["ended_at"] = str(child_latest.get("ended_at", "") or "")
+                                break
+                            live_saved_by_subtasks = sum(int(x.get("saved_count", 0) or 0) for x in resume_live_subtasks)
+                            live_generated = int(seed_generated_count + live_saved_by_subtasks)
+                            parent_latest = _get_latest_gen_task_snapshot(tenant_id, task_id) or {}
+                            _update_task_live(
+                                tenant_id,
+                                task_id,
+                                {
+                                    "subtasks": resume_live_subtasks,
+                                    "generated_count": int(max(live_generated, int(parent_latest.get("generated_count", 0) or 0))),
+                                    "saved_count": int(max(seed_saved_count + live_saved_by_subtasks, int(parent_latest.get("saved_count", 0) or 0))),
+                                    "current_node": "resume_subrun",
+                                    "current_node_updated_at": datetime.now(timezone.utc).isoformat(),
+                                    "current_subcall": {
+                                        "mode": "resume_subrun",
+                                        "question_label": question_label,
+                                        "target_index": batch_start_target,
+                                        "slice_id": current_slice_id,
+                                        "child_task_id": child_task_id,
+                                        "child_task_name": child_task_name,
+                                        "child_task_status": child_status,
+                                        "batch_round": batch_round,
+                                        "batch_target_total": len(batch_slots_original),
+                                        "batch_remaining": len(remaining_batch_slots),
+                                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                                    },
+                                },
+                            )
+                            _persist_live_task_snapshot(tenant_id, task_id)
+                            time.sleep(heartbeat_interval)
                         try:
-                            resp = future.result()
+                            if not timed_out:
+                                resp = future.result(timeout=0.1)
+                        except FuturesTimeoutError:
+                            resp = None
                         finally:
-                            if future.done():
-                                sub_ex.shutdown(wait=False, cancel_futures=False)
+                            sub_ex.shutdown(wait=False, cancel_futures=False)
 
                         if resp is None:
                             merged_errors.append(
@@ -13818,11 +15303,20 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         }
                     _update_task_live(tenant_id, task_id, failed_task)
                     _persist_live_task_snapshot(tenant_id, task_id)
+                    task_to_persist: dict[str, Any] | None = None
                     with GEN_TASK_LOCK:
                         task = GEN_TASKS.get(task_id)
                         if task:
-                            _persist_failed_task_qa_run(tenant_id, task, reason=msg, started_at=started_at, ended_at=ended_at)
-                            _persist_gen_task(tenant_id, task)
+                            task_to_persist = _task_snapshot(task)
+                    if isinstance(task_to_persist, dict):
+                        _persist_failed_task_qa_run(
+                            tenant_id,
+                            task_to_persist,
+                            reason=msg,
+                            started_at=started_at,
+                            ended_at=ended_at,
+                        )
+                        _persist_gen_task(tenant_id, task_to_persist)
                     return
                 try:
                     done_payload = resp.get_json(silent=True) or {}
@@ -13834,11 +15328,17 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 planned_slots_all = [slot for slot in (template_parallel_context.get("planned_slots") or []) if isinstance(slot, dict)]
                 template_plan = template_parallel_context.get("template_plan") if isinstance(template_parallel_context.get("template_plan"), dict) else {}
                 min_shard_size = _compute_template_parallel_min_shard_size(template_plan, len(planned_slots_all))
-                template_shard_cap = min(4, max(1, len(planned_slots_all) // max(1, min_shard_size)))
+                template_shard_cap = min(5, max(1, len(planned_slots_all) // max(1, min_shard_size)))
                 shard_count = max(1, template_shard_cap)
                 template_shards = _split_template_slots_for_parallel(planned_slots_all, shard_count)
                 if len(template_shards) == 1:
-                    shard_count = 1
+                    single_shard_slots = [slot for slot in (template_shards[0] or []) if isinstance(slot, dict)]
+                    single_shard_parallel = min(5, len(single_shard_slots))
+                    if single_shard_parallel > 1:
+                        template_shards = _split_template_slots_for_parallel(single_shard_slots, single_shard_parallel)
+                        shard_count = len(template_shards)
+                    else:
+                        shard_count = 1
                 for idx, shard_slots in enumerate(template_shards):
                     global_candidate_slice_ids = [
                         int(sid) for sid in ((template_parallel_context or {}).get("candidate_slice_ids") or [])
@@ -13963,7 +15463,9 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         sub["latest_error"] = ""
 
             with ThreadPoolExecutor(max_workers=max(1, len(shard_specs))) as ex:
-                future_map = {}
+                future_map: dict[Any, dict[str, Any]] = {}
+                future_meta: dict[Any, dict[str, Any]] = {}
+                child_timeouts: list[int] = []
                 for spec in shard_specs:
                     shard_payload = dict(spec.get("payload") or {})
                     shard_payload.pop("task_id", None)
@@ -13986,6 +15488,21 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                     child_task_id = str(child_task.get("task_id", "") or "")
                     future = ex.submit(_invoke_generate_child_task, shard_payload, child_task_id)
                     future_map[future] = spec
+                    child_q = int(shard_payload.get("num_questions", 1) or 1)
+                    child_max_attempts = int(
+                        shard_payload.get("max_attempts", _estimate_internal_subtask_max_attempts(child_q))
+                        or _estimate_internal_subtask_max_attempts(child_q)
+                    )
+                    child_timeout_seconds = _estimate_parallel_child_timeout_seconds(
+                        question_count=child_q,
+                        max_attempts=child_max_attempts,
+                    )
+                    child_timeouts.append(int(child_timeout_seconds))
+                    future_meta[future] = {
+                        "task_id": child_task_id,
+                        "task_name": str(shard_payload.get("task_name", "") or ""),
+                        "timeout_seconds": int(child_timeout_seconds),
+                    }
                     target_start = 0
                     target_end = 0
                     if shard_slots:
@@ -14033,26 +15550,21 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                     },
                 )
                 _persist_live_task_snapshot(tenant_id, task_id)
-
-                for fut in as_completed(list(future_map.keys())):
-                    spec = future_map[fut]
-                    resp = fut.result()
-                    status_code = int(getattr(resp, "status_code", 200) or 200)
-                    payload: dict[str, Any] = {}
-                    try:
-                        payload = resp.get_json(silent=True) or {}
-                    except Exception:
-                        payload = {}
+                batch_timeout_seconds = _estimate_parallel_batch_timeout_seconds(
+                    child_timeouts=child_timeouts,
+                    subtask_count=len(shard_specs),
+                )
+                def _apply_parallel_shard_result(spec: dict[str, Any], status_code: int, payload: dict[str, Any]) -> None:
                     shard_results[int(spec.get("shard_idx", 0) or 0)] = {
                         "spec": spec,
-                        "status_code": status_code,
-                        "payload": payload,
+                        "status_code": int(status_code),
+                        "payload": payload if isinstance(payload, dict) else {},
                     }
-                    if status_code >= 400:
+                    if int(status_code) >= 400:
                         msg = str(((payload.get("error") if isinstance(payload, dict) else {}) or {}).get("message", "")).strip()
-                        merged_errors.append(msg or f"并发子任务失败({status_code})")
+                        merged_errors.append(msg or f"并发子任务失败({int(status_code)})")
                     else:
-                        rid = str(payload.get("run_id", "") or "").strip()
+                        rid = str((payload.get("run_id") if isinstance(payload, dict) else "") or "").strip()
                         if rid:
                             merged_run_ids.append(rid)
                     shard_name = str((spec.get("payload") or {}).get("task_name", "") or "")
@@ -14061,18 +15573,30 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         if str(sub.get("task_name", "") or "") != shard_name:
                             continue
                         child_task_latest = _get_latest_gen_task_snapshot(tenant_id, str(sub.get("task_id", "") or ""))
-                        sub["run_id"] = str(payload.get("run_id", "") or (child_task_latest or {}).get("run_id", "") or "")
-                        sub["generated_count"] = int(
-                            payload.get("generated_count", 0)
-                            or (child_task_latest or {}).get("generated_count", 0)
-                            or len([x for x in (payload.get("items") or []) if isinstance(x, dict)])
+                        sub["run_id"] = str(
+                            (payload.get("run_id") if isinstance(payload, dict) else "")
+                            or (child_task_latest or {}).get("run_id", "")
+                            or ""
                         )
-                        sub["saved_count"] = int(payload.get("saved_count", 0) or (child_task_latest or {}).get("saved_count", 0) or 0)
-                        sub["error_count"] = len([str(x) for x in (payload.get("errors") or []) if str(x).strip()]) or int((child_task_latest or {}).get("error_count", 0) or 0)
+                        sub["generated_count"] = int(
+                            (payload.get("generated_count", 0) if isinstance(payload, dict) else 0)
+                            or (child_task_latest or {}).get("generated_count", 0)
+                            or len([x for x in ((payload.get("items") if isinstance(payload, dict) else []) or []) if isinstance(x, dict)])
+                        )
+                        sub["saved_count"] = int(
+                            (payload.get("saved_count", 0) if isinstance(payload, dict) else 0)
+                            or (child_task_latest or {}).get("saved_count", 0)
+                            or 0
+                        )
+                        payload_errors = [
+                            str(x) for x in ((payload.get("errors") if isinstance(payload, dict) else []) or [])
+                            if str(x).strip()
+                        ]
+                        sub["error_count"] = len(payload_errors) or int((child_task_latest or {}).get("error_count", 0) or 0)
                         sub["ended_at"] = str((child_task_latest or {}).get("ended_at", "") or datetime.now(timezone.utc).isoformat())
                         target_total = int(sub.get("target_total", 0) or 0)
                         is_unmet = target_total > 0 and sub["generated_count"] < target_total
-                        fallback_status = "failed" if status_code >= 400 else (
+                        fallback_status = "failed" if int(status_code) >= 400 else (
                             "running" if (is_template_parallel and is_unmet) else (
                                 "partial" if (sub["error_count"] > 0 or is_unmet) else "completed"
                             )
@@ -14081,13 +15605,16 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         if is_template_parallel and is_unmet and sub["status"] == "running":
                             sub["ended_at"] = ""
                             sub["latest_error"] = f"未达目标：{int(sub['generated_count'])}/{target_total}，继续补齐中"
-                        if sub["error_count"] > 0:
-                            errs = [str(x) for x in (payload.get("errors") or []) if str(x).strip()]
+                        elif sub["error_count"] > 0:
+                            errs = payload_errors
                             if not errs and isinstance(child_task_latest, dict):
                                 errs = [str(x) for x in ((child_task_latest or {}).get("errors") or []) if str(x).strip()]
                             sub["latest_error"] = errs[-1] if errs else ""
+                        else:
+                            sub["latest_error"] = ""
                         break
-                    completed_shards += 1
+
+                def _refresh_parallel_parent_progress() -> None:
                     est_generated = 0
                     for row in shard_results.values():
                         p = row.get("payload") if isinstance(row, dict) else {}
@@ -14112,6 +15639,68 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         },
                     )
                     _persist_live_task_snapshot(tenant_id, task_id)
+
+                try:
+                    future_iter = as_completed(list(future_map.keys()), timeout=float(batch_timeout_seconds))
+                    for fut in future_iter:
+                        spec = future_map[fut]
+                        try:
+                            resp = fut.result()
+                            status_code = int(getattr(resp, "status_code", 200) or 200)
+                            payload: dict[str, Any] = {}
+                            try:
+                                payload = resp.get_json(silent=True) or {}
+                            except Exception:
+                                payload = {}
+                        except Exception as fut_err:
+                            status_code = 500
+                            payload = {}
+                            merged_errors.append(f"并发子任务异常: {fut_err}")
+                        _apply_parallel_shard_result(spec, status_code, payload)
+                        completed_shards += 1
+                        _refresh_parallel_parent_progress()
+                except FuturesTimeoutError:
+                    timeout_now = datetime.now(timezone.utc).isoformat()
+                    for fut, spec in future_map.items():
+                        shard_idx = int(spec.get("shard_idx", 0) or 0)
+                        if shard_idx in shard_results:
+                            continue
+                        if fut.done():
+                            try:
+                                resp = fut.result(timeout=0)
+                                status_code = int(getattr(resp, "status_code", 200) or 200)
+                                payload: dict[str, Any] = {}
+                                try:
+                                    payload = resp.get_json(silent=True) or {}
+                                except Exception:
+                                    payload = {}
+                            except Exception as fut_err:
+                                status_code = 500
+                                payload = {}
+                                merged_errors.append(f"并发子任务异常: {fut_err}")
+                            _apply_parallel_shard_result(spec, status_code, payload)
+                            completed_shards += 1
+                            continue
+                        fut.cancel()
+                        meta = future_meta.get(fut) or {}
+                        timeout_seconds = int(meta.get("timeout_seconds", batch_timeout_seconds) or batch_timeout_seconds)
+                        shard_name = str((spec.get("payload") or {}).get("task_name", "") or str(meta.get("task_name", "") or ""))
+                        merged_errors.append(f"并发子任务超时({timeout_seconds}s): {shard_name or 'unknown_shard'}")
+                        shard_results[shard_idx] = {
+                            "spec": spec,
+                            "status_code": 504,
+                            "payload": {"errors": [f"并发子任务超时({timeout_seconds}s)"]},
+                        }
+                        for sub in live_subtasks:
+                            if str(sub.get("task_name", "") or "") != shard_name:
+                                continue
+                            sub["status"] = "failed"
+                            sub["ended_at"] = timeout_now
+                            sub["error_count"] = int(sub.get("error_count", 0) or 0) + 1
+                            sub["latest_error"] = f"并发子任务超时({timeout_seconds}s)"
+                            break
+                        completed_shards += 1
+                    _refresh_parallel_parent_progress()
 
             merged_items: list[dict[str, Any]] = []
             merged_traces: list[dict[str, Any]] = []
@@ -14198,15 +15787,26 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 ok = bool(repair_report.get("ok"))
                 reason = "；".join([str(x).strip() for x in (repair_report.get("issues") or []) if str(x).strip()][:6])
                 repair_round_limit = max(1, int(os.getenv("TEMPLATE_REPAIR_MAX_ROUNDS", "6") or 6))
+                max_same_signature = max(1, int(os.getenv("TEMPLATE_REPAIR_MAX_SAME_SIGNATURE", "5") or 5))
                 repair_round = 0
-                attempted_repair_signatures: set[str] = set()
+                repair_signature_attempts: dict[str, int] = {}
                 repair_round_records: list[dict[str, Any]] = []
                 while not ok and repair_round < repair_round_limit:
                     repair_strategy, repair_strategy_reason = _plan_template_repair_strategy(repair_report)
                     repair_targets: list[int] = []
+                    invalid_targets_from_report = sorted(
+                        {
+                            int(item.get("target_index", 0) or 0)
+                            for item in (repair_report.get("invalid_targets") or [])
+                            if isinstance(item, dict) and int(item.get("target_index", 0) or 0) > 0
+                        }
+                    )
                     if repair_strategy == "repair_missing_slots":
                         repair_targets = _sort_template_target_indexes_by_ease(
-                            indexes=[int(x) for x in (repair_report.get("missing_target_indexes") or []) if int(x) > 0],
+                            indexes=[
+                                *[int(x) for x in (repair_report.get("missing_target_indexes") or []) if int(x) > 0],
+                                *invalid_targets_from_report,
+                            ],
                             planned_slots=planned_slots_all,
                             candidate_lookup=candidate_lookup,
                         )
@@ -14223,18 +15823,49 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                             planned_slots=planned_slots_all,
                             candidate_lookup=candidate_lookup,
                         )
+                    hard_gap_targets: list[int] = []
+                    filtered_targets: list[int] = []
+                    for target_idx in (repair_targets or []):
+                        if len(
+                            _template_slot_candidate_ids(
+                                planned_slots=planned_slots_all,
+                                target_index=int(target_idx),
+                                candidate_lookup=candidate_lookup,
+                                include_cross_route_same_mastery=True,
+                            )
+                        ) <= 0:
+                            hard_gap_targets.append(int(target_idx))
+                            continue
+                        filtered_targets.append(int(target_idx))
+                    repair_targets = filtered_targets
+                    if hard_gap_targets:
+                        gap_msgs = [
+                            _describe_template_target_gap(
+                                target_index=idx,
+                                planned_slots=planned_slots_all,
+                                candidate_lookup=candidate_lookup,
+                                process_trace=merged_traces,
+                            )
+                            for idx in hard_gap_targets
+                        ]
+                        done_payload["errors"] = list(done_payload.get("errors") or []) + [
+                            "模板位次不可替代，已跳过当前位次并继续补其他位次: " + " | ".join(gap_msgs[:8])
+                        ]
                     if not repair_targets:
                         done_payload["errors"] = list(done_payload.get("errors") or []) + [
                             f"模板修复策略: {repair_strategy}（{repair_strategy_reason or '无'}）"
                         ]
                         break
                     repair_signature = f"{repair_strategy}|{','.join(str(x) for x in repair_targets)}"
-                    if repair_signature in attempted_repair_signatures:
+                    prev_sig_attempts = int(repair_signature_attempts.get(repair_signature, 0) or 0)
+                    if prev_sig_attempts >= max_same_signature:
                         done_payload["errors"] = list(done_payload.get("errors") or []) + [
-                            f"模板修复停止: 第 {repair_round + 1} 轮修复目标未变化，避免重复补位"
+                            f"模板修复停止: {repair_strategy} 目标 [{','.join(str(x) for x in repair_targets)}] "
+                            f"已连续补位 {max_same_signature} 次仍不达标（可在桶内轮换切片，见环境变量 TEMPLATE_REPAIR_MAX_SAME_SIGNATURE）"
                         ]
                         break
-                    attempted_repair_signatures.add(repair_signature)
+                    rotation_step = prev_sig_attempts
+                    repair_signature_attempts[repair_signature] = prev_sig_attempts + 1
                     repair_round += 1
                     repair_round_record = {
                         "round": repair_round,
@@ -14265,15 +15896,97 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         },
                     )
                     _persist_live_task_snapshot(tenant_id, task_id)
-                    repair_slots = [planned_slots_all[idx - 1] for idx in repair_targets if 1 <= idx <= len(planned_slots_all)]
+                    repair_slots = [
+                        {**dict(planned_slots_all[idx - 1]), "_global_target_index": int(idx)}
+                        for idx in repair_targets
+                        if 1 <= idx <= len(planned_slots_all)
+                    ]
+                    supplement_msgs: list[str] = []
+                    by_id_lookup = (
+                        candidate_lookup.get("by_id")
+                        if isinstance(candidate_lookup, dict) and isinstance(candidate_lookup.get("by_id"), dict)
+                        else {}
+                    )
+                    supplemented_slots: list[dict[str, Any]] = []
+                    for slot in repair_slots:
+                        if not isinstance(slot, dict):
+                            continue
+                        global_target_index = int(slot.get("_global_target_index", 0) or 0)
+                        strict_ids = _template_slot_candidate_ids(
+                            planned_slots=planned_slots_all,
+                            target_index=global_target_index,
+                            candidate_lookup=candidate_lookup,
+                            include_cross_route_same_mastery=False,
+                        )
+                        fallback_ids = _template_slot_candidate_ids(
+                            planned_slots=planned_slots_all,
+                            target_index=global_target_index,
+                            candidate_lookup=candidate_lookup,
+                            include_cross_route_same_mastery=True,
+                        )
+                        if strict_ids or not fallback_ids:
+                            supplemented_slots.append(dict(slot))
+                            continue
+                        failed_sids: set[int] = set()
+                        for tr in merged_traces:
+                            if not isinstance(tr, dict):
+                                continue
+                            try:
+                                tr_target_index = int(tr.get("target_index", 0) or 0)
+                            except (TypeError, ValueError):
+                                tr_target_index = 0
+                            if tr_target_index != global_target_index:
+                                continue
+                            try:
+                                sid = int(tr.get("slice_id", 0) or 0)
+                            except (TypeError, ValueError):
+                                sid = 0
+                            if sid <= 0:
+                                continue
+                            if _template_repair_trace_row_has_business_pass(tr):
+                                continue
+                            failed_sids.add(sid)
+                        pool = [sid for sid in fallback_ids if sid not in failed_sids] or list(fallback_ids)
+                        pick = int(pool[rotation_step % len(pool)])
+                        new_slot = dict(slot)
+                        new_slot["slice_id"] = pick
+                        meta = by_id_lookup.get(pick) if isinstance(by_id_lookup.get(pick), dict) else {}
+                        template_bucket_key = meta.get("template_bucket_key") if isinstance(meta.get("template_bucket_key"), tuple) else ()
+                        if len(template_bucket_key) == 2:
+                            new_slot["route_prefix"] = str(template_bucket_key[0] or new_slot.get("route_prefix", "")).strip()
+                            new_slot["mastery"] = str(template_bucket_key[1] or new_slot.get("mastery", "")).strip()
+                        supplemented_slots.append(new_slot)
+                        supplement_msgs.append(
+                            _describe_template_target_gap(
+                                target_index=global_target_index,
+                                planned_slots=planned_slots_all,
+                                candidate_lookup=candidate_lookup,
+                                process_trace=merged_traces,
+                            )
+                            + f" -> fallback_slice={pick}"
+                        )
+                    repair_slots = supplemented_slots
+                    if supplement_msgs:
+                        done_payload["errors"] = list(done_payload.get("errors") or []) + [
+                            "模板修复已启用同掌握程度跨路由补位: " + " | ".join(supplement_msgs[:8])
+                        ]
+                    repair_slots = _rotate_template_repair_slots_for_retry(
+                        repair_slots,
+                        merged_traces=merged_traces,
+                        candidate_lookup=candidate_lookup,
+                        rotation_step=rotation_step,
+                    )
                     repair_specs = _split_template_slots_for_parallel(repair_slots, min(3, max(1, len(repair_slots))))
                     global_candidate_slice_ids = [
                         int(sid) for sid in ((template_parallel_context or {}).get("candidate_slice_ids") or [])
                         if str(sid).isdigit()
                     ]
                     repair_results: list[dict[str, Any]] = []
+                    repair_errors: list[str] = []
                     with ThreadPoolExecutor(max_workers=max(1, len(repair_specs))) as repair_ex:
-                        future_map = {}
+                        future_map: dict[Any, list[dict[str, Any]]] = {}
+                        future_timeouts: dict[Any, int] = {}
+                        child_timeouts: list[int] = []
                         for idx, shard_slots in enumerate(repair_specs):
                             shard_payload = dict(body_with_task)
                             shard_payload.pop("task_id", None)
@@ -14293,20 +16006,64 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                             shard_payload["task_name"] = f"{str(body_with_task.get('task_name', '')).strip()}#repair{repair_round}-{idx + 1}"
                             future = repair_ex.submit(_invoke_generate_payload, shard_payload)
                             future_map[future] = shard_slots
-                        for fut in as_completed(list(future_map.keys())):
-                            repair_payload: dict[str, Any] = {}
-                            resp = fut.result()
-                            try:
-                                repair_payload = resp.get_json(silent=True) or {}
-                            except Exception:
-                                repair_payload = {}
-                            repair_results.append(
-                                {
-                                    "slots": future_map[fut],
-                                    "status_code": int(getattr(resp, "status_code", 200) or 200),
-                                    "payload": repair_payload,
-                                }
+                            child_q = int(shard_payload.get("num_questions", len(cleaned_slots)) or len(cleaned_slots) or 1)
+                            child_max_attempts = int(
+                                shard_payload.get("max_attempts", _estimate_internal_subtask_max_attempts(child_q))
+                                or _estimate_internal_subtask_max_attempts(child_q)
                             )
+                            child_timeout_seconds = _estimate_parallel_child_timeout_seconds(
+                                question_count=child_q,
+                                max_attempts=child_max_attempts,
+                            )
+                            child_timeouts.append(int(child_timeout_seconds))
+                            future_timeouts[future] = int(child_timeout_seconds)
+                        repair_batch_timeout_seconds = _estimate_parallel_batch_timeout_seconds(
+                            child_timeouts=child_timeouts,
+                            subtask_count=len(repair_specs),
+                        )
+                        try:
+                            for fut in as_completed(list(future_map.keys()), timeout=float(repair_batch_timeout_seconds)):
+                                repair_payload: dict[str, Any] = {}
+                                try:
+                                    resp = fut.result()
+                                except Exception as fut_err:
+                                    repair_results.append(
+                                        {
+                                            "slots": future_map[fut],
+                                            "status_code": 500,
+                                            "payload": {},
+                                        }
+                                    )
+                                    repair_errors.append(f"模板修复子任务异常: {fut_err}")
+                                    continue
+                                try:
+                                    repair_payload = resp.get_json(silent=True) or {}
+                                except Exception:
+                                    repair_payload = {}
+                                repair_results.append(
+                                    {
+                                        "slots": future_map[fut],
+                                        "status_code": int(getattr(resp, "status_code", 200) or 200),
+                                        "payload": repair_payload,
+                                    }
+                                )
+                        except FuturesTimeoutError:
+                            for fut, shard_slots in future_map.items():
+                                if fut.done():
+                                    continue
+                                fut.cancel()
+                                timeout_seconds = int(
+                                    future_timeouts.get(fut, repair_batch_timeout_seconds) or repair_batch_timeout_seconds
+                                )
+                                repair_results.append(
+                                    {
+                                        "slots": shard_slots,
+                                        "status_code": 504,
+                                        "payload": {
+                                            "errors": [f"模板修复子任务超时({timeout_seconds}s)"],
+                                        },
+                                    }
+                                )
                     before_saved_count = sum(
                         1 for x in merged_traces
                         if isinstance(x, dict) and bool(x.get("saved")) and isinstance(x.get("final_json"), dict)
@@ -14322,12 +16079,16 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                         normalized_existing_traces.append(mapped)
                     appended_repair_traces: list[dict[str, Any]] = []
                     next_trace_index = len(normalized_existing_traces)
-                    repair_errors: list[str] = []
                     repair_run_ids: list[str] = []
                     for row in repair_results:
                         status_code = int(row.get("status_code", 200) or 200)
                         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
                         shard_slots = [slot for slot in (row.get("slots") or []) if isinstance(slot, dict)]
+                        allowed_target_indexes = {
+                            int(slot.get("_global_target_index", 0) or 0)
+                            for slot in shard_slots
+                            if int(slot.get("_global_target_index", 0) or 0) > 0
+                        }
                         if status_code >= 400:
                             msg = str(((payload.get("error") if isinstance(payload, dict) else {}) or {}).get("message", "")).strip()
                             repair_errors.append(msg or f"模板修复子任务失败({status_code})")
@@ -14337,23 +16098,36 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                             repair_run_ids.append(rid)
                             repair_round_record["run_ids"] = list(repair_round_record.get("run_ids") or []) + [rid]
                         repair_round_record["subtask_count"] = int(repair_round_record.get("subtask_count", 0) or 0) + 1
-                        repair_round_record["generated_count"] = int(repair_round_record.get("generated_count", 0) or 0) + len(
-                            [x for x in (payload.get("items") or []) if isinstance(x, dict)]
-                        )
-                        repair_round_record["saved_count"] = int(repair_round_record.get("saved_count", 0) or 0) + int(
-                            payload.get("saved_count", 0) or 0
-                        )
                         repair_round_record["error_count"] = int(repair_round_record.get("error_count", 0) or 0) + len(
                             [str(x) for x in (payload.get("errors") or []) if str(x).strip()]
                         )
+                        if not [x for x in (payload.get("process_trace") or []) if isinstance(x, dict)]:
+                            repair_errors.append(
+                                f"模板修复子任务返回缺少 process_trace，忽略本次入账（run_id={rid or '-'}）"
+                            )
+                        row_generated_count = 0
+                        row_saved_targets: set[int] = set()
                         for t_idx, tr in enumerate([x for x in (payload.get("process_trace") or []) if isinstance(x, dict)], start=1):
                             mapped = dict(tr)
                             local_target = int(mapped.get("target_index", 0) or t_idx)
                             if 1 <= local_target <= len(shard_slots):
                                 mapped["target_index"] = int(shard_slots[local_target - 1].get("_global_target_index", local_target))
+                            target_idx = int(mapped.get("target_index", 0) or 0)
+                            if allowed_target_indexes and target_idx not in allowed_target_indexes:
+                                repair_errors.append(
+                                    f"模板修复结果位次越界：target_index={target_idx} 不在本轮目标位次 {sorted(allowed_target_indexes)}，已丢弃"
+                                )
+                                continue
                             next_trace_index += 1
                             mapped["index"] = next_trace_index
                             appended_repair_traces.append(mapped)
+                            row_generated_count += 1
+                            if bool(mapped.get("saved")) and isinstance(mapped.get("final_json"), dict):
+                                row_saved_targets.add(int(target_idx))
+                        repair_round_record["generated_count"] = int(repair_round_record.get("generated_count", 0) or 0) + int(row_generated_count)
+                        repair_round_record["saved_count"] = int(repair_round_record.get("saved_count", 0) or 0) + len(
+                            [x for x in row_saved_targets if x in allowed_target_indexes]
+                        )
                         repair_errors.extend([str(x) for x in (payload.get("errors") or []) if str(x).strip()])
                     merged_traces = normalized_existing_traces + appended_repair_traces
                     merged_traces.sort(key=lambda x: (int(x.get("target_index", 0) or 0), int(x.get("index", 0) or 0)))
@@ -14442,6 +16216,18 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
         if resume_inplace and isinstance(done_payload, dict):
             newly_items = [x for x in (done_payload.get("items") or []) if isinstance(x, dict)]
             newly_traces = [x for x in (done_payload.get("process_trace") or []) if isinstance(x, dict)]
+            resume_target_index_map: dict[int, int] = {}
+            for local_idx, slot in enumerate((body_with_task.get("planned_slots") or []), start=1):
+                if not isinstance(slot, dict):
+                    continue
+                gti = int(slot.get("_global_target_index", 0) or 0)
+                if gti > 0:
+                    resume_target_index_map[int(local_idx)] = int(gti)
+            resume_planned_global_targets = {
+                int(slot.get("_global_target_index", 0) or 0)
+                for slot in (body_with_task.get("planned_slots") or [])
+                if isinstance(slot, dict) and int(slot.get("_global_target_index", 0) or 0) > 0
+            }
             trace_offset = len(seed_trace)
             remapped_traces: list[dict[str, Any]] = []
             for idx, row in enumerate(newly_traces, start=1):
@@ -14449,11 +16235,33 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 current_idx = int(mapped.get("index", 0) or idx)
                 current_target = int(mapped.get("target_index", 0) or current_idx)
                 mapped["index"] = trace_offset + current_idx
-                mapped["target_index"] = seed_generated_count + current_target
+                mapped_target = int(resume_target_index_map.get(current_target, 0) or 0)
+                if mapped_target > 0:
+                    mapped["target_index"] = mapped_target
+                elif current_target in resume_planned_global_targets:
+                    mapped["target_index"] = current_target
+                else:
+                    mapped["target_index"] = seed_generated_count + current_target
                 remapped_traces.append(mapped)
             merged_trace = list(seed_trace) + remapped_traces
-            merged_items = list(seed_items) + newly_items
+            remapped_items: list[dict[str, Any]] = []
+            for item in newly_items:
+                mapped_item = dict(item)
+                try:
+                    raw_target = int(mapped_item.get("模板目标位次", 0) or 0)
+                except (TypeError, ValueError):
+                    raw_target = 0
+                mapped_target = int(resume_target_index_map.get(raw_target, 0) or 0)
+                if mapped_target > 0:
+                    mapped_item["模板目标位次"] = mapped_target
+                remapped_items.append(mapped_item)
+            merged_items = list(seed_items) + remapped_items
             merged_errors = list(seed_errors) + [str(x) for x in (done_payload.get("errors") or []) if str(x).strip()]
+            # 清理历史续跑遗留的“未补齐”提示，避免后续增量补位成功后仍挂旧错误。
+            merged_errors = [
+                err for err in merged_errors
+                if not str(err).startswith("模板续跑未补齐：")
+            ]
             merged_generated_count = seed_generated_count + int(done_payload.get("generated_count", 0) or 0)
             merged_saved_count = seed_saved_count + int(done_payload.get("saved_count", 0) or 0)
             hard_failed_count, soft_warning_count = _summarize_trace_fail_levels(merged_trace)
@@ -14488,6 +16296,13 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 done_payload["template_selection"] = selection_stats
                 done_payload["backup_count"] = int(selection_stats.get("backup_count", 0) or 0)
 
+        if isinstance(done_payload, dict) and _is_task_cancelled(task_id):
+            done_payload["cancelled"] = True
+            errs = [str(x) for x in (done_payload.get("errors") or []) if str(x).strip()]
+            if "用户取消" not in errs:
+                errs.append("用户取消")
+            done_payload["errors"] = errs
+
         ended_at = datetime.now(timezone.utc).isoformat()
         if not isinstance(done_payload, dict):
             if resume_inplace:
@@ -14512,7 +16327,11 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 and bool(str(body_with_task.get("template_id", "") or "").strip())
                 and int(done_payload.get("generated_count", 0) or 0) < int(total_for_progress)
             )
-            payload_success = bool(done_payload.get("success", False))
+            if "success" in done_payload:
+                payload_success = bool(done_payload.get("success", False))
+            else:
+                expected_now = max(1, int(body_with_task.get("num_questions", 0) or 0))
+                payload_success = int(done_payload.get("generated_count", 0) or 0) >= expected_now
             # 模板续跑要求“补齐总量才成功”；若仍未补齐则保持 failed 便于继续续跑。
             status = (
                 "cancelled" if done_payload.get("cancelled")
@@ -14535,7 +16354,11 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                     "soft_warning_count": int(done_payload.get("soft_warning_count", 0) or 0),
                     "template_selection": done_payload.get("template_selection") if isinstance(done_payload.get("template_selection"), dict) else {},
                     "progress": {
-                        "current": int(done_payload.get("generated_count", 0) or 0) if resume_inplace else len(list(done_payload.get("process_trace") or [])),
+                        "current": (
+                            min(int(done_payload.get("generated_count", 0) or 0), int(total_for_progress))
+                            if resume_inplace
+                            else len(list(done_payload.get("process_trace") or []))
+                        ),
                         "total": int(total_for_progress),
                     },
                     "current_subcall": {},
@@ -14546,18 +16369,23 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
                 list(done_payload.get("process_trace") or []),
             )
             _persist_live_task_snapshot(tenant_id, task_id)
+        task_to_persist: dict[str, Any] | None = None
+        should_persist_failed_qa = False
         with GEN_TASK_LOCK:
             task = GEN_TASKS.get(task_id)
             if task:
-                if str(task.get("status", "")) == "failed":
-                    _persist_failed_task_qa_run(
-                        tenant_id,
-                        task,
-                        reason="任务异常结束，未收到完成事件",
-                        started_at=started_at,
-                        ended_at=ended_at,
-                    )
-                _persist_gen_task(tenant_id, task)
+                task_to_persist = _task_snapshot(task)
+                should_persist_failed_qa = str(task.get("status", "")) == "failed"
+        if isinstance(task_to_persist, dict):
+            if should_persist_failed_qa:
+                _persist_failed_task_qa_run(
+                    tenant_id,
+                    task_to_persist,
+                    reason="任务异常结束，未收到完成事件",
+                    started_at=started_at,
+                    ended_at=ended_at,
+                )
+            _persist_gen_task(tenant_id, task_to_persist)
     except Exception as e:
         ended_at = datetime.now(timezone.utc).isoformat()
         _update_task_live(
@@ -14570,11 +16398,14 @@ def _run_generate_task_worker(tenant_id: str, task_id: str, body: dict[str, Any]
             },
         )
         _persist_live_task_snapshot(tenant_id, task_id)
+        task_to_persist: dict[str, Any] | None = None
         with GEN_TASK_LOCK:
             task = GEN_TASKS.get(task_id)
             if task:
-                _persist_failed_task_qa_run(tenant_id, task, reason=str(e), started_at=started_at, ended_at=ended_at)
-                _persist_gen_task(tenant_id, task)
+                task_to_persist = _task_snapshot(task)
+        if isinstance(task_to_persist, dict):
+            _persist_failed_task_qa_run(tenant_id, task_to_persist, reason=str(e), started_at=started_at, ended_at=ended_at)
+            _persist_gen_task(tenant_id, task_to_persist)
 
 
 @app.post('/api/<tenant_id>/generate/tasks')
@@ -14589,44 +16420,53 @@ def api_generate_task_create(tenant_id: str):
     if not task_name:
         return _error("BAD_REQUEST", "task_name is required", 400)
     normalized = task_name.casefold()
+    name_key = (tenant_id, normalized)
     with GEN_TASK_LOCK:
+        if name_key in GEN_TASK_NAME_INFLIGHT:
+            return _error("BAD_REQUEST", "task_name already exists", 400)
         for task in GEN_TASKS.values():
             if str(task.get("tenant_id", "")) != tenant_id:
                 continue
             exist_name = str(task.get("task_name", "") or "").strip()
             if exist_name and exist_name.casefold() == normalized:
                 return _error("BAD_REQUEST", "task_name already exists", 400)
-    for task in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
-        if not isinstance(task, dict):
-            continue
-        exist_name = str(task.get("task_name", "") or "").strip()
-        if exist_name and exist_name.casefold() == normalized:
-            return _error("BAD_REQUEST", "task_name already exists", 400)
-    template_id = str(body.get("template_id", "") or "").strip()
-    if template_id:
-        template = _get_gen_template(tenant_id, template_id)
-        if not isinstance(template, dict):
-            return _error("TEMPLATE_NOT_FOUND", "出题模板不存在", 404)
-        template_count = int(template.get("question_count", 0) or 0)
-        if template_count <= 0:
-            return _error("BAD_REQUEST", "模板题量非法", 400)
-        requested = int(body.get("num_questions", template_count) or template_count)
-        if requested != template_count:
+        GEN_TASK_NAME_INFLIGHT.add(name_key)
+    try:
+        for task in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
+            if not isinstance(task, dict):
+                continue
+            exist_name = str(task.get("task_name", "") or "").strip()
+            if exist_name and exist_name.casefold() == normalized:
+                return _error("BAD_REQUEST", "task_name already exists", 400)
+        template_id = str(body.get("template_id", "") or "").strip()
+        if template_id:
+            template = _get_gen_template(tenant_id, template_id)
+            if not isinstance(template, dict):
+                return _error("TEMPLATE_NOT_FOUND", "出题模板不存在", 404)
+            template_count = int(template.get("question_count", 0) or 0)
+            if template_count <= 0:
+                return _error("BAD_REQUEST", "模板题量非法", 400)
+            requested = int(body.get("num_questions", template_count) or template_count)
+            # 始终写入模板题量：否则 body 缺省 num_questions 时 _make_gen_task 会回退为 1，分片/落盘错误。
             body["num_questions"] = template_count
-            body["template_count_adjusted_from"] = requested
-        if not str(body.get("template_name", "") or "").strip():
-            body["template_name"] = str(template.get("name", "") or "").strip()
-    body["task_name"] = task_name
-    task = _make_gen_task(tenant_id, system_user, body)
-    # Persist immediately so pending/running tasks survive process restarts.
-    _persist_gen_task(tenant_id, task)
-    t = threading.Thread(
-        target=_run_generate_task_worker,
-        args=(tenant_id, str(task.get("task_id", "")), body, system_user),
-        daemon=True,
-    )
-    t.start()
-    return _json_response({"task": _build_gen_task_summary(task)})
+            if requested != template_count:
+                body["template_count_adjusted_from"] = requested
+            if not str(body.get("template_name", "") or "").strip():
+                body["template_name"] = str(template.get("name", "") or "").strip()
+        body["task_name"] = task_name
+        task = _make_gen_task(tenant_id, system_user, body)
+        # Persist immediately so pending/running tasks survive process restarts.
+        _persist_gen_task(tenant_id, task)
+        t = threading.Thread(
+            target=_run_generate_task_worker,
+            args=(tenant_id, str(task.get("task_id", "")), body, system_user),
+            daemon=True,
+        )
+        t.start()
+        return _json_response({"task": _build_gen_task_summary(task)})
+    finally:
+        with GEN_TASK_LOCK:
+            GEN_TASK_NAME_INFLIGHT.discard(name_key)
 
 
 @app.post('/api/<tenant_id>/generate/tasks/<task_id>/resume')
@@ -14882,6 +16722,7 @@ def api_generate_task_list(tenant_id: str):
     limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
     include_legacy = str(request.args.get("include_legacy", "0") or "").strip().lower() in {"1", "true", "yes"}
     enable_bank_recovery = str(request.args.get("with_recovery", "0") or "").strip().lower() in {"1", "true", "yes"}
+    enable_subtask_diagnostics = str(request.args.get("with_subtask_diagnostics", "0") or "").strip().lower() in {"1", "true", "yes"}
     rows: dict[str, dict[str, Any]] = {}
     with GEN_TASK_LOCK:
         for task in GEN_TASKS.values():
@@ -14890,7 +16731,16 @@ def api_generate_task_list(tenant_id: str):
             tid = str(task.get("task_id", ""))
             if tid:
                 rows[tid] = _task_snapshot(task)
-    for task in _latest_gen_task_rows(tenant_id, allow_full_fallback=True).values():
+    # List pages must stay on the summary path. Do not synchronously refresh or
+    # fully scan historical gen_tasks.jsonl here; paging only helps if it is
+    # applied before the expensive read, not after loading the whole audit file.
+    persisted_stop_after = max(limit * 4, 200)
+    for task in _latest_gen_task_rows(
+        tenant_id,
+        refresh_summary=False,
+        prefer_compact_summary=True,
+        stop_after=persisted_stop_after,
+    ).values():
         if not isinstance(task, dict):
             continue
         tid = str(task.get("task_id", ""))
@@ -14965,7 +16815,21 @@ def api_generate_task_list(tenant_id: str):
     items = [task for task in rows.values() if not _is_internal_child_gen_task(task)]
     items.sort(key=lambda x: str(x.get("created_at", "")), reverse=True)
     items = items[:limit]
-    return _json_response({"items": [_build_gen_task_summary(x) for x in items], "total": len(items)})
+    enriched_items: list[dict[str, Any]] = []
+    for task in items:
+        row = dict(task) if isinstance(task, dict) else {}
+        if enable_subtask_diagnostics:
+            status = str(row.get("status", "") or "").strip().lower()
+            is_terminal = status in {"completed", "failed", "cancelled", "canceled"}
+            is_parent = not str(row.get("parent_task_id", "") or "").strip()
+            has_subtasks = bool([x for x in (row.get("subtasks") or []) if isinstance(x, dict)])
+            if is_terminal and is_parent and not has_subtasks and str(row.get("task_name", "") or "").strip():
+                diagnostics = _build_task_related_run_diagnostics(tenant_id, row)
+                diag_subtasks = diagnostics.get("subtasks") if isinstance(diagnostics.get("subtasks"), list) else []
+                if diag_subtasks:
+                    row["subtasks"] = [x for x in diag_subtasks if isinstance(x, dict)]
+        enriched_items.append(row)
+    return _json_response({"items": [_build_gen_task_summary(x) for x in enriched_items], "total": len(items)})
 
 
 @app.post('/api/<tenant_id>/generate/tasks/<task_id>/cancel')
@@ -15016,9 +16880,12 @@ def api_generate_task_detail(tenant_id: str, task_id: str):
     enable_template_reconcile = str(request.args.get("with_reconcile", "0") or "").strip().lower() in {"1", "true", "yes"}
     if tid.startswith(legacy_prefix) and not allow_legacy_detail:
         return _error("TASK_NOT_FOUND", "任务不存在", 404)
+    latest_row = _latest_gen_task_rows(tenant_id, allow_full_fallback=True).get(tid)
+    if isinstance(latest_row, dict) and str(latest_row.get("tenant_id", "") or "").strip() != tenant_id:
+        latest_row = None
     live_file_task = _read_gen_task_snapshot_file(tenant_id, task_id)
     if isinstance(live_file_task, dict):
-        out = dict(live_file_task)
+        out = _pick_newer_terminal_task_snapshot(live_file_task, latest_row) or dict(live_file_task)
         file_status = str(out.get("status", "") or "").strip().lower()
         bank_task_stats = {} if (file_status in {"pending", "running"} or not enable_bank_recovery) else _build_bank_task_recovery_stats(tenant_id)
         if bank_task_stats:
@@ -15034,7 +16901,7 @@ def api_generate_task_detail(tenant_id: str, task_id: str):
         if task and str(task.get("tenant_id", "")) == tenant_id:
             mem_status = str(task.get("status", "") or "").strip().lower()
             if mem_status in {"pending", "running"}:
-                snap = _task_snapshot(task)
+                snap = _pick_newer_terminal_task_snapshot(_task_snapshot(task), latest_row) or _task_snapshot(task)
                 live_status = str(snap.get("status", "") or "").strip().lower()
                 bank_task_stats = {} if (live_status in {"pending", "running"} or not enable_bank_recovery) else _build_bank_task_recovery_stats(tenant_id)
                 if bank_task_stats:
@@ -16884,6 +18751,175 @@ def _sync_task_bank_policy(tenant_id: str, task: dict[str, Any], enabled: bool) 
     return added, removed, scope_saved_count
 
 
+def _normalize_bank_question_item(
+    raw_item: Any,
+    *,
+    fallback_item: dict[str, Any] | None = None,
+    merge_with_fallback: bool = True,
+) -> dict[str, Any]:
+    """Normalize/merge one bank question item into the storage schema."""
+    base = deepcopy(fallback_item) if (merge_with_fallback and isinstance(fallback_item, dict)) else {}
+    candidate = deepcopy(raw_item) if isinstance(raw_item, dict) else {}
+    for key in ("item", "question", "final_json", "draft", "optimized_question"):
+        nested = candidate.get(key)
+        if isinstance(nested, dict):
+            candidate = deepcopy(nested)
+            break
+
+    out = dict(base)
+    out.update(candidate)
+    out.pop("question_id", None)
+    out.pop("_gen_key", None)
+
+    stem = str(
+        out.get("题干", "")
+        or out.get("question", "")
+        or out.get("stem", "")
+        or out.get("题目", "")
+    ).strip()
+    if stem:
+        out["题干"] = stem
+
+    explanation = str(out.get("解析", "") or out.get("explanation", "")).strip()
+    if explanation:
+        out["解析"] = explanation
+
+    raw_answer = str(out.get("正确答案", "") or out.get("answer", "")).strip()
+    normalized_answer = raw_answer.replace(" ", "").upper()
+    if normalized_answer:
+        out["正确答案"] = normalized_answer
+
+    options: list[str] = []
+    option_dict = out.get("选项")
+    if isinstance(option_dict, dict):
+        for k in ("A", "B", "C", "D", "E", "F", "G", "H"):
+            value = str(option_dict.get(k, "") or "").strip()
+            if value:
+                options.append(value)
+
+    if not options and isinstance(out.get("options"), list):
+        options = [str(x or "").strip() for x in (out.get("options") or []) if str(x or "").strip()]
+
+    if not options:
+        for i in range(1, 9):
+            value = str(out.get(f"选项{i}", "") or "").strip()
+            if value:
+                options.append(value)
+
+    if options:
+        for i in range(1, 9):
+            out[f"选项{i}"] = options[i - 1] if i <= len(options) else ""
+    return out
+
+
+def _extract_bank_question_from_text(raw_content: Any) -> dict[str, Any]:
+    """
+    Best-effort extractor for free-form LLM output when JSON parsing fails.
+    Supports:
+    - `题干/正确答案/解析/选项1...` key-value lines
+    - A/B/C/D style option lines.
+    """
+    text = str(raw_content or "").strip()
+    if not text:
+        return {}
+    # Strip optional markdown code fences.
+    text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    lines = [str(line).rstrip() for line in text.splitlines()]
+    out: dict[str, Any] = {}
+    letter_options: dict[str, str] = {}
+    current_multiline_key: str | None = None
+
+    def _set_multiline_value(key: str, value: str) -> None:
+        nonlocal current_multiline_key
+        val = str(value or "").strip()
+        if not val:
+            return
+        out[key] = val
+        current_multiline_key = key
+
+    for raw_line in lines:
+        line = str(raw_line).strip()
+        if not line:
+            continue
+        line = re.sub(r"^[\-*]\s+", "", line)
+
+        m = re.match(r"^(题干|question|stem|题目)\s*[:：]\s*(.+)$", line, flags=re.IGNORECASE)
+        if m:
+            _set_multiline_value("题干", m.group(2))
+            continue
+
+        m = re.match(r"^(解析|explanation)\s*[:：]\s*(.+)$", line, flags=re.IGNORECASE)
+        if m:
+            _set_multiline_value("解析", m.group(2))
+            continue
+
+        m = re.match(r"^(正确答案|答案|answer)\s*[:：]\s*(.+)$", line, flags=re.IGNORECASE)
+        if m:
+            out["正确答案"] = str(m.group(2) or "").strip()
+            current_multiline_key = None
+            continue
+
+        m = re.match(r"^(题目类型|question_type)\s*[:：]\s*(.+)$", line, flags=re.IGNORECASE)
+        if m:
+            out["题目类型"] = str(m.group(2) or "").strip()
+            current_multiline_key = None
+            continue
+
+        m = re.match(r"^(难度值|difficulty|difficulty_score)\s*[:：]\s*(.+)$", line, flags=re.IGNORECASE)
+        if m:
+            out["难度值"] = str(m.group(2) or "").strip()
+            current_multiline_key = None
+            continue
+
+        m = re.match(r"^选项\s*([1-8])\s*[:：]\s*(.+)$", line, flags=re.IGNORECASE)
+        if m:
+            out[f"选项{int(m.group(1))}"] = str(m.group(2) or "").strip()
+            current_multiline_key = None
+            continue
+
+        m = re.match(r"^([A-H])(?:[\.\)、:：]|[\s\-—]+)\s*(.+)$", line, flags=re.IGNORECASE)
+        if m:
+            letter_options[m.group(1).upper()] = str(m.group(2) or "").strip()
+            current_multiline_key = None
+            continue
+
+        if current_multiline_key in {"题干", "解析"}:
+            out[current_multiline_key] = str(out.get(current_multiline_key, "")).strip() + "\n" + line
+
+    if letter_options:
+        for idx, letter in enumerate(("A", "B", "C", "D", "E", "F", "G", "H"), start=1):
+            if letter in letter_options:
+                out[f"选项{idx}"] = letter_options[letter]
+    return out
+
+
+def _build_bank_optimize_prompt(base_item: dict[str, Any], feedback: str) -> str:
+    source = json.dumps(base_item, ensure_ascii=False, indent=2)
+    return f"""
+你是出题调优助手。请基于“用户反馈”和“当前题目JSON”，输出一个可直接入库的优化后题目 JSON。
+
+要求：
+1) 输出格式优先 JSON 对象（不要 markdown、解释或多余文本）。
+2) 仅改动与反馈相关内容；若用户未要求，尽量保留题目元数据（例如知识点、来源路径、任务信息等）。
+3) 字段使用中文键：题干、选项1~选项8、正确答案、解析、难度值、题目类型 等；如无必要不要新增无关字段。
+4) 题目需自洽：题干、选项、正确答案、解析一致，且正确答案可由题干与选项唯一确定。
+5) 如果反馈与原题冲突，以反馈为准，但要保证题目质量。
+6) 如果确实无法输出 JSON，则仅输出纯文本固定键，不要与 JSON 混合：
+   题干: ...
+   选项1: ...
+   选项2: ...
+   正确答案: ...
+   解析: ...
+
+用户反馈：
+{feedback}
+
+当前题目 JSON：
+{source}
+"""
+
+
 @app.get('/api/<tenant_id>/bank')
 def api_bank_list(tenant_id: str):
     try:
@@ -16922,6 +18958,129 @@ def api_bank_list(tenant_id: str):
     payload = _paginate(items, page, page_size)
     payload["material_version_id"] = material_version_id
     return _json_response(payload)
+
+
+@app.post('/api/<tenant_id>/bank/optimize')
+def api_bank_optimize(tenant_id: str):
+    try:
+        _check_tenant_permission(tenant_id, "gen.create")
+    except PermissionError as e:
+        return _error(str(e), "无权限调优题目", 403)
+
+    body = request.get_json(silent=True) or {}
+    raw_qid = body.get("question_id", None)
+    feedback = str(body.get("feedback", "") or "").strip()
+    draft_item = body.get("question")
+
+    if raw_qid in (None, ""):
+        return _error("BAD_REQUEST", "question_id is required", 400)
+    if not feedback:
+        return _error("BAD_REQUEST", "feedback is required", 400)
+
+    try:
+        question_id = int(raw_qid)
+    except (TypeError, ValueError):
+        return _error("BAD_REQUEST", "question_id is invalid", 400)
+
+    bank = _load_bank(tenant_bank_path(tenant_id))
+    if question_id < 0 or question_id >= len(bank):
+        return _error("NOT_FOUND", "题目不存在", 404)
+
+    base_item = bank[question_id] if isinstance(bank[question_id], dict) else {}
+    if isinstance(draft_item, dict) and str(draft_item.get("题干", "") or draft_item.get("question", "")).strip():
+        base_item = _normalize_bank_question_item(draft_item, fallback_item=base_item, merge_with_fallback=True)
+
+    prompt = _build_bank_optimize_prompt(base_item, feedback)
+    try:
+        api_key, base_url, model_name = _resolve_generation_llm_from_primary_key()
+        if not api_key:
+            return _error("LLM_CONFIG_MISSING", "未配置可用模型 Key，无法进行AI调优", 400)
+        content, _, _ = call_llm(
+            node_name="bank.optimize",
+            prompt=prompt,
+            model_name=model_name,
+            api_key=api_key,
+            base_url=base_url,
+            provider="ait",
+            temperature=0.2,
+            max_tokens=2500,
+            timeout=120,
+        )
+        parse_err = ""
+        try:
+            parsed = parse_json_from_response(content)
+        except Exception as e:
+            parsed = {}
+            parse_err = str(e)
+        if not isinstance(parsed, dict) or not parsed:
+            parsed = _extract_bank_question_from_text(content)
+        if not isinstance(parsed, dict) or not parsed:
+            raise RuntimeError(f"模型输出不可解析（JSON与文本兜底均失败）: {parse_err or 'invalid output'}")
+        optimized = _normalize_bank_question_item(parsed, fallback_item=base_item, merge_with_fallback=True)
+    except Exception as e:
+        return _error("LLM_OPTIMIZE_FAILED", f"AI调优失败：{str(e)}", 500)
+
+    if not str(optimized.get("题干", "") or "").strip():
+        return _error("LLM_INVALID_OUTPUT", "AI调优结果缺少题干", 500)
+
+    return _json_response(
+        {
+            "question_id": question_id,
+            "item": optimized,
+        }
+    )
+
+
+@app.post('/api/<tenant_id>/bank/update')
+def api_bank_update(tenant_id: str):
+    try:
+        system_user = _get_system_user()
+        _check_tenant_permission(tenant_id, "gen.create")
+    except PermissionError as e:
+        return _error(str(e), "无权限修改题库题目", 403)
+
+    body = request.get_json(silent=True) or {}
+    raw_qid = body.get("question_id", None)
+    raw_item = body.get("item")
+    requested_material_version_id = str(body.get("material_version_id", "")).strip()
+    if raw_qid in (None, ""):
+        return _error("BAD_REQUEST", "question_id is required", 400)
+    if not isinstance(raw_item, dict):
+        return _error("BAD_REQUEST", "item is required", 400)
+
+    try:
+        question_id = int(raw_qid)
+    except (TypeError, ValueError):
+        return _error("BAD_REQUEST", "question_id is invalid", 400)
+
+    material_version_id = _resolve_material_version_id(tenant_id, requested_material_version_id)
+    if requested_material_version_id and not material_version_id:
+        return _error("MATERIAL_NOT_FOUND", "教材版本不存在", 404)
+
+    bank_path = tenant_bank_path(tenant_id)
+    with BANK_WRITE_LOCK:
+        bank = _load_bank(bank_path)
+        if question_id < 0 or question_id >= len(bank):
+            return _error("NOT_FOUND", "题目不存在", 404)
+        old_item = bank[question_id] if isinstance(bank[question_id], dict) else {}
+        new_item = _normalize_bank_question_item(raw_item, merge_with_fallback=False)
+        if material_version_id and not str(new_item.get("教材版本ID", "")).strip():
+            new_item["教材版本ID"] = material_version_id
+        if not str(new_item.get("题干", "") or "").strip():
+            return _error("BAD_REQUEST", "题干不能为空", 400)
+        bank[question_id] = new_item
+        _save_bank(bank_path, bank)
+
+    write_audit_log(
+        tenant_id,
+        system_user,
+        "bank.update.single",
+        "question_bank",
+        str(question_id),
+        before={"stem": str(old_item.get("题干", "") or "").strip()},
+        after={"stem": str(new_item.get("题干", "") or "").strip()},
+    )
+    return _json_response({"updated": 1, "question_id": question_id, "item": new_item})
 
 
 @app.post('/api/<tenant_id>/bank/delete')
@@ -16967,6 +19126,7 @@ def api_bank_export(tenant_id: str):
 
     body = request.get_json(silent=True) or {}
     ids = body.get("question_ids") or []
+    only_template_official = bool(body.get("only_template_official", False))
     if not isinstance(ids, list) or not ids:
         return _error("BAD_REQUEST", "question_ids is required", 400)
 
@@ -16981,7 +19141,20 @@ def api_bank_export(tenant_id: str):
 
     bank = _load_bank(tenant_bank_path(tenant_id))
     origin_lookup = _build_bank_origin_lookup(tenant_id)
-    selected_rows = [(idx, q) for idx, q in enumerate(bank) if idx in selected_ids and isinstance(q, dict)]
+    selected_rows = []
+    for idx, q in enumerate(bank):
+        if idx not in selected_ids or not isinstance(q, dict):
+            continue
+        if only_template_official:
+            has_template_marks = (
+                "模板正式题" in q
+                or "模板备选题" in q
+                or bool(q.get("模板任务"))
+                or bool(str(q.get("模板父任务名称", "") or "").strip())
+            )
+            if has_template_marks and not bool(q.get("模板正式题")):
+                continue
+        selected_rows.append((idx, q))
     if not selected_rows:
         return _error("BAD_REQUEST", "未命中可导出题目", 400)
 
@@ -17089,6 +19262,7 @@ def api_bank_export(tenant_id: str):
             "选项H": safe_str(q.get("选项8", "")),
             "答案选项(必填)": answer,
             "难度": difficulty,
+            "掌握程度": safe_str(q.get("模板掌握度", "")) or safe_str(q.get("掌握程度", "")),
             "题型": _resolve_calc_question_type(q),
             "一级知识点": safe_str(q.get("一级知识点", "")) or (parts[0] if len(parts) > 0 else ""),
             "二级知识点": safe_str(q.get("二级知识点", "")) or (parts[1] if len(parts) > 1 else ""),
@@ -17120,6 +19294,7 @@ def api_bank_export(tenant_id: str):
         "选项H",
         "答案选项(必填)",
         "难度",
+        "掌握程度",
         "题型",
         "一级知识点",
         "二级知识点",

@@ -96,6 +96,30 @@ def test_router_reroute_preserves_prev():
             },
             "fix",
         ),
+        (
+            {
+                "critic_result": {
+                    "passed": False,
+                    "issue_type": "major",
+                    "fail_types": ["no_question"],
+                },
+                "retry_count": 3,
+                "router_round": 0,
+            },
+            "self_heal",
+        ),
+        (
+            {
+                "critic_result": {
+                    "passed": False,
+                    "issue_type": "major",
+                    "non_current_slice_basis": True,
+                },
+                "retry_count": 10,
+                "router_round": 10,
+            },
+            "reroute",
+        ),
         ({"critic_result": {"passed": False, "issue_type": "major"}}, "fix"),
         ({"critic_result": {"passed": False, "issue_type": "minor"}, "retry_count": 3}, "self_heal"),
     ],
@@ -106,6 +130,8 @@ def test_router_reroute_preserves_prev():
         "major_failure_after_fix_reroutes",
         "judge_reverse_solve_fail_stays_on_fixer",
         "fixed_explanation_only_issue_stays_on_fixer",
+        "no_question_honors_round_retry_limit",
+        "non_current_basis_uses_round_retry_count",
         "first_major_failure_defaults_to_fix",
         "retry_exhausted_self_heals",
     ],

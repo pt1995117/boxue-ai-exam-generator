@@ -204,6 +204,121 @@ def test_reconcile_template_bank_formal_selection_marks_backup(monkeypatch):
     assert rows[2]["审计状态"] == "template_backup_pass"
 
 
+def test_reconcile_template_bank_formal_selection_derives_pair_from_path_and_mastery(monkeypatch):
+    bank_rows = [
+        {
+            "题干": "题1",
+            "来源切片ID": 11,
+            "出题RunID": "run_a",
+            "出题任务名称": "模板任务#p1",
+            "来源路径": "第一篇 行业与链家 > 第一章",
+            "掌握程度": "掌握",
+        },
+        {
+            "题干": "题2",
+            "来源切片ID": 12,
+            "出题RunID": "run_b",
+            "出题任务名称": "模板任务#p2",
+            "来源路径": "第二篇 新房经纪服务 > 第一章",
+            "掌握程度": "熟悉",
+        },
+        {
+            "题干": "题3",
+            "来源切片ID": 13,
+            "出题RunID": "run_c",
+            "出题任务名称": "模板任务#p2",
+            "来源路径": "第一篇 行业与链家 > 第二章",
+            "掌握程度": "掌握",
+        },
+    ]
+    saved_rows = {}
+
+    monkeypatch.setattr("admin_api.tenant_bank_path", lambda _tenant_id: "dummy")
+    monkeypatch.setattr("admin_api._load_bank", lambda _path: bank_rows)
+    monkeypatch.setattr("admin_api._save_bank", lambda _path, items: saved_rows.setdefault("items", items))
+
+    stats = _reconcile_template_bank_formal_selection(
+        tenant_id="sh",
+        parent_task_name="模板任务",
+        planned_slots=[
+            {"route_prefix": "第一篇 行业与链家", "mastery": "掌握"},
+            {"route_prefix": "第二篇 新房经纪服务", "mastery": "熟悉"},
+        ],
+        # 模拟重启后丢失 target_index 映射：无可直连的 official_trace。
+        process_trace=[],
+    )
+
+    assert stats["official_count"] == 2
+    assert stats["backup_count"] == 1
+    rows = saved_rows["items"]
+    # 已为缺失元数据的行回填模板桶，且按配额选出正式题。
+    assert rows[0]["模板路由"] == "第一篇 行业与链家"
+    assert rows[0]["模板掌握度"] == "掌握"
+    assert rows[1]["模板路由"] == "第二篇 新房经纪服务"
+    assert rows[1]["模板掌握度"] == "熟悉"
+    assert sum(1 for r in rows if bool(r.get("模板正式题"))) == 2
+
+
+def test_reconcile_template_bank_formal_selection_relaxed_route_mastery_fallback(monkeypatch):
+    bank_rows = [
+        {
+            "题干": "A1",
+            "来源切片ID": 1,
+            "出题RunID": "run_1",
+            "出题任务名称": "模板任务#p1",
+            "来源路径": "第一篇 行业与链家 > x",
+            "掌握程度": "掌握",
+        },
+        {
+            "题干": "A2",
+            "来源切片ID": 2,
+            "出题RunID": "run_1",
+            "出题任务名称": "模板任务#p1",
+            "来源路径": "第一篇 行业与链家 > y",
+            "掌握程度": "掌握",
+        },
+        {
+            "题干": "B1",
+            "来源切片ID": 3,
+            "出题RunID": "run_2",
+            "出题任务名称": "模板任务#p2",
+            "来源路径": "第二篇 新房经纪服务 > x",
+            "掌握程度": "熟悉",
+        },
+        {
+            "题干": "B2",
+            "来源切片ID": 4,
+            "出题RunID": "run_2",
+            "出题任务名称": "模板任务#p2",
+            "来源路径": "第二篇 新房经纪服务 > y",
+            "掌握程度": "熟悉",
+        },
+    ]
+    saved_rows = {}
+    monkeypatch.setattr("admin_api.tenant_bank_path", lambda _tenant_id: "dummy")
+    monkeypatch.setattr("admin_api._load_bank", lambda _path: bank_rows)
+    monkeypatch.setattr("admin_api._save_bank", lambda _path, items: saved_rows.setdefault("items", items))
+
+    stats = _reconcile_template_bank_formal_selection(
+        tenant_id="sh",
+        parent_task_name="模板任务",
+        planned_slots=[
+            {"route_prefix": "第一篇 行业与链家", "mastery": "掌握"},
+            {"route_prefix": "第一篇 行业与链家", "mastery": "熟悉"},
+            {"route_prefix": "第二篇 新房经纪服务", "mastery": "掌握"},
+            {"route_prefix": "第二篇 新房经纪服务", "mastery": "熟悉"},
+        ],
+        process_trace=[],
+    )
+
+    # 严格 pair 不可行（A 无熟悉、B 无掌握），但 relaxed fallback 可满足：
+    # 路由 A=2、B=2；全局 掌握=2、熟悉=2。
+    assert stats["official_count"] == 4
+    assert stats["backup_count"] == 0
+    rows = saved_rows["items"]
+    assert all(bool(r.get("模板正式题")) for r in rows)
+
+
 def test_build_task_questions_from_bank_only_uses_template_formal_questions(monkeypatch):
     bank_rows = [
         {"题干": "正式题", "正确答案": "A", "解析": "x", "来源路径": "R", "来源切片ID": 1, "出题任务名称": "模板任务#p1", "模板正式题": True},
@@ -231,6 +346,38 @@ def test_build_task_questions_from_bank_can_include_template_backups_for_judge(m
     assert len(questions) == 2
     assert [q["question_text"] for q in questions] == ["正式题", "备选题"]
     assert questions[1]["template_backup"] is True
+
+
+def test_build_task_questions_from_bank_fallbacks_to_provisional_when_no_formal_selected(monkeypatch):
+    bank_rows = [
+        {
+            "题干": "备选题1",
+            "正确答案": "A",
+            "解析": "x",
+            "来源路径": "R",
+            "来源切片ID": 1,
+            "出题任务名称": "模板任务#p1",
+            "模板备选题": True,
+            "是否正式通过": True,
+        },
+        {
+            "题干": "备选题2",
+            "正确答案": "B",
+            "解析": "y",
+            "来源路径": "R",
+            "来源切片ID": 2,
+            "出题任务名称": "模板任务#p2",
+            "模板备选题": True,
+            "是否正式通过": True,
+        },
+    ]
+    monkeypatch.setattr("admin_api.tenant_bank_path", lambda _tenant_id: "dummy")
+    monkeypatch.setattr("admin_api._load_bank", lambda _path: bank_rows)
+
+    questions = _build_task_questions_from_bank("sh", "模板任务")
+
+    assert len(questions) == 2
+    assert [q["question_text"] for q in questions] == ["备选题1", "备选题2"]
 
 
 def test_build_resume_task_body_from_source_keeps_template_resume_open_when_count_is_full():

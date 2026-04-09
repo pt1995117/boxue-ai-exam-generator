@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from admin_api import app
+from admin_api import _new_material_version_id, app
 
 
 def test_upload_text_triggers_slice_generation(monkeypatch):
@@ -31,3 +32,20 @@ def test_upload_text_triggers_slice_generation(monkeypatch):
     payload = resp.get_json()
     assert payload["slice_count"] >= 1
     assert Path(payload["slices_file"]).exists()
+
+
+def test_new_material_version_id_keeps_base_when_available(monkeypatch):
+    now = datetime(2026, 4, 8, 10, 10, 29, tzinfo=timezone.utc)
+    monkeypatch.setattr("admin_api.list_material_versions", lambda tenant_id: [])
+    assert _new_material_version_id("hz", now) == "v20260408_101029"
+
+
+def test_new_material_version_id_adds_suffix_when_same_second_exists(monkeypatch):
+    now = datetime(2026, 4, 8, 10, 10, 29, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "admin_api.list_material_versions",
+        lambda tenant_id: [{"material_version_id": "v20260408_101029"}],
+    )
+    version_id = _new_material_version_id("hz", now)
+    assert version_id.startswith("v20260408_101029_")
+    assert version_id != "v20260408_101029"

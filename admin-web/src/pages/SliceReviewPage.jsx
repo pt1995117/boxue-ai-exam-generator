@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Input, Modal, Row, Select, Slider, Space, Tag, Tooltip, Tree, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Modal, Popconfirm, Row, Select, Slider, Space, Tag, Tooltip, Tree, Typography, message } from 'antd';
 import { MenuOutlined, SearchOutlined } from '@ant-design/icons';
 import { ReactFlow, Background, Controls, addEdge, applyEdgeChanges, applyNodeChanges } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { addSlice, batchReviewSlices, exportSlicesExcel, fetchSliceImageBlob, getSliceImageUrl, getSlices, listMaterials, mergeSlices, reorderSlices, getSystemUser, updateSliceContent, updateSliceImageAnalysis } from '../services/api';
+import { addSlice, batchReviewSlices, deleteSlice, exportSlicesExcel, fetchSliceImageBlob, getSliceImageUrl, getSlices, listMaterials, mergeSlices, reorderSlices, getSystemUser, updateSliceContent, updateSliceImageAnalysis } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 
@@ -260,6 +260,7 @@ export default function SliceReviewPage() {
   });
   const [savingImage, setSavingImage] = useState(false);
   const [merging, setMerging] = useState(false);
+  const [deletingSliceId, setDeletingSliceId] = useState(null);
   const [selectedTreePathPrefix, setSelectedTreePathPrefix] = useState('');
   const [selectedTreeLevel, setSelectedTreeLevel] = useState(0);
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -858,6 +859,30 @@ export default function SliceReviewPage() {
     }
   };
 
+  const onDeleteSlice = async (row) => {
+    const sid = Number(row?.slice_id);
+    if (!tenantId || !Number.isFinite(sid)) return;
+    setDeletingSliceId(sid);
+    try {
+      await deleteSlice(tenantId, sid, {
+        material_version_id: materialVersionId || undefined,
+        reviewer: systemUser,
+      });
+      message.success(`切片 ${sid} 已删除`);
+      if (editingSliceId === sid) {
+        setEditingSliceId(null);
+        setEditingContent('');
+      }
+      setMergeQueueIds((prev) => prev.filter((x) => Number(x) !== sid));
+      setApproveQueueIds((prev) => prev.filter((x) => Number(x) !== sid));
+      await loadData();
+    } catch (e) {
+      message.error(e?.response?.data?.error?.message || '删除切片失败');
+    } finally {
+      setDeletingSliceId(null);
+    }
+  };
+
   const onSaveImageAnalysis = async () => {
     if (!editingImage.open) return;
     const sliceId = editingImage.sliceId;
@@ -1363,6 +1388,22 @@ export default function SliceReviewPage() {
                             ) : (
                               <Button size="small" onClick={() => onEditSlice(row)}>修改</Button>
                             )}
+                            <Popconfirm
+                              title="删除这个切片？"
+                              description="删除后当前切片会从列表中移除，需谨慎操作。"
+                              okText="确认删除"
+                              cancelText="取消"
+                              onConfirm={() => onDeleteSlice(row)}
+                            >
+                              <Button
+                                size="small"
+                                danger
+                                loading={deletingSliceId === sid}
+                                disabled={deletingSliceId !== null && deletingSliceId !== sid}
+                              >
+                                删除
+                              </Button>
+                            </Popconfirm>
                             {row.review_status !== 'approved' && (
                               <Button
                                 size="small"

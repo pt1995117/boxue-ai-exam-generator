@@ -174,6 +174,28 @@ def test_non_template_task_failed_slice_excludes_immediately():
     )
 
 
+def test_is_task_cancelled_inherits_parent_cancel_flag():
+    parent_id = "task_parent_cancel"
+    child_id = "task_child_cancel"
+    with admin_api.GEN_TASK_LOCK:
+        original_parent = admin_api.GEN_TASKS.get(parent_id)
+        original_child = admin_api.GEN_TASKS.get(child_id)
+        admin_api.GEN_TASKS[parent_id] = {"task_id": parent_id, "cancel_requested": True}
+        admin_api.GEN_TASKS[child_id] = {"task_id": child_id, "parent_task_id": parent_id, "cancel_requested": False}
+    try:
+        assert admin_api._is_task_cancelled(child_id) is True
+    finally:
+        with admin_api.GEN_TASK_LOCK:
+            if original_parent is None:
+                admin_api.GEN_TASKS.pop(parent_id, None)
+            else:
+                admin_api.GEN_TASKS[parent_id] = original_parent
+            if original_child is None:
+                admin_api.GEN_TASKS.pop(child_id, None)
+            else:
+                admin_api.GEN_TASKS[child_id] = original_child
+
+
 def test_template_slot_with_same_mastery_alternative_should_not_retry_failed_slice():
     assert not admin_api._is_template_same_mastery_hard_gap(
         planned_slots=[{"slice_id": 345, "route_prefix": "第二篇  干部管理篇", "mastery": "熟悉"}],

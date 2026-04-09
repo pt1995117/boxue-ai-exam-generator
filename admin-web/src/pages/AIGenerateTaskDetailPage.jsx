@@ -20,6 +20,39 @@ import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScop
 import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 import QuestionDetailView from '../components/QuestionDetailView';
 import { getFinalQuestionPreviewCardMeta } from '../utils/finalQuestionPreviewMeta';
+import {
+  countTraceAttempts,
+  countTraceSuccess,
+  getTraceDisplayIndex,
+  getTraceItemKey,
+  hasTraceFinalJson,
+  isTraceSaved,
+  mergeTaskTraceForDisplay,
+  sortTraceRows,
+} from '../utils/generateTrace';
+
+/**
+ * 合并父任务与活跃子任务的 trace，供界面完整展示：保留全部尝试（失败、重试、补充题均保留）。
+ * 仅当存在相同 trace_id 时去掉一条，避免运行中父子快照完全重复一行。
+ * @param {object[]} parentRows 父任务 process_trace
+ * @param {object[]} liveSubs live_subtask_traces 子列表
+ * @returns {object[]} 排序后的展示行
+ */
+function buildDisplayProcessTraceRows(parentRows, liveSubs) {
+  return mergeTaskTraceForDisplay({
+    process_trace: parentRows,
+    live_subtask_traces: liveSubs,
+  });
+}
+
+/**
+ * 单个子任务内 trace 排序展示，不做题位合并。
+ * @param {object[]} rows
+ * @returns {object[]}
+ */
+function sortTraceRowsForDisplay(rows) {
+  return sortTraceRows(rows);
+}
 
 function displayCurrencyUnit(currency) {
   const c = String(currency || 'CNY').trim().toUpperCase();
@@ -44,6 +77,8 @@ export default function AIGenerateTaskDetailPage() {
   const [updatingBankPolicy, setUpdatingBankPolicy] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const slicesLoadedMaterialRef = useRef('');
+  const detailRequestInFlightRef = useRef(false);
+  const detailRequestSeqRef = useRef(0);
 
   const stableStringify = (value) => {
     const seen = new WeakSet();
@@ -112,23 +147,6 @@ export default function AIGenerateTaskDetailPage() {
   const listSignature = (value) => {
     const list = Array.isArray(value) ? value : [];
     return stableStringify(list);
-  };
-
-  /**
-   * 统计逐题过程里“成功产出”的题目数（按目标题位去重后的一条记录）。
-   * 成功定义：saved=true 或 saved_with_issues=true，且存在可用 final_json。
-   * @param {Array<Record<string, any>>} traceRows
-   * @returns {number}
-   */
-  const countTraceSuccess = (traceRows) => {
-    const rows = Array.isArray(traceRows) ? traceRows : [];
-    return rows.filter((row) => {
-      if (!row || typeof row !== 'object') return false;
-      const saved = Boolean(row.saved) || Boolean(row.saved_with_issues);
-      if (!saved) return false;
-      const fj = row.final_json;
-      return Boolean(fj && typeof fj === 'object' && !Array.isArray(fj) && Object.keys(fj).length > 0);
-    }).length;
   };
 
   const mergeTaskForRender = (prevTask, nextTask) => {
@@ -207,6 +225,7 @@ export default function AIGenerateTaskDetailPage() {
 
   const loadDetail = async ({ silent = false, forceSliceReload = false } = {}) => {
     if (!tenantId || !taskId) return;
+    if (detailRequestInFlightRef.current) return;
     const isLegacyTaskId = String(taskId || '').startsWith('legacy_');
     if (isLegacyTaskId) {
       if (!silent) {
@@ -215,9 +234,13 @@ export default function AIGenerateTaskDetailPage() {
       navigate('/ai-generate', { replace: true });
       return;
     }
+    detailRequestInFlightRef.current = true;
+    const requestSeq = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestSeq;
     if (!silent) setLoading(true);
     try {
       const res = await getGenerateTask(tenantId, taskId);
+      if (detailRequestSeqRef.current !== requestSeq) return;
       setTask((prev) => mergeTaskForRender(prev, res?.task || {}));
       const materialVersionId = String(res?.task?.material_version_id || res?.task?.request?.material_version_id || '').trim();
       if (materialVersionId) {
@@ -230,9 +253,11 @@ export default function AIGenerateTaskDetailPage() {
               page: 1,
               page_size: 200,
             });
+            if (detailRequestSeqRef.current !== requestSeq) return;
             setApprovedSlices(Array.isArray(sliceRes?.items) ? sliceRes.items : []);
             slicesLoadedMaterialRef.current = materialVersionId;
           } catch (_e) {
+            if (detailRequestSeqRef.current !== requestSeq) return;
             setApprovedSlices([]);
           }
         }
@@ -245,6 +270,9 @@ export default function AIGenerateTaskDetailPage() {
         message.error(e?.response?.data?.error?.message || '加载任务详情失败');
       }
     } finally {
+      if (detailRequestSeqRef.current === requestSeq) {
+        detailRequestInFlightRef.current = false;
+      }
       if (!silent) setLoading(false);
     }
   };
@@ -255,7 +283,78 @@ export default function AIGenerateTaskDetailPage() {
   }, [tenantId, taskId]);
 
   const items = useMemo(() => (Array.isArray(task?.items) ? task.items : []), [task]);
-  const processTrace = useMemo(() => (Array.isArray(task?.process_trace) ? task.process_trace : []), [task]);
+  const processTrace = useMemo(() => mergeTaskTraceForDisplay(task), [task]);
+  /** 本次任务计划出题总数（用于「第 N / M 题」展示） */
+  const planQuestionTotal = useMemo(
+    () => Math.max(0, Number(task?.request?.num_questions || 0)),
+    [task?.request?.num_questions],
+  );
+  /**
+   * 从父任务 trace / 活跃子任务 trace 推断已出现的最大题目序号，用于无 planned_slots 时仍展示顺序总览。
+   */
+  const maxTraceTargetIndex = useMemo(() => {
+    let m = 0;
+    const scan = (rows) => {
+      if (!Array.isArray(rows)) return;
+      rows.forEach((row) => {
+        if (!row || typeof row !== 'object') return;
+        const t = Number(row.target_index || row.index || 0);
+        if (t > m) m = t;
+      });
+    };
+    scan(task?.process_trace);
+    (Array.isArray(task?.live_subtask_traces) ? task.live_subtask_traces : []).forEach((sub) => {
+      scan(sub?.process_trace);
+    });
+    return m;
+  }, [task?.live_subtask_traces, task?.process_trace]);
+  /**
+   * 本任务题目顺序总览行：有 planned_slots 时带切片/篇别；否则按总题数或 trace 推断的最大序号生成 1..N。
+   */
+  const questionOrderRows = useMemo(() => {
+    const raw = task?.request?.planned_slots ?? task?.planned_slots;
+    const slots = Array.isArray(raw) ? raw.filter((x) => x && typeof x === 'object') : [];
+    if (slots.length > 0) {
+      const enriched = slots.map((slot, i) => {
+        const g = Number(slot._global_target_index || slot.global_target_index || 0);
+        const sid = Number(slot.slice_id || 0);
+        return {
+          key: `o_${g || i + 1}_${i}`,
+          order: g > 0 ? g : i + 1,
+          sliceId: sid > 0 ? sid : '—',
+          route: String(slot.route_prefix || '').trim() || '—',
+          mastery: String(slot.mastery || '').trim() || '—',
+        };
+      });
+      enriched.sort((a, b) => a.order - b.order);
+      return enriched;
+    }
+    const n = Math.max(planQuestionTotal, maxTraceTargetIndex);
+    const cap = Math.min(Math.max(n, 0), 200);
+    if (cap <= 0) return [];
+    return Array.from({ length: cap }, (_, i) => ({
+      key: `o_${i + 1}`,
+      order: i + 1,
+      sliceId: '—',
+      route: '—',
+      mastery: '—',
+    }));
+  }, [maxTraceTargetIndex, planQuestionTotal, task?.planned_slots, task?.request?.planned_slots]);
+  /** 与「本任务题目顺序」表行数对齐的总题数，用于过程列表「第 N / M 题」 */
+  const displayQuestionTotal = useMemo(
+    () => Math.max(planQuestionTotal, questionOrderRows.length),
+    [planQuestionTotal, questionOrderRows.length],
+  );
+  /** 题位序号 → 顺序表行，用于过程 trace 无 planned_* 字段时的展示回退 */
+  const slotByTargetIndex = useMemo(() => {
+    const m = {};
+    (questionOrderRows || []).forEach((r) => {
+      if (r && typeof r.order === 'number' && r.order > 0) {
+        m[r.order] = r;
+      }
+    });
+    return m;
+  }, [questionOrderRows]);
   const isTaskActive = ['pending', 'running'].includes(String(task?.status || ''));
   // Normalize legacy task-timeout errors (task-level timeout has been removed)
   const errors = useMemo(() => {
@@ -614,22 +713,27 @@ export default function AIGenerateTaskDetailPage() {
 
   const derivedProgress = useMemo(() => {
     const rawProgress = task?.progress && typeof task.progress === 'object' ? task.progress : {};
+    const taskStatus = String(task?.status || '').toLowerCase();
     const requestedTotal = Number(task?.request?.num_questions || 0);
-    const total = Math.max(Number(rawProgress?.total || 0), requestedTotal, processTrace.length);
+    const apiGeneratedCount = Number(task?.generated_total_count || task?.generated_count || 0);
+    const mergedGeneratedFloor = Math.max(apiGeneratedCount, items.length, processTrace.length);
+    const total = Math.max(Number(rawProgress?.total || 0), requestedTotal, mergedGeneratedFloor);
+    const isSuccessfulTerminal = taskStatus === 'completed';
     const current = isTaskActive
-      ? Math.max(Number(rawProgress?.current || 0), processTrace.length)
-      : Math.max(Number(rawProgress?.current || 0), Number(rawProgress?.total || 0), processTrace.length);
+      ? Math.max(Number(rawProgress?.current || 0), mergedGeneratedFloor)
+      : (
+        isSuccessfulTerminal
+          ? Math.max(Number(rawProgress?.current || 0), Number(rawProgress?.total || 0), mergedGeneratedFloor)
+          : Math.max(Number(rawProgress?.current || 0), mergedGeneratedFloor)
+      );
     return { current, total };
-  }, [isTaskActive, processTrace.length, task?.progress, task?.request?.num_questions]);
+  }, [isTaskActive, items.length, processTrace.length, task?.generated_count, task?.generated_total_count, task?.progress, task?.request?.num_questions, task?.status]);
 
-  const currentQuestionLabel = useMemo(() => {
-    if (!isTaskActive) return '-';
-    const subcallQuestionLabel = String(currentSubcall?.question_label || task?.current_question_id || '').trim();
-    if (subcallQuestionLabel) return subcallQuestionLabel;
-    const liveItem = processTrace.find((item) => !item?.elapsed_ms) || processTrace[processTrace.length - 1];
-    const index = Number(liveItem?.target_index || liveItem?.index || 0);
-    return index > 0 ? `第 ${index} 题` : '-';
-  }, [currentSubcall, isTaskActive, processTrace, task?.current_question_id]);
+  const passedQuestionLabel = useMemo(() => {
+    const passed = Number(task?.saved_count || 0);
+    if (displayQuestionTotal > 0) return `${passed} / ${displayQuestionTotal} 题`;
+    return `${passed} 题`;
+  }, [displayQuestionTotal, task?.saved_count]);
 
   const currentSubcallEntries = useMemo(() => {
     const entries = [];
@@ -663,64 +767,15 @@ export default function AIGenerateTaskDetailPage() {
     [task],
   );
   const autoBankEnabled = Boolean(task?.request?.persist_to_bank ?? task?.request?.save_to_bank ?? true);
-  const effectiveProcessTrace = useMemo(() => {
-    const hasParentTrace = processTrace.some((row) => row && typeof row === 'object');
-    if (!hasParentTrace && liveSubtaskTraces.length > 0) {
-      const flattened = [];
-      liveSubtaskTraces.forEach((sub) => {
-        const rows = Array.isArray(sub?.process_trace) ? sub.process_trace : [];
-        const subTaskId = String(sub?.task_id || '');
-        rows.forEach((row, idx) => {
-          if (!row || typeof row !== 'object') return;
-          const item = { ...row };
-          item._subtask_id = subTaskId;
-          item._subtask_name = String(sub?.task_name || '');
-          item._subtask_local_index = idx + 1;
-          flattened.push(item);
-        });
-      });
-      flattened.sort((a, b) => {
-        const ta = Number(a?.target_index || a?.index || 0);
-        const tb = Number(b?.target_index || b?.index || 0);
-        if (ta !== tb) return ta - tb;
-        const sa = String(a?._subtask_id || '');
-        const sb = String(b?._subtask_id || '');
-        if (sa !== sb) return sa.localeCompare(sb);
-        return Number(a?._subtask_local_index || 0) - Number(b?._subtask_local_index || 0);
-      });
-      return flattened;
-    }
-    const byTarget = new Map();
-    processTrace.forEach((row, idx) => {
-      if (!row || typeof row !== 'object') return;
-      const key = Number(row?.target_index || row?.index || idx + 1);
-      if (!key) return;
-      byTarget.set(key, row);
-    });
-    liveSubtaskTraces.forEach((sub) => {
-      const rows = Array.isArray(sub?.process_trace) ? sub.process_trace : [];
-      rows.forEach((row, idx) => {
-        if (!row || typeof row !== 'object') return;
-        const key = Number(row?.target_index || row?.index || idx + 1);
-        if (!key) return;
-        const prev = byTarget.get(key);
-        const prevSaved = Boolean(prev?.saved);
-        const nextSaved = Boolean(row?.saved);
-        const prevSteps = Array.isArray(prev?.steps) ? prev.steps.length : 0;
-        const nextSteps = Array.isArray(row?.steps) ? row.steps.length : 0;
-        if (!prev || (!prevSaved && (nextSaved || nextSteps >= prevSteps))) {
-          byTarget.set(key, row);
-        }
-      });
-    });
-    return Array.from(byTarget.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([, row]) => row);
-  }, [processTrace, liveSubtaskTraces]);
+  /** 任务过程区：完整流水（含失败、重试、补充题），不按题位吞掉记录 */
+  const displayProcessTrace = useMemo(
+    () => buildDisplayProcessTraceRows(processTrace, liveSubtaskTraces),
+    [liveSubtaskTraces, processTrace],
+  );
   const placeholderOnlyTrace = useMemo(() => {
-    if (!effectiveProcessTrace.length) return false;
-    return effectiveProcessTrace.every((row) => String(row?.question_id || '').startsWith('live:'));
-  }, [effectiveProcessTrace]);
+    if (!displayProcessTrace.length) return false;
+    return displayProcessTrace.every((row) => String(row?.question_id || '').startsWith('live:'));
+  }, [displayProcessTrace]);
   const recoveredSubtasksWithoutTrace = useMemo(() => {
     return subtasks.filter((sub) => {
       const saved = Number(sub?.saved_count || 0);
@@ -731,28 +786,29 @@ export default function AIGenerateTaskDetailPage() {
     });
   }, [liveSubtaskTraces, subtasks]);
 
-  const traceSuccessCount = useMemo(
-    () => countTraceSuccess(effectiveProcessTrace),
-    [effectiveProcessTrace]
-  );
+  /** 按题位去重：至少有一条已保存（含带问题入库）且具备 final_json 的题位数量 */
+  const traceSuccessCount = useMemo(() => countTraceSuccess(displayProcessTrace), [displayProcessTrace]);
+  const traceAttemptCount = useMemo(() => countTraceAttempts(displayProcessTrace), [displayProcessTrace]);
   const itemCount = items.length;
-  const apiGeneratedCount = Number(task?.generated_count || 0);
-  const subtaskGeneratedCount = subtasks.reduce((sum, sub) => sum + Number(sub?.generated_count || 0), 0);
+  const apiGeneratedCount = Number(task?.generated_total_count || task?.generated_count || 0);
+  const apiSavedCount = Number(task?.saved_count || 0);
+  const subtaskGeneratedCount = subtasks.reduce((sum, sub) => (
+    sum + Number(sub?.generated_total_count || (Number(sub?.generated_count || 0) + Number(sub?.error_count || 0)) || 0)
+  ), 0);
   const subtaskSavedCount = subtasks.reduce((sum, sub) => sum + Number(sub?.saved_count || 0), 0);
-  const displayGeneratedCount = Math.max(apiGeneratedCount, traceSuccessCount, itemCount, subtaskGeneratedCount);
-  const displaySavedCount = Math.max(Number(task?.saved_count || 0), itemCount, subtaskSavedCount);
-  const generatedCountMismatch = (
-    apiGeneratedCount !== traceSuccessCount
-    || apiGeneratedCount !== itemCount
-    || traceSuccessCount !== itemCount
-    || apiGeneratedCount !== subtaskGeneratedCount
+  const verifiedGeneratedCount = Math.max(
+    traceAttemptCount,
+    itemCount,
+    Number(task?.generated_total_count || 0),
   );
+  const verifiedSavedCount = itemCount;
+  const generatedCountMismatch = false;
 
   useEffect(() => {
     if (!tenantId || !taskId || !isTaskActive) return undefined;
     const timer = setInterval(() => {
       loadDetail({ silent: true });
-    }, 1500);
+    }, 3000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, taskId, isTaskActive]);
@@ -785,6 +841,62 @@ export default function AIGenerateTaskDetailPage() {
     },
   ];
 
+  const failedRecords = useMemo(() => {
+      const rows = [];
+      const seen = new Set();
+      (Array.isArray(displayProcessTrace) ? displayProcessTrace : []).forEach((row, idx) => {
+        if (!row || typeof row !== 'object') return;
+        const passed = isTraceSaved(row);
+        if (passed) return;
+      const critic = row.critic_result && typeof row.critic_result === 'object' ? row.critic_result : {};
+      const failTypes = Array.isArray(critic.fail_types) ? critic.fail_types.filter(Boolean).join(', ') : '';
+      const reason = String(
+        critic.reason
+        || critic.fix_reason
+        || row.critic_details
+        || row.critic_last_error_content
+        || ''
+      ).trim();
+      const hasRejectStep = Array.isArray(row.steps) && row.steps.some((s) => String(s?.message || '').includes('审核驳回'));
+      if (!reason && !failTypes && !hasRejectStep) return;
+      const key = `trace:${getTraceItemKey(row, idx)}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        key,
+        source: '题目尝试',
+        question: (hasTraceFinalJson(row) ? row.final_json?.题干 : '') || `第 ${getTraceDisplayIndex(row, idx + 1)} 题（未通过）`,
+        slicePath: String(row.slice_path || ''),
+        failTypes: failTypes || '-',
+        reason: reason || (hasRejectStep ? 'Critic 审核驳回' : '-'),
+      });
+    });
+    subtasks.forEach((sub, idx) => {
+      const errCount = Number(sub?.error_count || 0);
+      if (errCount <= 0) return;
+      const key = `sub:${sub?.task_id || idx}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      rows.push({
+        key,
+        source: '子任务',
+        question: String(sub?.task_name || `子任务#${idx + 1}`),
+        slicePath: '-',
+        failTypes: '-',
+        reason: String(sub?.latest_error || `子任务错误数 ${errCount}`).trim() || `子任务错误数 ${errCount}`,
+      });
+    });
+    return rows;
+  }, [displayProcessTrace, subtasks]);
+
+  const failedColumns = [
+    { title: '来源', dataIndex: 'source', width: 100 },
+    { title: '失败记录', dataIndex: 'question', ellipsis: true },
+    { title: '失败类型', dataIndex: 'failTypes', width: 180, ellipsis: true },
+    { title: '原因', dataIndex: 'reason', ellipsis: true },
+    { title: '来源切片', dataIndex: 'slicePath', ellipsis: true },
+  ];
+
   const subtaskColumns = [
     { title: '子任务', dataIndex: 'task_name', ellipsis: true },
     {
@@ -814,7 +926,7 @@ export default function AIGenerateTaskDetailPage() {
         return <Tag color={color}>{text}</Tag>;
       },
     },
-    { title: '本轮生成/入库', width: 140, render: (_, record) => `${Number(record?.generated_count || 0)} / ${Number(record?.saved_count || 0)}` },
+    { title: '本轮生成(含失败)/入库', width: 160, render: (_, record) => `${Number(record?.generated_total_count || (Number(record?.generated_count || 0) + Number(record?.error_count || 0)) || 0)} / ${Number(record?.saved_count || 0)}` },
     { title: '错误数', dataIndex: 'error_count', width: 90 },
     { title: '开始时间', dataIndex: 'started_at', width: 170, render: formatTime },
     { title: '结束时间', dataIndex: 'ended_at', width: 170, render: formatTime },
@@ -825,7 +937,7 @@ export default function AIGenerateTaskDetailPage() {
     { title: '策略', dataIndex: 'strategy', width: 180, ellipsis: true, render: (v) => String(v || '-') || '-' },
     { title: '修复位次', dataIndex: 'targets', ellipsis: true, render: (v) => (Array.isArray(v) && v.length ? v.join(', ') : '-') },
     { title: '子任务数', dataIndex: 'subtask_count', width: 90 },
-    { title: '生成/入库', width: 120, render: (_, record) => `${Number(record?.generated_count || 0)} / ${Number(record?.saved_count || 0)}` },
+    { title: '生成(含失败)/入库', width: 150, render: (_, record) => `${Number(record?.generated_total_count || (Number(record?.generated_count || 0) + Number(record?.error_count || 0)) || 0)} / ${Number(record?.saved_count || 0)}` },
     { title: '错误数', dataIndex: 'error_count', width: 90 },
     {
       title: '状态',
@@ -843,22 +955,41 @@ export default function AIGenerateTaskDetailPage() {
     { title: '失败数', dataIndex: 'fail_count', width: 90 },
     { title: '通过数', dataIndex: 'pass_count', width: 90 },
     { title: '带问题入库', dataIndex: 'saved_with_issues_count', width: 110 },
-    { title: '最新目标题位', dataIndex: 'latest_target_index', width: 110 },
+    { title: '最新题目序号', dataIndex: 'latest_target_index', width: 110 },
     { title: '最新失败类型', dataIndex: 'last_fail_types', ellipsis: true, render: (v) => (Array.isArray(v) && v.length ? v.join(', ') : '-') },
     { title: '路径', dataIndex: 'latest_path', ellipsis: true },
   ];
 
-  const renderTraceCollapse = (traceRows, activeFlag, keyPrefix) => (
+  /**
+   * 折叠展示出题过程流水。
+   * @param {object[]} traceRows 已排序/去重后的 trace 行
+   * @param {boolean} activeFlag 任务是否进行中
+   * @param {string} keyPrefix Collapse key 前缀
+   * @param {{ planTotal?: number, slotByTargetIndex?: Record<number, { route?: string, mastery?: string }> }} [traceOptions] planTotal 为本任务总题数；slotByTargetIndex 为题位到顺序表行的映射（回退展示）
+   */
+  const renderTraceCollapse = (traceRows, activeFlag, keyPrefix, traceOptions = {}) => {
+    const planTotal = Math.max(0, Number(traceOptions.planTotal || 0));
+    const slotMap = traceOptions.slotByTargetIndex && typeof traceOptions.slotByTargetIndex === 'object'
+      ? traceOptions.slotByTargetIndex
+      : {};
+    return (
     <Collapse
-      defaultActiveKey={traceRows.length > 0 ? [`${keyPrefix}_${String(traceRows[0]?.index || 0)}`] : []}
+      defaultActiveKey={traceRows.length > 0 ? [`${keyPrefix}_${getTraceItemKey(traceRows[0], 0)}`] : []}
       items={traceRows.map((item, itemIdx) => {
         const qStatus = getQuestionStatus(item, activeFlag);
-        const displayIndex = Number(item?.target_index || item?.index || itemIdx + 1);
+        const displayIndex = getTraceDisplayIndex(item, itemIdx + 1);
+        const traceSeq = Number(item?.index || 0) > 0 ? ` · trace#${item.index}` : ` · 行#${itemIdx + 1}`;
+        const subHint = item._subtask_name ? ` · ${String(item._subtask_name).slice(0, 28)}` : '';
+        const timingPart = item?.timing_unknown
+          ? '耗时 恢复数据'
+          : `耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`;
         return {
-          key: `${keyPrefix}_${String(item.index || displayIndex || itemIdx)}`,
+          key: `${keyPrefix}_${getTraceItemKey(item, itemIdx)}`,
           label: (
             <Space>
-              <span>{`第 ${displayIndex} 题 | 切片 ${item.slice_id} | 耗时 ${item?.timing_unknown ? '恢复数据' : `${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`}`}</span>
+              <Tooltip title="同一题位可能多行：含失败重试、换切片、模板修复/补充等；trace# 为流水序号。">
+                <span>{`${traceSeq}${subHint} | 切片 ${item.slice_id ?? '-'} | ${timingPart}`}</span>
+              </Tooltip>
               <Tag color={qStatus.color}>{qStatus.text}</Tag>
             </Space>
           ),
@@ -877,6 +1008,23 @@ export default function AIGenerateTaskDetailPage() {
                 );
               })()}
               <Typography.Text type="secondary">{item.slice_path || '（无路径）'}</Typography.Text>
+              {(() => {
+                const slot = slotMap[displayIndex];
+                const pr = String(item.planned_route_prefix || '').trim()
+                  || (slot?.route && String(slot.route).trim() !== '—' ? String(slot.route).trim() : '');
+                const pm = String(item.planned_mastery || '').trim()
+                  || (slot?.mastery && String(slot.mastery).trim() !== '—' ? String(slot.mastery).trim() : '');
+                if (!pr && !pm) return null;
+                const parts = [];
+                if (pr) parts.push(`篇别 ${pr}`);
+                if (pm) parts.push(`掌握度 ${pm}`);
+                return (
+                  <Typography.Text type="secondary" style={{ display: 'block' }}>
+                    模板计划：
+                    {parts.join(' · ')}
+                  </Typography.Text>
+                );
+              })()}
               <div style={{ maxHeight: 260, overflow: 'auto' }}>
                 <MarkdownWithMermaid text={buildTraceSliceMarkdown({ ...item, slice_content: formatSliceContent(item.slice_content || '') })} />
               </div>
@@ -1042,7 +1190,8 @@ export default function AIGenerateTaskDetailPage() {
         };
       })}
     />
-  );
+    );
+  };
 
   /**
    * 计算子任务预计产出题量（优先使用目标区间）。
@@ -1075,7 +1224,11 @@ export default function AIGenerateTaskDetailPage() {
                   setCancelling(true);
                   try {
                     const res = await cancelGenerateTask(tenantId, taskId);
-                    message.success(res?.message || '已请求取消');
+                    if (res?.ok === false) {
+                      message.warning(res?.message || '当前任务无法取消');
+                    } else {
+                      message.success(res?.message || '已请求取消');
+                    }
                     await loadDetail();
                   } catch (e) {
                     message.error(e?.response?.data?.error?.message || '取消失败');
@@ -1155,12 +1308,11 @@ export default function AIGenerateTaskDetailPage() {
           <Descriptions.Item label="任务总耗时">
             {calcDuration(task?.started_at, task?.ended_at || (isTaskActive ? new Date(nowMs).toISOString() : ''))}
           </Descriptions.Item>
+          <Descriptions.Item label="总生成(含失败)/入库">{`${apiGeneratedCount} / 入库 ${apiSavedCount}`}</Descriptions.Item>
           <Descriptions.Item label="单题耗时合计">{timingMetrics.timingUnknown ? '恢复数据，无法精确还原' : formatDurationMs(timingMetrics.questionElapsedMsSum)}</Descriptions.Item>
-          <Descriptions.Item label="任务级开销">{timingMetrics.timingUnknown ? '-' : formatDurationMs(timingMetrics.taskOverheadMs)}</Descriptions.Item>
-          <Descriptions.Item label="生成结果">{`${displayGeneratedCount} / 入库 ${displaySavedCount}`}</Descriptions.Item>
           <Descriptions.Item label="进度">{`${derivedProgress.current}/${derivedProgress.total}`}</Descriptions.Item>
-          <Descriptions.Item label="当前题目">{currentQuestionLabel}</Descriptions.Item>
-          <Descriptions.Item label="当前节点">{String(task?.current_node || '').trim() || '-'}</Descriptions.Item>
+          <Descriptions.Item label="已通过题目数">{passedQuestionLabel}</Descriptions.Item>
+          <Descriptions.Item label="当前节点" span={2}>{String(task?.current_node || '').trim() || '-'}</Descriptions.Item>
           <Descriptions.Item label="当前子调用" span={2}>
             {currentSubcallEntries.length > 0 ? (
               <Space direction="vertical" size={4} style={{ width: '100%' }}>
@@ -1190,13 +1342,41 @@ export default function AIGenerateTaskDetailPage() {
         </Descriptions>
       </Card>
 
+      {questionOrderRows.length > 0 && (
+        <Card
+          title="本任务题目顺序"
+          size="small"
+        >
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
+            整张任务按「第 1 题 → 第 2 题 → …」依次出题；下面过程列表里的标题与这里序号一一对应。无模板明细时仅列出序号；有模板时附带切片与篇别。
+          </Typography.Paragraph>
+          <Table
+            rowKey={(record) => record.key}
+            columns={[
+              {
+                title: '序号',
+                dataIndex: 'order',
+                width: 120,
+                render: (v) => `第 ${Number(v || 0)} 题`,
+              },
+              { title: '切片', dataIndex: 'sliceId', width: 96 },
+              { title: '篇别/路由', dataIndex: 'route', ellipsis: true },
+              { title: '掌握度', dataIndex: 'mastery', width: 100, ellipsis: true },
+            ]}
+            dataSource={questionOrderRows}
+            pagination={questionOrderRows.length > 24 ? { pageSize: 24 } : false}
+            size="small"
+          />
+        </Card>
+      )}
+
       {hasRunDiagnostics && (
         <Card title="运行记录">
           <Space direction="vertical" style={{ width: '100%' }} size={16}>
             <Alert
               type="info"
               showIcon
-              message={`父任务累计结果：已生成 ${Number(task?.generated_count || 0)} 题，已入库 ${Number(task?.saved_count || 0)} 题。`}
+              message={`父任务累计结果：已生成 ${Number(task?.generated_total_count || task?.generated_count || 0)} 题（含失败），已入库 ${Number(task?.saved_count || 0)} 题。`}
               description="下方子任务表展示的是每一轮续跑/分片子任务各自的本轮产出，不是父任务累计结果。"
             />
             {subtasks.length === 0 && repairRounds.length === 0 && sliceFailureStats.length === 0 && (
@@ -1247,67 +1427,36 @@ export default function AIGenerateTaskDetailPage() {
         </Card>
       )}
 
-      {liveSubtaskTraces.length > 0 && (
-        <Card title="活跃子任务过程">
-          <Space direction="vertical" style={{ width: '100%' }} size={16}>
-            {liveSubtaskTraces.map((sub, subIdx) => {
-              const statusProps = getStatusTagProps(sub?.status);
-              const estimatedCount = estimateSubtaskQuestionCount(sub);
-              const title = `子任务 ${subIdx + 1}${estimatedCount > 0 ? `（预计产出 ${estimatedCount} 题）` : ''}`;
-              return (
-                <Card
-                  key={String(sub?.task_id || '')}
-                  size="small"
-                  title={title}
-                  extra={(
-                    <Space>
-                      <Tag color={statusProps.color}>{statusProps.text}</Tag>
-                      <Typography.Text type="secondary">{String(sub?.task_name || '').trim() || '-'}</Typography.Text>
-                    </Space>
-                  )}
-                >
-                  {Array.isArray(sub?.process_trace) && sub.process_trace.length > 0 ? (
-                    renderTraceCollapse(
-                      sub.process_trace,
-                      ['pending', 'running'].includes(String(sub?.status || '')),
-                      `sub_${String(sub?.task_id || '')}`,
-                    )
-                  ) : (
-                    <Alert
-                      type="info"
-                      showIcon
-                      message="子任务已创建，步骤流水尚未返回"
-                      description={String(sub?.task_id || '').trim()}
-                    />
-                  )}
-                </Card>
-              );
-            })}
-          </Space>
-        </Card>
-      )}
-
       <Card title="任务过程">
-        {generatedCountMismatch && (
-          <Alert
-            type="warning"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message="生成统计口径存在差异，已按较大值展示任务生成结果"
-            description={`任务字段 generated_count=${apiGeneratedCount}，过程成功数=${traceSuccessCount}，题目结果条数=${itemCount}，子任务生成数合计=${subtaskGeneratedCount}。`}
-          />
-        )}
-        {renderTraceCollapse(effectiveProcessTrace, isTaskActive, 'parent')}
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="完整出题流水"
+          description="下列包含全部尝试记录：未通过、重试、换切片以及模板修复/补充产生的题目均会显示。同一题位可出现多行；仅当 trace_id 与父快照完全重复时去重一行。上方「过程成功数」按题位去重统计（该题位是否曾有过成功落库/带问题入库且含 final_json）。"
+        />
+        {renderTraceCollapse(displayProcessTrace, isTaskActive, 'parent', { planTotal: displayQuestionTotal, slotByTargetIndex })}
       </Card>
 
       <Card title="题目结果">
         <Table
-          rowKey={(record, idx) => `${taskId || 'task'}_${idx}`}
+          rowKey={(record) => String(record?.question_id || `${taskId || 'task'}_${record?.题干 || ''}_${record?.来源路径 || ''}`)}
           columns={columns}
           dataSource={items}
           pagination={{ pageSize: 10 }}
         />
       </Card>
+
+      {failedRecords.length > 0 && (
+        <Card title="失败记录">
+          <Table
+            rowKey="key"
+            columns={failedColumns}
+            dataSource={failedRecords}
+            pagination={{ pageSize: 10 }}
+          />
+        </Card>
+      )}
 
       {errors.length > 0 && (
         <Card title="错误信息">
@@ -1325,7 +1474,7 @@ export default function AIGenerateTaskDetailPage() {
         width={900}
         footer={null}
         onCancel={() => setViewQuestionOpen(false)}
-        destroyOnClose
+        destroyOnHidden
       >
         <QuestionDetailView question={viewQuestionRecord || {}} />
       </Modal>

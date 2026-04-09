@@ -4,6 +4,7 @@ import { InboxOutlined, MoreOutlined } from '@ant-design/icons';
 import {
   archiveMaterial,
   deleteMaterial,
+  getApiErrorMessage,
   listMaterials,
   remapMaterial,
   resliceMaterial,
@@ -35,7 +36,7 @@ export default function MaterialUploadPage() {
 
   const materialFileName = (item) => {
     const raw = String(item?.file_path || '').split('/').pop() || '';
-    return raw.replace(/^v\d{8}_\d{6}_/, '') || raw || String(item?.material_version_id || '');
+    return raw.replace(/^v\d{8}_\d{6}(?:_[a-z0-9]+)?_/, '') || raw || String(item?.material_version_id || '');
   };
   const materialStatusLabel = (status) => {
     if (status === 'slicing') return '生成中';
@@ -63,22 +64,40 @@ export default function MaterialUploadPage() {
     // Backward compatibility for old backend payloads.
     return String(item?.slice_status || '') === 'success' && String(item?.mapping_status || '') === 'success';
   };
+  const mergeMaterialItems = (prevItems, nextItems) => {
+    const incoming = Array.isArray(nextItems) ? nextItems : [];
+    const previous = Array.isArray(prevItems) ? prevItems : [];
+    const backendIds = new Set(incoming.map((x) => String(x?.material_version_id || '')).filter(Boolean));
+    const pendingCarry = previous.filter((item) => {
+      if (!item?._isPending) return false;
+      const trackedId = String(item?._expectedMaterialVersionId || item?.material_version_id || '').trim();
+      return trackedId && !backendIds.has(trackedId);
+    });
+    return [...pendingCarry, ...incoming];
+  };
+  const buildUtcVersionIdHint = (date = new Date()) => {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `v${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}_${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`;
+  };
 
   const loadMaterials = async (tid) => {
     if (!tid) return;
     try {
       const res = await listMaterials(tid);
       const items = res.items || [];
-      setMaterials(items);
-      const ids = new Set(items.map((x) => String(x?.material_version_id || '')).filter(Boolean));
-      const fallbackId = pickDefaultMaterialId(items);
-      setSelectedMaterialIdForMap((prev) => {
-        const current = String(prev || '');
-        if (current && ids.has(current)) return current;
-        return fallbackId;
+      setMaterials((prev) => {
+        const mergedItems = mergeMaterialItems(prev, items);
+        const ids = new Set(mergedItems.map((x) => String(x?.material_version_id || '')).filter(Boolean));
+        const fallbackId = pickDefaultMaterialId(mergedItems);
+        setSelectedMaterialIdForMap((selectedPrev) => {
+          const current = String(selectedPrev || '');
+          if (current && ids.has(current)) return current;
+          return fallbackId;
+        });
+        return mergedItems;
       });
     } catch (e) {
-      message.error(e?.response?.data?.error?.message || '加载教材版本失败');
+      message.error(getApiErrorMessage(e, '加载教材版本失败'));
     }
   };
 
@@ -109,18 +128,20 @@ export default function MaterialUploadPage() {
       message.warning('请上传文件或输入教材文字');
       return;
     }
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, '0');
-    const localVersionId = `v${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const localVersionId = buildUtcVersionIdHint();
     const pendingName = file?.name || 'manual.txt';
+    const pendingUploadKey = `pending_${Date.now()}`;
     const pendingItem = {
-      material_version_id: `pending_${Date.now()}`,
+      material_version_id: pendingUploadKey,
       file_path: pendingName,
       status: 'slicing',
+      slice_status: 'running',
       reference_file: '',
       mapping_ready: false,
       _isPending: true,
+      _pendingUploadKey: pendingUploadKey,
       _pendingVersionHint: localVersionId,
+      _expectedMaterialVersionId: localVersionId,
     };
     setMaterials((prev) => [pendingItem, ...prev]);
     setLoading(true);
@@ -135,16 +156,27 @@ export default function MaterialUploadPage() {
       );
       setLastResult(res);
       if (res?.material_version_id) {
-        setSelectedMaterialIdForMap(String(res.material_version_id));
+        const resolvedVersionId = String(res.material_version_id);
+        setMaterials((prev) => prev.map((item) => (
+          item?._pendingUploadKey === pendingUploadKey
+            ? {
+              ...item,
+              material_version_id: resolvedVersionId,
+              _expectedMaterialVersionId: resolvedVersionId,
+              _pendingVersionHint: resolvedVersionId,
+            }
+            : item
+        )));
+        setSelectedMaterialIdForMap(resolvedVersionId);
       }
       message.success(`上传并切片成功，共生成 ${res.slice_count || 0} 条`);
       setFileList([]);
       setTextContent('');
       await loadMaterials(tenantId);
     } catch (e) {
-      message.error(e?.response?.data?.error?.message || '上传切片失败');
+      setMaterials((prev) => prev.filter((item) => item?._pendingUploadKey !== pendingUploadKey));
+      message.error(getApiErrorMessage(e, '上传切片失败'));
     } finally {
-      setMaterials((prev) => prev.filter((x) => !x?._isPending));
       setLoading(false);
     }
   };
@@ -156,7 +188,7 @@ export default function MaterialUploadPage() {
       await loadMaterials(tenantId);
     } catch (e) {
       const status = e?.response?.status;
-      const msg = e?.response?.data?.error?.message;
+      const msg = getApiErrorMessage(e, '');
       message.error(msg || (status === 404 ? '后端未升级（缺少教材版本管理接口），请重启 admin_api.py' : '设置生效失败'));
     }
   };
@@ -196,7 +228,7 @@ export default function MaterialUploadPage() {
       setReferenceFileList([]);
       await loadMaterials(tenantId);
     } catch (e) {
-      message.error(e?.response?.data?.error?.message || '参考题上传/映射失败');
+      message.error(getApiErrorMessage(e, '参考题上传/映射失败'));
     } finally {
       setMappingLoading(false);
     }
@@ -209,7 +241,7 @@ export default function MaterialUploadPage() {
       await loadMaterials(tenantId);
     } catch (e) {
       const status = e?.response?.status;
-      const msg = e?.response?.data?.error?.message;
+      const msg = getApiErrorMessage(e, '');
       message.error(msg || (status === 404 ? '后端未升级（缺少教材版本管理接口），请重启 admin_api.py' : '下线失败'));
     }
   };
@@ -230,7 +262,7 @@ export default function MaterialUploadPage() {
       if (e?.code === 'ECONNABORTED') {
         message.error('重新切片超时（任务较重），请稍后刷新列表确认结果');
       } else {
-        message.error(e?.response?.data?.error?.message || '重新切片失败');
+        message.error(getApiErrorMessage(e, '重新切片失败'));
       }
     } finally {
       setResliceLoadingId('');
@@ -254,7 +286,7 @@ export default function MaterialUploadPage() {
       }
       await loadMaterials(tenantId);
     } catch (e) {
-      message.error(e?.response?.data?.error?.message || '重新映射失败');
+      message.error(getApiErrorMessage(e, '重新映射失败'));
     } finally {
       setRemapLoadingId('');
     }
@@ -267,7 +299,7 @@ export default function MaterialUploadPage() {
       await loadMaterials(tenantId);
     } catch (e) {
       const status = e?.response?.status;
-      const msg = e?.response?.data?.error?.message;
+      const msg = getApiErrorMessage(e, '');
       if (!force && (status === 409 || String(msg || '').includes('关联') || String(msg || '').toLowerCase().includes('in use'))) {
         Modal.confirm({
           title: '普通删除失败',
@@ -293,7 +325,11 @@ export default function MaterialUploadPage() {
       />
       <Row gutter={12} align="top">
         <Col xs={24} lg={6}>
-          <Card title="城市教材版本" style={{ height: 'calc(100vh - 190px)' }} bodyStyle={{ height: 'calc(100vh - 250px)', overflow: 'auto' }}>
+          <Card
+            title="城市教材版本"
+            style={{ height: 'calc(100vh - 190px)' }}
+            styles={{ body: { height: 'calc(100vh - 250px)', overflow: 'auto' } }}
+          >
             <List
               dataSource={materials}
               rowKey={(x) => x.material_version_id}
@@ -319,10 +355,12 @@ export default function MaterialUploadPage() {
                         {flowStatusLabel(mappingStatus)}
                       </span>
                     </Typography.Text>
-                    {mappingStatus === 'running' && Number.isFinite(Number(item.mapping_progress)) ? (
-                      <Typography.Text type="secondary">
-                        映射进度：{Math.max(0, Math.min(100, Number(item.mapping_progress || 0)))}%
-                      </Typography.Text>
+                    {mappingStatus !== 'success' && (mappingStatus === 'running' || mappingStatus === 'failed' || Number(item.mapping_progress || 0) > 0) ? (
+                      <Progress
+                        percent={Math.max(0, Math.min(100, Number(item.mapping_progress || 0)))}
+                        size="small"
+                        status={mappingStatus === 'failed' ? 'exception' : (mappingStatus === 'success' ? 'success' : 'active')}
+                      />
                     ) : null}
                     {item.mapping_message ? (
                       <Typography.Text type="secondary">进度信息：{item.mapping_message}</Typography.Text>
@@ -336,7 +374,7 @@ export default function MaterialUploadPage() {
                         {flowStatusLabel(sliceStatus)}
                       </span>
                     </Typography.Text>
-                    {sliceStatus === 'running' || Number(item.slice_progress || 0) > 0 ? (
+                    {sliceStatus !== 'success' && (sliceStatus === 'running' || sliceStatus === 'failed' || Number(item.slice_progress || 0) > 0) ? (
                       <Progress
                         percent={Math.max(0, Math.min(100, Number(item.slice_progress || 0)))}
                         size="small"
@@ -444,7 +482,11 @@ export default function MaterialUploadPage() {
         </Col>
 
         <Col xs={24} lg={18}>
-          <Card title="上传内容" style={{ height: 'calc(100vh - 190px)' }} bodyStyle={{ height: 'calc(100vh - 250px)', overflow: 'auto' }}>
+          <Card
+            title="上传内容"
+            style={{ height: 'calc(100vh - 190px)' }}
+            styles={{ body: { height: 'calc(100vh - 250px)', overflow: 'auto' } }}
+          >
             <Tabs
               defaultActiveKey="slice"
               items={[

@@ -14,8 +14,10 @@ export const setGlobalTenantId = (tenantId) => {
 };
 
 export const subscribeGlobalTenant = (callback) => {
+  // Emit current value immediately to avoid missing a prior tenant switch event
+  // (common when page component mounts after layout has already set tenant).
+  callback(getGlobalTenantId());
   const handler = (evt) => callback(evt?.detail?.tenantId || '');
   window.addEventListener(TENANT_SCOPE_EVENT, handler);
   return () => window.removeEventListener(TENANT_SCOPE_EVENT, handler);
 };
-

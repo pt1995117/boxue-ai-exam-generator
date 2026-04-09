@@ -10,6 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from openai import OpenAI
 from volcenginesdkarkruntime import Ark
 from tenants_config import (
+    TenantDataMissingError,
     resolve_tenant_kb_path,
     resolve_tenant_history_path,
     tenant_mapping_path,
@@ -116,7 +117,12 @@ def set_active_tenant(tenant_id: str) -> None:
 
 DEFAULT_TENANT_ID = str(resolve_tenant_from_env() or "").strip()
 TENANT_ID = DEFAULT_TENANT_ID
-KB_PATH, HISTORY_PATH, MAPPING_PATH = get_tenant_resource_paths(TENANT_ID)
+try:
+    KB_PATH, HISTORY_PATH, MAPPING_PATH = get_tenant_resource_paths(TENANT_ID)
+except TenantDataMissingError:
+    KB_PATH = "bot_knowledge_base.jsonl"
+    HISTORY_PATH = "存量房买卖母卷ABCD.xls"
+    MAPPING_PATH = "question_knowledge_mapping.json"
 OUTPUT_PATH = "generated_exam_questions.xlsx"
 
 # --- Pydantic Models ---

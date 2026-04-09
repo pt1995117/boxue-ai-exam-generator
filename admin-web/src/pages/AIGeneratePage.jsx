@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -27,6 +27,7 @@ import {
   addBankQuestions,
   cancelGenerateTask,
   createGenerateTask,
+  getApiErrorMessage,
   getGenerateTask,
   getSliceImageUrl,
   getSlicePathTree,
@@ -40,6 +41,7 @@ import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScop
 import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 import QuestionDetailView from '../components/QuestionDetailView';
 import { getFinalQuestionPreviewCardMeta } from '../utils/finalQuestionPreviewMeta';
+import { getTraceDisplayIndex, getTraceItemKey, mergeTaskTraceForDisplay, sortTraceRows } from '../utils/generateTrace';
 
 /**
  * 教材条目在界面上的展示名：取上传文件名并去掉版本前缀，与任务列表等处一致。
@@ -48,12 +50,19 @@ import { getFinalQuestionPreviewCardMeta } from '../utils/finalQuestionPreviewMe
  */
 function materialLabel(m) {
   const raw = String(m?.file_path || '').split('/').pop() || '';
-  const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || String(m?.material_version_id || '');
+  const name = raw.replace(/^v\d{8}_\d{6}(?:_[a-z0-9]+)?_/, '') || raw || String(m?.material_version_id || '');
   return `${name}${m?.status === 'effective' ? '（生效）' : ''}`;
 }
 
 export default function AIGeneratePage() {
   const AUTO_SAVE_PASSED_QUESTIONS = true;
+  const DEFAULT_CREATE_FORM_VALUES = {
+    task_name: '',
+    num_questions: 1,
+    question_type: '单选题',
+    generation_mode: '随机',
+    difficulty: '随机',
+  };
   const [createForm] = Form.useForm();
   const [pageMode, setPageMode] = useState('tasks'); // tasks | create
   const navigate = useNavigate();
@@ -76,6 +85,8 @@ export default function AIGeneratePage() {
   const [taskKeyword, setTaskKeyword] = useState('');
   const [taskStatusFilter, setTaskStatusFilter] = useState('');
   const [taskMaterialFilter, setTaskMaterialFilter] = useState('');
+  const taskListRequestInFlightRef = useRef(false);
+  const taskDetailRequestInFlightRef = useRef(false);
   const [taskQueryKeyword, setTaskQueryKeyword] = useState('');
   const [taskQueryStatus, setTaskQueryStatus] = useState('');
   const [taskQueryMaterial, setTaskQueryMaterial] = useState('');
@@ -246,7 +257,7 @@ export default function AIGeneratePage() {
             : 'blue'
     );
     return (
-      <Space key={`${item.index}_${step.seq || idx}`} size={8} wrap>
+      <Space key={`${getTraceItemKey(item, idx)}_${step.seq || idx}`} size={8} wrap>
         <Tag color={nodeColor}>{step.node || 'system'}</Tag>
         <Typography.Text>{step.message}</Typography.Text>
         {detail ? (
@@ -265,7 +276,7 @@ export default function AIGeneratePage() {
       const stemShort = group.stem ? truncateDetail(group.stem, 50) : '';
       const result = group.result || '';
       return (
-        <div key={`${item.index}_qg_${group.node}_${idx}`} style={{ marginBottom: 4 }}>
+        <div key={`${getTraceItemKey(item, idx)}_qg_${group.node}_${idx}`} style={{ marginBottom: 4 }}>
           <Typography.Text type="secondary">
             {phaseTitle}：{stemShort}
             {result ? ` | ${result}` : ''}
@@ -276,7 +287,7 @@ export default function AIGeneratePage() {
     const optionLines = splitOptionLines(group.options || '').map((line, i) => normalizeOptionLine(line, i));
     return (
       <div
-        key={`${item.index}_qg_${group.node}_${idx}`}
+        key={`${getTraceItemKey(item, idx)}_qg_${group.node}_${idx}`}
         style={{
           border: '1px solid #e5e6eb',
           borderRadius: 8,
@@ -293,7 +304,7 @@ export default function AIGeneratePage() {
         {optionLines.length > 0 ? (
           <Space direction="vertical" size={4} style={{ width: '100%', marginTop: 6 }}>
             {optionLines.map((line, i) => (
-              <Typography.Text key={`${item.index}_qg_${group.node}_opt_${i}`}>{line}</Typography.Text>
+              <Typography.Text key={`${getTraceItemKey(item, idx)}_qg_${group.node}_opt_${i}`}>{line}</Typography.Text>
             ))}
           </Space>
         ) : null}
@@ -465,6 +476,7 @@ export default function AIGeneratePage() {
     });
     return m;
   }, [approvedSlices]);
+  const orderedRunTrace = useMemo(() => sortTraceRows(runTrace), [runTrace]);
   const buildTraceSliceMarkdown = (item) => {
     const content = String(item?.slice_content || '').trim();
     const sid = Number(item?.slice_id || 0);
@@ -520,7 +532,7 @@ export default function AIGeneratePage() {
     setLoading(isTaskRunning(t.status));
     const items = Array.isArray(t.items) ? t.items : [];
     setRows(items.map((item, idx) => ({ ...item, _gen_key: `${String(t.task_id || 'task')}_${idx}` })));
-    setRunTrace(Array.isArray(t.process_trace) ? t.process_trace : []);
+    setRunTrace(mergeTaskTraceForDisplay(t));
     setErrors(normalizeTaskErrors(t.errors));
     setStats({
       generated_count: Number(t.generated_count || 0),
@@ -530,6 +542,8 @@ export default function AIGeneratePage() {
   // skipSetActiveWhenEmpty: when true, only refresh taskItems; do not set activeTaskId when it is '' (used in create-mode "new task" flow to avoid showing history)
   const loadTaskList = async (tid, keepActive = true, skipSetActiveWhenEmpty = false) => {
     if (!tid) return [];
+    if (taskListRequestInFlightRef.current) return taskItems;
+    taskListRequestInFlightRef.current = true;
     try {
       const res = await listGenerateTasks(tid, { limit: 100 });
       const items = Array.isArray(res?.items) ? res.items : [];
@@ -547,9 +561,11 @@ export default function AIGeneratePage() {
       if (!skipSetActiveWhenEmpty && !hasActive) setActiveTaskId(String(items[0].task_id || ''));
       return items;
     } catch (e) {
-      const msg = e?.response?.data?.error?.message || e?.message || '加载任务列表失败';
+      const msg = getApiErrorMessage(e, '加载任务列表失败');
       setTaskListLoadError(msg);
       return taskItems;
+    } finally {
+      taskListRequestInFlightRef.current = false;
     }
   };
 
@@ -613,13 +629,6 @@ export default function AIGeneratePage() {
     setStats({ generated_count: 0, saved_count: 0 });
     setShowSlicePanel(false);
     setAutoSelectAllOnNextFilter(false);
-    createForm.setFieldsValue({
-      task_name: '',
-      num_questions: 1,
-      question_type: '单选题',
-      generation_mode: '随机',
-      difficulty: '随机',
-    });
     loadMaterials(tenantId);
     loadTemplates(tenantId);
     loadTaskList(tenantId, false).catch(() => {});
@@ -627,39 +636,52 @@ export default function AIGeneratePage() {
   }, [tenantId]);
 
   useEffect(() => {
+    if (pageMode !== 'create') return;
+    createForm.setFieldsValue(DEFAULT_CREATE_FORM_VALUES);
+  }, [createForm, pageMode]);
+
+  useEffect(() => {
     if (!tenantId || !activeTaskId) return undefined;
     if (pageMode !== 'create') return undefined;
     const pollingTaskId = activeTaskId;
     let cancelled = false;
     const tick = async () => {
+      if (taskDetailRequestInFlightRef.current) {
+        if (!cancelled) setTimeout(tick, 2500);
+        return;
+      }
+      taskDetailRequestInFlightRef.current = true;
       try {
         const res = await getGenerateTask(tenantId, pollingTaskId);
         if (cancelled) return;
         const task = res?.task || {};
         applyTaskDetail(task, pollingTaskId);
         if (isTaskRunning(task?.status)) {
-          setTimeout(tick, 1200);
+          setTimeout(tick, 2500);
         } else {
           loadTaskList(tenantId, true).catch(() => {});
         }
       } catch (_e) {
-        if (!cancelled) setTimeout(tick, 2000);
+        if (!cancelled) setTimeout(tick, 3000);
+      } finally {
+        taskDetailRequestInFlightRef.current = false;
       }
     };
     tick();
     return () => {
       cancelled = true;
+      taskDetailRequestInFlightRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId, activeTaskId, pageMode]);
 
   useEffect(() => {
     if (!tenantId) return undefined;
-      const timer = setInterval(() => {
+    const timer = setInterval(() => {
       // In create mode with no active task (new-task flow), only refresh list; do not set activeTaskId to avoid showing previous task's result
       const skipSetActive = pageMode === 'create' && !activeTaskId;
       loadTaskList(tenantId, true, skipSetActive).catch(() => {});
-    }, 5000);
+    }, 10000);
     return () => clearInterval(timer);
   }, [tenantId, pageMode, activeTaskId]);
 
@@ -692,7 +714,7 @@ export default function AIGeneratePage() {
       }
       setApprovedSlices(all);
     } catch (e) {
-      message.error(e?.response?.data?.error?.message || '加载已审核切片失败');
+      message.error(getApiErrorMessage(e, '加载已审核切片失败'));
     }
   };
 
@@ -737,7 +759,7 @@ export default function AIGeneratePage() {
       setApprovedSlices([]);
       setMaterialSliceTotal(0);
       setPathTreeOptions([]);
-      message.error(e?.response?.data?.error?.message || '加载教材版本失败');
+      message.error(getApiErrorMessage(e, '加载教材版本失败'));
     }
   };
 
@@ -1211,13 +1233,6 @@ export default function AIGeneratePage() {
                     setStats({ generated_count: 0, saved_count: 0 });
                     setGenerateBy('manual');
                     setSelectedTemplateId('');
-                    createForm.setFieldsValue({
-                      task_name: '',
-                      num_questions: 1,
-                      question_type: '单选题',
-                      generation_mode: '随机',
-                      difficulty: '随机',
-                    });
                   }}
                 >
                   新建出题任务
@@ -1510,7 +1525,7 @@ export default function AIGeneratePage() {
                       const key = String(item.slice_id);
                       const checked = selectedSliceKeys.includes(key);
                       return (
-                        <Card key={key} size="small" bodyStyle={{ padding: 12 }}>
+                        <Card key={key} size="small" styles={{ body: { padding: 12 } }}>
                           <Space direction="vertical" style={{ width: '100%' }} size={10}>
                             <Space align="start" wrap style={{ width: '100%', justifyContent: 'space-between' }}>
                               <Space align="start" wrap>
@@ -1695,7 +1710,7 @@ export default function AIGeneratePage() {
                   ) : (
                     <>
                       {(() => {
-                        const lastItem = runTrace[runTrace.length - 1];
+                        const lastItem = orderedRunTrace[orderedRunTrace.length - 1];
                         const status = getLatestRunStatus(lastItem?.steps || []);
                         if (status.latestRunHasWriterDone && !status.latestRunHasCriticTerminal) {
                           return (
@@ -1711,9 +1726,9 @@ export default function AIGeneratePage() {
                         return null;
                       })()}
                       <Collapse
-                      items={runTrace.map((item) => ({
-                        key: String(item.index),
-                        label: `第 ${item.index} 题 | 切片 ${item.slice_id} | 耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`,
+                      items={orderedRunTrace.map((item, idx) => ({
+                        key: getTraceItemKey(item, idx),
+                        label: `第 ${getTraceDisplayIndex(item, idx + 1)} 题 | 切片 ${item.slice_id} | 耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`,
                         children: renderTracePanelBody(item),
                       }))}
                     />
@@ -1723,9 +1738,9 @@ export default function AIGeneratePage() {
                   <Space direction="vertical" style={{ width: '100%' }} size={12}>
                     {runTrace.length > 0 && (
                       <Collapse
-                        items={runTrace.map((item) => ({
-                          key: String(item.index),
-                          label: `第 ${item.index} 题 | 切片 ${item.slice_id} | 耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`,
+                        items={orderedRunTrace.map((item, idx) => ({
+                          key: getTraceItemKey(item, idx),
+                          label: `第 ${getTraceDisplayIndex(item, idx + 1)} 题 | 切片 ${item.slice_id} | 耗时 ${Math.max(0, Math.round((item.elapsed_ms || 0) / 1000))}s`,
                           children: renderTracePanelBody(item),
                         }))}
                       />

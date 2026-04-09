@@ -16,7 +16,7 @@ retriever = KnowledgeRetriever(
     history_path="存量房买卖母卷ABCD.xls"
 )
 
-def test_scenario(scenario_name, inputs, config):
+def run_scenario(scenario_name, inputs, config):
     """运行测试场景并打印循环路径"""
     print(f"\n{'='*60}")
     print(f"测试场景: {scenario_name}")
@@ -82,73 +82,74 @@ def test_scenario(scenario_name, inputs, config):
         return False
 
 
-# 测试场景 1: 正常流程（无循环）
-print("\n" + "🧪 开始测试循环机制".center(60, '='))
+if __name__ == "__main__":
+    # 测试场景 1: 正常流程（无循环）
+    print("\n" + "🧪 开始测试循环机制".center(60, '='))
 
-# 准备测试数据
-with open("bot_knowledge_base.jsonl", 'r', encoding='utf-8') as f:
-    kb_data = [json.loads(line) for line in f]
+    # 准备测试数据
+    with open("bot_knowledge_base.jsonl", 'r', encoding='utf-8') as f:
+        kb_data = [json.loads(line) for line in f]
 
-# 选择一个金融类知识点（容易触发计算）
-test_kb_chunk = None
-for kb in kb_data:
-    if '税费' in kb['完整路径'] or '贷款' in kb['完整路径']:
-        test_kb_chunk = kb
-        break
+    # 选择一个金融类知识点（容易触发计算）
+    test_kb_chunk = None
+    for kb in kb_data:
+        if '税费' in kb['完整路径'] or '贷款' in kb['完整路径']:
+            test_kb_chunk = kb
+            break
 
-if not test_kb_chunk:
-    test_kb_chunk = kb_data[0]  # 回退到第一个
+    if not test_kb_chunk:
+        test_kb_chunk = kb_data[0]  # 回退到第一个
 
-print(f"\n使用测试知识点: {test_kb_chunk['完整路径']}")
+    print(f"\n使用测试知识点: {test_kb_chunk['完整路径']}")
 
-# 配置
-config = {
-    "configurable": {
-        "model": "deepseek-reasoner",
-        "api_key": None,  # 将使用环境变量
-        "retriever": retriever,
-        "question_type": "单选题"
+    # 配置
+    config = {
+        "configurable": {
+            "model": "deepseek-reasoner",
+            "api_key": None,  # 将使用环境变量
+            "retriever": retriever,
+            "question_type": "单选题"
+        }
     }
-}
 
-# 测试场景 1: 正常流程（应该一次通过）
-inputs_normal = {
-    "kb_chunk": test_kb_chunk,
-    "examples": [],
-    "agent_name": None,
-    "draft": None,
-    "final_json": None,
-    "critic_feedback": None,
-    "retry_count": 0,
-    "logs": [],
-    "router_details": None,
-    "tool_usage": None,
-    "critic_tool_usage": None,
-    "critic_details": None
-}
+    # 测试场景 1: 正常流程（应该一次通过）
+    inputs_normal = {
+        "kb_chunk": test_kb_chunk,
+        "examples": [],
+        "agent_name": None,
+        "draft": None,
+        "final_json": None,
+        "critic_feedback": None,
+        "retry_count": 0,
+        "logs": [],
+        "router_details": None,
+        "tool_usage": None,
+        "critic_tool_usage": None,
+        "critic_details": None
+    }
 
-print("\n" + "="*60)
-print("注意：以下测试需要实际调用 LLM，可能需要几分钟时间")
-print("如果没有配置 API Key，测试将失败")
-print("="*60)
+    print("\n" + "="*60)
+    print("注意：以下测试需要实际调用 LLM，可能需要几分钟时间")
+    print("如果没有配置 API Key，测试将失败")
+    print("="*60)
 
-# 运行测试
-result = test_scenario(
-    "场景1: 正常流程（期望：Router → Specialist/Finance → Writer → Critic → END）",
-    inputs_normal,
-    config
-)
+    # 运行测试
+    result = run_scenario(
+        "场景1: 正常流程（期望：Router → Specialist/Finance → Writer → Critic → END）",
+        inputs_normal,
+        config
+    )
 
-if result:
-    print("\n✅ 循环机制测试通过！")
-    print("\n💡 要触发循环，需要 Critic 节点检测到问题。")
-    print("   实际生产环境中，循环会在以下情况自动触发：")
-    print("   1. 答案错误（major）→ Critic → Router 重路由")
-    print("   2. 解析不清（minor）→ Critic → Fixer → Critic 循环")
-    print("   3. retry_count ≥ 3 → 自愈输出")
-else:
-    print("\n❌ 测试失败，请检查配置和网络连接")
+    if result:
+        print("\n✅ 循环机制测试通过！")
+        print("\n💡 要触发循环，需要 Critic 节点检测到问题。")
+        print("   实际生产环境中，循环会在以下情况自动触发：")
+        print("   1. 答案错误（major）→ Critic → Router 重路由")
+        print("   2. 解析不清（minor）→ Critic → Fixer → Critic 循环")
+        print("   3. retry_count ≥ 3 → 自愈输出")
+    else:
+        print("\n❌ 测试失败，请检查配置和网络连接")
 
-print("\n" + "="*60)
-print("测试完成")
-print("="*60)
+    print("\n" + "="*60)
+    print("测试完成")
+    print("="*60)

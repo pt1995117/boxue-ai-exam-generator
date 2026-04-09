@@ -313,7 +313,7 @@ def _llm_quality_score_eval(
             vv = str(v or "").strip()
             if kk and vv:
                 dim_feedback[kk] = vv
-    # 结构字段不完整时，进行一次强约束重试；最终仅 quality_score 为强制字段。
+    # 结构字段不完整时，进行一次强约束重试；仍缺失则按原兜底规则报错。
     reasons_text = " ".join(reasons)
     evidence_hit = ("证据：" in reasons_text) or ("证据:" in reasons_text) or ("依据：" in reasons_text) or ("依据:" in reasons_text)
     required_dims = {"考点清晰度", "题干严谨性", "干扰项质量", "区分度", "场景真实性"}
@@ -376,10 +376,13 @@ def _llm_quality_score_eval(
             basis = strict_basis
         if strict_dim_feedback:
             dim_feedback = strict_dim_feedback
-    if not reasons:
-        reasons = ["模型未返回 quality_reasons（mock/降级模式容错）"]
-    if not basis:
-        basis = "模型未返回 scoring_basis（mock/降级模式容错）"
+    if (not reasons) or (not basis):
+        obs = get_observability()
+        raw_preview = str(obs.get("last_raw_response", "") or "").strip()
+        raise RuntimeError(
+            "quality_score 评估失败：模型未返回完整结论字段（quality_reasons/scoring_basis 为空）"
+            + (f"，raw_preview={raw_preview}" if raw_preview else "")
+        )
     return round(score, 2), reasons[:6], basis, dim_feedback
 
 
