@@ -71,6 +71,10 @@ from reference_loader import load_reference_questions
 app = Flask(__name__)
 init_observability("exam-admin-api")
 
+BACKEND_HOST = "127.0.0.1"
+BACKEND_PORT = 8600
+FRONTEND_PORT = 8522
+
 SLICE_STATUSES = {"pending", "approved"}
 MAP_STATUSES = {"pending", "approved"}
 QUESTION_TYPES = {"单选题", "多选题", "判断题", "随机"}
@@ -79,7 +83,7 @@ ALLOWED_ORIGINS = set(
     x.strip()
     for x in os.getenv(
         "ADMIN_WEB_ORIGINS",
-        "http://127.0.0.1:8520,http://localhost:8520,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3000,http://localhost:3000",
+        f"http://127.0.0.1:{FRONTEND_PORT},http://localhost:{FRONTEND_PORT}",
     ).split(",")
     if x.strip()
 )
@@ -19610,5 +19614,5 @@ def api_mappings_batch_review(tenant_id: str):
 
 
 if __name__ == '__main__':
-    port = int(os.getenv("PORT", "8600").strip() or 8600)
-    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False, threaded=True)
+    # Remote deployment is pinned to 127.0.0.1:8600; do not drift via env overrides.
+    app.run(host=BACKEND_HOST, port=BACKEND_PORT, debug=False, use_reloader=False, threaded=True)

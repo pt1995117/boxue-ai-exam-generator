@@ -25,6 +25,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 8522,
+    strictPort: true,
     allowedHosts: [sharedHost],
     // Shared remote access through a gateway is more stable without Vite HMR.
     ...(disableHmr ? { hmr: false } : {}),
