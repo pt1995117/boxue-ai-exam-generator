@@ -183,7 +183,7 @@ export default function JudgeTaskPage() {
       const savedCount = Number(t?.saved_count || 0);
       const endedAt = String(t?.ended_at || t?.updated_at || '').slice(0, 19);
       return {
-        label: `${name} | 可Judge=${savedCount} | ${endedAt}`,
+        label: `${name} | 落库题数=${savedCount} | ${endedAt}`,
         value: tid,
       };
     });
@@ -196,7 +196,7 @@ export default function JudgeTaskPage() {
       const sourceName = String(sourceTask?.task_name || '').trim();
       const name = sourceName || String(r?.task_name || '').trim() || String(r?.task_id || '').trim() || rid;
       return {
-        label: `${name} | ${rid} | saved=${Number(r?.saved_count || 0)} | ${String(r?.ended_at || '').slice(0, 19)}`,
+        label: `${name} | ${rid} | 落库题数=${Number(r?.saved_count || 0)} | ${String(r?.ended_at || '').slice(0, 19)}`,
         value: rid,
       };
     });
@@ -276,38 +276,13 @@ export default function JudgeTaskPage() {
         setSelectedQuestions(rows);
         return;
       }
-      const runIds = Array.isArray(selectedRunIds)
-        ? selectedRunIds.map((x) => String(x || '').trim()).filter(Boolean)
-        : [];
-      const canonicalRunIds = getCanonicalRunIds(runIds);
-      if (!tenantId || !canonicalRunIds.length) {
-        setSelectedQuestions([]);
-        return;
-      }
-      setPreviewLoading(true);
-      try {
-        const res = await previewJudgeRuns(tenantId, { run_ids: canonicalRunIds });
-        if (cancelled) return;
-        const rows = Array.isArray(res?.items) ? res.items.map((row) => ({
-          ...row,
-          quality_score: toTenPointScore(row?.quality_score),
-          baseline_score: toTenPointScore(row?.baseline_score),
-        })) : [];
-        setSelectedQuestions(rows);
-      } catch (e) {
-        if (!cancelled) {
-          setSelectedQuestions([]);
-          message.error(e?.response?.data?.error?.message || '加载已选 run 题目失败');
-        }
-      } finally {
-        if (!cancelled) setPreviewLoading(false);
-      }
+      setSelectedQuestions([]);
     };
     loadSelectedQuestions();
     return () => {
       cancelled = true;
     };
-  }, [pageMode, selectedRunIds, tenantId, runMap, sourceTaskBankMap]);
+  }, [pageMode, tenantId, sourceTaskBankMap]);
 
   const selectedQuestionColumns = [
     { title: 'run序', dataIndex: 'run_seq', width: 70 },
@@ -395,22 +370,20 @@ export default function JudgeTaskPage() {
     if (!tenantId) return;
     const name = String(values.task_name || '').trim();
     const selectedTaskIds = Array.isArray(values.source_task_ids) ? values.source_task_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
-    const runIdsRaw = Array.isArray(values.run_ids) ? values.run_ids.map((x) => String(x || '').trim()).filter(Boolean) : [];
-    const canonicalRunIds = getCanonicalRunIds(runIdsRaw);
-    const bankTaskEntries = selectedTaskIds
-      .map((taskId) => [taskId, Array.isArray(sourceTaskBankMap?.[taskId]) ? sourceTaskBankMap[taskId] : []])
-      .filter(([, rows]) => rows.length > 0);
-    const previewRunIds = Array.from(new Set((selectedQuestions || []).map((row) => String(row?.run_id || '').trim()).filter(Boolean)));
-    const runIds = previewRunIds.length
-      ? canonicalRunIds.filter((rid) => previewRunIds.includes(String(rid || '').trim()))
-      : canonicalRunIds;
-    const skippedRunIds = canonicalRunIds.filter((rid) => !runIds.includes(rid));
     if (!name) {
       message.warning('请输入任务名称');
       return;
     }
-    if (!bankTaskEntries.length && !runIds.length) {
-      message.warning('请至少选择一个出题任务或 run');
+    if (!selectedTaskIds.length) {
+      message.warning('请至少选择一个出题任务');
+      return;
+    }
+    const taskEntries = selectedTaskIds.map((taskId) => {
+      const task = sourceTaskMap.get(taskId) || {};
+      return { taskId, runId: String(task?.run_id || '').trim(), taskName: String(task?.task_name || '').trim() };
+    }).filter((x) => x.runId);
+    if (!taskEntries.length) {
+      message.warning('所选任务尚无关联的 run，无法创建 Judge');
       return;
     }
     setCreating(true);
@@ -418,36 +391,20 @@ export default function JudgeTaskPage() {
       let ok = 0;
       let fail = 0;
       const failMsgs = [];
-      if (bankTaskEntries.length) {
-        for (let i = 0; i < bankTaskEntries.length; i += 1) {
-          const [taskId, rows] = bankTaskEntries[i];
-          const task = sourceTaskMap.get(taskId) || {};
-          const taskName = bankTaskEntries.length > 1 ? `${name}-${i + 1}` : name;
-          const bankQuestionIds = rows.map((row) => Number(row?.bank_question_id)).filter((x) => Number.isInteger(x));
-          // eslint-disable-next-line no-await-in-loop
-          const res = await createJudgeTask(tenantId, {
-            task_name: taskName,
-            source_task_id: taskId,
-            source_task_name: String(task?.task_name || '').trim(),
-            bank_question_ids: bankQuestionIds,
-          });
-          if (res?.task?.task_id) ok += 1;
-          else {
-            fail += 1;
-            failMsgs.push(`${taskId}: 创建失败`);
-          }
-        }
-      } else {
-        for (let i = 0; i < runIds.length; i += 1) {
-          const rid = runIds[i];
-          const taskName = runIds.length > 1 ? `${name}-${i + 1}` : name;
-          // eslint-disable-next-line no-await-in-loop
-          const res = await createJudgeTask(tenantId, { run_id: rid, task_name: taskName });
-          if (res?.task?.task_id) ok += 1;
-          else {
-            fail += 1;
-            failMsgs.push(`${rid}: 创建失败`);
-          }
+      for (let i = 0; i < taskEntries.length; i += 1) {
+        const { runId, taskId, taskName: srcTaskName } = taskEntries[i];
+        const judgeTaskName = taskEntries.length > 1 ? `${name}-${i + 1}` : name;
+        // eslint-disable-next-line no-await-in-loop
+        const res = await createJudgeTask(tenantId, {
+          run_id: runId,
+          task_name: judgeTaskName,
+          source_task_id: taskId,
+          source_task_name: srcTaskName,
+        });
+        if (res?.task?.task_id) ok += 1;
+        else {
+          fail += 1;
+          failMsgs.push(`${taskId}: 创建失败`);
         }
       }
       await loadTasks(tenantId);
@@ -459,9 +416,6 @@ export default function JudgeTaskPage() {
       } else {
         message.warning(`已创建 ${ok} 个，失败 ${fail} 个`);
         if (failMsgs.length) message.error(failMsgs.slice(0, 3).join(' ; '));
-      }
-      if (skippedRunIds.length) {
-        message.warning(`已跳过 ${skippedRunIds.length} 个无可预览题目的 run`);
       }
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '创建 Judge 任务失败');
@@ -530,21 +484,11 @@ export default function JudgeTaskPage() {
                 options={sourceTaskOptions}
               />
             </Form.Item>
-            <Form.Item name="run_ids" label="选择 run（兜底，可多选，按创建顺序串行）">
-              <Select
-                mode="tags"
-                showSearch
-                optionFilterProp="label"
-                style={{ width: '100%' }}
-                placeholder="仅在不走正式落库题直 Judge 时使用；可直接粘贴 run_id 回车"
-                options={runOptions}
-              />
-            </Form.Item>
             <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
-              当前租户：{tenantId || '-'}；已加载出题任务：{sourceTaskOptions.length}；已加载可选 run：{runOptions.length}；已选正式落库题：{Object.values(sourceTaskBankMap || {}).reduce((sum, rows) => sum + rows.length, 0)}
+              当前租户：{tenantId || '-'}；已加载出题任务：{sourceTaskOptions.length}；已选正式落库题：{Object.values(sourceTaskBankMap || {}).reduce((sum, rows) => sum + rows.length, 0)}
             </Typography.Paragraph>
-            {Array.isArray(selectedRunIds) && selectedRunIds.length > 0 && (
-              <Card size="small" title={`已选题目预览（去重后共 ${selectedQuestions.length} 题）`} style={{ marginBottom: 12 }}>
+            {selectedSourceTaskIds.length > 0 && selectedQuestions.length > 0 && (
+              <Card size="small" title={`已选落库题预览（共 ${selectedQuestions.length} 题）`} style={{ marginBottom: 12 }}>
                 <Table
                   rowKey={(r) => r.key}
                   columns={selectedQuestionColumns}

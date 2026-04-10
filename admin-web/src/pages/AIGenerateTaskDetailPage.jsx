@@ -712,22 +712,12 @@ export default function AIGenerateTaskDetailPage() {
   }, [isTaskActive, nowMs, processTrace, task?.ended_at, task?.started_at]);
 
   const derivedProgress = useMemo(() => {
-    const rawProgress = task?.progress && typeof task.progress === 'object' ? task.progress : {};
-    const taskStatus = String(task?.status || '').toLowerCase();
     const requestedTotal = Number(task?.request?.num_questions || 0);
-    const apiGeneratedCount = Number(task?.generated_total_count || task?.generated_count || 0);
-    const mergedGeneratedFloor = Math.max(apiGeneratedCount, items.length, processTrace.length);
-    const total = Math.max(Number(rawProgress?.total || 0), requestedTotal, mergedGeneratedFloor);
-    const isSuccessfulTerminal = taskStatus === 'completed';
-    const current = isTaskActive
-      ? Math.max(Number(rawProgress?.current || 0), mergedGeneratedFloor)
-      : (
-        isSuccessfulTerminal
-          ? Math.max(Number(rawProgress?.current || 0), Number(rawProgress?.total || 0), mergedGeneratedFloor)
-          : Math.max(Number(rawProgress?.current || 0), mergedGeneratedFloor)
-      );
+    const rawTotal = Number(task?.progress?.total || 0);
+    const total = Math.max(rawTotal, requestedTotal);
+    const current = taskMetrics.saved_count;
     return { current, total };
-  }, [isTaskActive, items.length, processTrace.length, task?.generated_count, task?.generated_total_count, task?.progress, task?.request?.num_questions, task?.status]);
+  }, [task?.progress?.total, task?.request?.num_questions, taskMetrics.saved_count]);
 
   const passedQuestionLabel = useMemo(() => {
     const passed = Number(task?.saved_count || 0);
@@ -768,10 +758,7 @@ export default function AIGenerateTaskDetailPage() {
   );
   const autoBankEnabled = Boolean(task?.request?.persist_to_bank ?? task?.request?.save_to_bank ?? true);
   /** 任务过程区：完整流水（含失败、重试、补充题），不按题位吞掉记录 */
-  const displayProcessTrace = useMemo(
-    () => buildDisplayProcessTraceRows(processTrace, liveSubtaskTraces),
-    [liveSubtaskTraces, processTrace],
-  );
+  const displayProcessTrace = processTrace;
   const placeholderOnlyTrace = useMemo(() => {
     if (!displayProcessTrace.length) return false;
     return displayProcessTrace.every((row) => String(row?.question_id || '').startsWith('live:'));
@@ -988,7 +975,7 @@ export default function AIGenerateTaskDetailPage() {
           label: (
             <Space>
               <Tooltip title="同一题位可能多行：含失败重试、换切片、模板修复/补充等；trace# 为流水序号。">
-                <span>{`${traceSeq}${subHint} | 切片 ${item.slice_id ?? '-'} | ${timingPart}`}</span>
+                <span>{`${traceSeq}${subHint} | 切片 ${item.slice_id || '-'} | ${timingPart}`}</span>
               </Tooltip>
               <Tag color={qStatus.color}>{qStatus.text}</Tag>
             </Space>
