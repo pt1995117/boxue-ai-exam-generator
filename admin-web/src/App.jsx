@@ -1,5 +1,6 @@
 import React from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
+import PageErrorBoundary from './components/PageErrorBoundary';
 import AdminLayout from './layouts/AdminLayout';
 import DashboardPage from './pages/DashboardPage';
 import MaterialUploadPage from './pages/MaterialUploadPage';
@@ -20,20 +21,20 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<AdminLayout />}>
-        <Route index element={<DashboardPage />} />
-        <Route path="materials" element={<MaterialUploadPage />} />
-        <Route path="slice-review" element={<SliceReviewPage />} />
-        <Route path="mapping-review" element={<MappingReviewPage />} />
-        <Route path="ai-generate" element={<AIGeneratePage />} />
-        <Route path="generate-templates" element={<GenerateTemplatePage />} />
-        <Route path="ai-generate/tasks/:taskId" element={<AIGenerateTaskDetailPage />} />
-        <Route path="qa-evaluation" element={<QualityEvaluationPage />} />
-        <Route path="judge-tasks" element={<JudgeTaskPage />} />
-        <Route path="judge-tasks/:taskId" element={<JudgeTaskDetailPage />} />
-        <Route path="version-management" element={<VersionManagementPage />} />
-        <Route path="question-bank" element={<QuestionBankPage />} />
-        <Route path="city-admin" element={<CityAdminPage />} />
-        <Route path="global-key-config" element={<GlobalKeyConfigPage />} />
+        <Route index element={<PageErrorBoundary><DashboardPage /></PageErrorBoundary>} />
+        <Route path="materials" element={<PageErrorBoundary><MaterialUploadPage /></PageErrorBoundary>} />
+        <Route path="slice-review" element={<PageErrorBoundary><SliceReviewPage /></PageErrorBoundary>} />
+        <Route path="mapping-review" element={<PageErrorBoundary><MappingReviewPage /></PageErrorBoundary>} />
+        <Route path="ai-generate" element={<PageErrorBoundary><AIGeneratePage /></PageErrorBoundary>} />
+        <Route path="generate-templates" element={<PageErrorBoundary><GenerateTemplatePage /></PageErrorBoundary>} />
+        <Route path="ai-generate/tasks/:taskId" element={<PageErrorBoundary><AIGenerateTaskDetailPage /></PageErrorBoundary>} />
+        <Route path="qa-evaluation" element={<PageErrorBoundary><QualityEvaluationPage /></PageErrorBoundary>} />
+        <Route path="judge-tasks" element={<PageErrorBoundary><JudgeTaskPage /></PageErrorBoundary>} />
+        <Route path="judge-tasks/:taskId" element={<PageErrorBoundary><JudgeTaskDetailPage /></PageErrorBoundary>} />
+        <Route path="version-management" element={<PageErrorBoundary><VersionManagementPage /></PageErrorBoundary>} />
+        <Route path="question-bank" element={<PageErrorBoundary><QuestionBankPage /></PageErrorBoundary>} />
+        <Route path="city-admin" element={<PageErrorBoundary><CityAdminPage /></PageErrorBoundary>} />
+        <Route path="global-key-config" element={<PageErrorBoundary><GlobalKeyConfigPage /></PageErrorBoundary>} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
