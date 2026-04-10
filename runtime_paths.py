@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Dict
 
 REPO_ROOT = Path(__file__).resolve().parent
 REPO_DATA_DIR = REPO_ROOT / "data"
@@ -80,3 +81,22 @@ def resolve_tenant_user_file() -> Path:
     if REPO_TENANT_USER_FILE.exists():
         return REPO_TENANT_USER_FILE
     return runtime_file
+
+
+def load_primary_key_config() -> Dict[str, str]:
+    cfg: Dict[str, str] = {}
+    key_file = resolve_primary_key_file()
+    if not key_file.exists():
+        return cfg
+    try:
+        for line in key_file.read_text(encoding="utf-8").splitlines():
+            raw = str(line).strip()
+            if not raw or raw.startswith("#") or "=" not in raw:
+                continue
+            k, v = raw.split("=", 1)
+            key = str(k).strip()
+            if key:
+                cfg[key] = str(v).strip()
+    except Exception:
+        return {}
+    return cfg

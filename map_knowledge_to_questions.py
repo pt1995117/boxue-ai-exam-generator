@@ -14,6 +14,7 @@ import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from tenants_config import resolve_tenant_kb_path, resolve_tenant_history_path, tenant_mapping_path
+from runtime_paths import load_primary_key_config
 
 # BGE embedding model - required, no fallback
 try:
@@ -83,16 +84,8 @@ SYNONYM_MAP = {
 }
 
 def load_config():
-    """Load API keys from config file."""
-    config = {}
-    cfg_path = os.path.join(os.path.dirname(__file__) or '.', '填写您的Key.txt')
-    if os.path.isfile(cfg_path):
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if '=' in line and not line.strip().startswith('#'):
-                    k, v = line.split('=', 1)
-                    config[k.strip()] = v.strip()
-    return config
+    """Load API keys from the unified primary key file."""
+    return load_primary_key_config()
 
 
 def _usable_key(v: str) -> bool:

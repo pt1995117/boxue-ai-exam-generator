@@ -11,6 +11,7 @@ import re
 import os
 from typing import Tuple
 from reference_loader import load_reference_questions
+from runtime_paths import load_primary_key_config
 
 # Paths
 KB_PATH = "bot_knowledge_base.jsonl"
@@ -27,16 +28,8 @@ AUTO_PASS_WEIGHT_TFIDF = 0.7
 AUTO_PASS_WEIGHT_COVERAGE = 0.3
 
 def load_config():
-    """Load API keys from config file."""
-    config = {}
-    cfg_path = os.path.join(os.path.dirname(__file__) or '.', '填写您的Key.txt')
-    if os.path.isfile(cfg_path):
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if '=' in line and not line.strip().startswith('#'):
-                    k, v = line.split('=', 1)
-                    config[k.strip()] = v.strip()
-    return config
+    """Load API keys from the unified primary key file."""
+    return load_primary_key_config()
 
 
 def _usable_key(v: str) -> bool:

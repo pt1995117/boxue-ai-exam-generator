@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Card, Dropdown, Input, List, message, Modal, Popconfirm, Progress, Row, Col, Select, Space, Tabs, Typography, Upload } from 'antd';
 import { InboxOutlined, MoreOutlined } from '@ant-design/icons';
 import {
@@ -28,6 +28,7 @@ export default function MaterialUploadPage() {
   const [mappingLoading, setMappingLoading] = useState(false);
   const [resliceLoadingId, setResliceLoadingId] = useState('');
   const [remapLoadingId, setRemapLoadingId] = useState('');
+  const submitInFlightRef = useRef(false);
   const pickDefaultMaterialId = (items) => {
     const list = Array.isArray(items) ? items : [];
     const effective = list.find((x) => String(x?.status || '') === 'effective');
@@ -122,6 +123,7 @@ export default function MaterialUploadPage() {
   }, [tenantId, materials]);
 
   const onSubmit = async () => {
+    if (submitInFlightRef.current) return;
     if (!tenantId) return;
     const file = fileList[0]?.originFileObj;
     if (!file && !textContent.trim()) {
@@ -144,6 +146,7 @@ export default function MaterialUploadPage() {
       _expectedMaterialVersionId: localVersionId,
     };
     setMaterials((prev) => [pendingItem, ...prev]);
+    submitInFlightRef.current = true;
     setLoading(true);
     setLastResult(null);
     try {
@@ -178,6 +181,7 @@ export default function MaterialUploadPage() {
       message.error(getApiErrorMessage(e, '上传切片失败'));
     } finally {
       setLoading(false);
+      submitInFlightRef.current = false;
     }
   };
 

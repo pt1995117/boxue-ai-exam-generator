@@ -1,18 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Button, Card, Input, Tag, Typography, message, Modal, Popconfirm, Select, Space, Table } from 'antd';
+import { Alert, Button, Card, Input, Tag, message, Modal, Popconfirm, Select, Space, Table } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import {
   deleteBankQuestions,
   exportBankQuestions,
   listBankQuestions,
   listMaterials,
-  optimizeBankQuestion,
-  updateBankQuestion,
 } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import QuestionDetailView from '../components/QuestionDetailView';
 
 export default function QuestionBankPage() {
-  const { TextArea } = Input;
+  const navigate = useNavigate();
   const [tenantId, setTenantId] = useState(getGlobalTenantId());
   const [keyword, setKeyword] = useState('');
   const [templateRole, setTemplateRole] = useState('all');
@@ -26,12 +25,6 @@ export default function QuestionBankPage() {
   const [selectedRowKeys, setSelectedRowKeys] = useState([]);
   const [viewQuestionOpen, setViewQuestionOpen] = useState(false);
   const [viewQuestionRecord, setViewQuestionRecord] = useState(null);
-  const [tuneOpen, setTuneOpen] = useState(false);
-  const [tuneRecord, setTuneRecord] = useState(null);
-  const [tuneFeedback, setTuneFeedback] = useState('');
-  const [tuneJsonText, setTuneJsonText] = useState('');
-  const [tuneOptimizing, setTuneOptimizing] = useState(false);
-  const [tuneSaving, setTuneSaving] = useState(false);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
@@ -130,80 +123,6 @@ export default function QuestionBankPage() {
     loadData(1, pagination.pageSize);
   };
 
-  const openTuneModal = (record) => {
-    setTuneRecord(record);
-    setTuneFeedback('');
-    setTuneJsonText(JSON.stringify(record || {}, null, 2));
-    setTuneOpen(true);
-  };
-
-  const parseTuneJson = () => {
-    try {
-      const parsed = JSON.parse(tuneJsonText || '{}');
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        message.error('题目JSON必须是对象');
-        return null;
-      }
-      return parsed;
-    } catch (_) {
-      message.error('题目JSON格式不合法，请修正后再操作');
-      return null;
-    }
-  };
-
-  const onAiOptimize = async () => {
-    if (!tuneRecord) return;
-    const feedback = String(tuneFeedback || '').trim();
-    if (!feedback) {
-      message.warning('请先输入反馈意见');
-      return;
-    }
-    const draft = parseTuneJson();
-    if (!draft) return;
-    setTuneOptimizing(true);
-    try {
-      const res = await optimizeBankQuestion(tenantId, {
-        question_id: tuneRecord.question_id,
-        feedback,
-        question: draft,
-      });
-      const nextItem = res?.item || {};
-      setTuneJsonText(JSON.stringify(nextItem, null, 2));
-      message.success('AI调优完成，请确认并按需手工修改后保存');
-    } catch (e) {
-      message.error(e?.response?.data?.error?.message || 'AI调优失败');
-    } finally {
-      setTuneOptimizing(false);
-    }
-  };
-
-  const onSaveTune = async () => {
-    if (!tuneRecord) return;
-    const item = parseTuneJson();
-    if (!item) return;
-    if (!String(item?.题干 || '').trim()) {
-      message.warning('题干不能为空');
-      return;
-    }
-    setTuneSaving(true);
-    try {
-      await updateBankQuestion(tenantId, {
-        question_id: tuneRecord.question_id,
-        item,
-      });
-      message.success('题目已按最终确认版本保存到题库');
-      setTuneOpen(false);
-      setTuneRecord(null);
-      setTuneFeedback('');
-      setTuneJsonText('');
-      await loadData(pagination.current, pagination.pageSize);
-    } catch (e) {
-      message.error(e?.response?.data?.error?.message || '保存失败');
-    } finally {
-      setTuneSaving(false);
-    }
-  };
-
   const fmtScore = (raw) => {
     if (raw === null || raw === undefined || raw === '') return '-';
     const n = Number(raw);
@@ -212,7 +131,6 @@ export default function QuestionBankPage() {
     return score.toFixed(2);
   };
 
-  const PAGE_WIDTH = 1680;
   const TABLE_SCROLL_X = 2800;
 
   const columns = [
@@ -307,7 +225,12 @@ export default function QuestionBankPage() {
       width: 90,
       fixed: 'right',
       render: (_, record) => (
-        <Button size="small" onClick={() => openTuneModal(record)}>调优</Button>
+        <Button
+          size="small"
+          onClick={() => navigate(`/question-bank/${encodeURIComponent(String(record?.question_id || ''))}/tune`, { state: { question: record } })}
+        >
+          调优
+        </Button>
       ),
     },
     {
@@ -330,7 +253,7 @@ export default function QuestionBankPage() {
   ];
 
   return (
-    <div style={{ width: PAGE_WIDTH, maxWidth: PAGE_WIDTH }}>
+    <div style={{ width: '100%', minWidth: 0 }}>
       <Space className="toolbar" wrap>
         <Select
           value={materialVersionId}
@@ -420,55 +343,6 @@ export default function QuestionBankPage() {
         styles={{ body: { maxHeight: '72vh', overflowY: 'auto' } }}
       >
         <QuestionDetailView question={viewQuestionRecord || {}} />
-      </Modal>
-
-      <Modal
-        title="单题调优"
-        open={tuneOpen}
-        width={980}
-        onCancel={() => {
-          if (tuneOptimizing || tuneSaving) return;
-          setTuneOpen(false);
-          setTuneRecord(null);
-          setTuneFeedback('');
-          setTuneJsonText('');
-        }}
-        onOk={onSaveTune}
-        okText="保存最终版本"
-        confirmLoading={tuneSaving}
-        maskClosable={false}
-      >
-        <Space direction="vertical" style={{ width: '100%' }} size={10}>
-          <Alert
-            type="info"
-            showIcon
-            message="先填写反馈并触发 AI 重写；也可直接手改下方 JSON。保存后会覆盖该题在题库中的最终版本。"
-          />
-          <Typography.Text strong>反馈意见</Typography.Text>
-          <TextArea
-            value={tuneFeedback}
-            onChange={(e) => setTuneFeedback(e.target.value)}
-            rows={3}
-            placeholder="示例：题干太长，请改成情境化且更聚焦考点；错误选项要更有迷惑性。"
-          />
-          <Space>
-            <Button loading={tuneOptimizing} onClick={onAiOptimize}>AI按反馈重新输出</Button>
-            <Button
-              onClick={() => setTuneJsonText(JSON.stringify(tuneRecord || {}, null, 2))}
-              disabled={!tuneRecord || tuneOptimizing || tuneSaving}
-            >
-              重置为原题
-            </Button>
-          </Space>
-          <Typography.Text strong>最终题目 JSON（可编辑任意字段）</Typography.Text>
-          <TextArea
-            value={tuneJsonText}
-            onChange={(e) => setTuneJsonText(e.target.value)}
-            rows={18}
-            style={{ fontFamily: 'Menlo, Monaco, Consolas, monospace' }}
-            placeholder="在此编辑最终题目 JSON"
-          />
-        </Space>
       </Modal>
     </div>
   );

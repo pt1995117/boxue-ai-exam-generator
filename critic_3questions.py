@@ -3,6 +3,7 @@
 """调用 Critic 审核三道题目"""
 import json
 import sys
+from runtime_paths import load_primary_key_config
 
 # 三道题目
 questions = [
@@ -43,12 +44,7 @@ kb_contents = {
 }
 
 # 读取配置
-config = {}
-with open("填写您的Key.txt", 'r', encoding='utf-8') as f:
-    for line in f:
-        if "=" in line and not line.startswith("#"):
-            k, v = line.split("=", 1)
-            config[k.strip()] = v.strip()
+config = load_primary_key_config()
 
 from exam_graph import generate_content, parse_json_from_response
 from exam_graph import CRITIC_API_KEY, CRITIC_BASE_URL, CRITIC_MODEL, CRITIC_PROVIDER

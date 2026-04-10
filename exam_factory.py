@@ -18,17 +18,10 @@ from tenants_config import (
     resolve_tenant_from_env,
 )
 from reference_loader import load_reference_questions
+from runtime_paths import load_primary_key_config
 
 # Load environment variables from the single primary key file.
-config_path = str(Path(__file__).resolve().parent / "填写您的Key.txt")
-config = {}
-if os.path.exists(config_path):
-    with open(config_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                key, value = line.split("=", 1)
-                config[key.strip()] = value.strip()
+config = load_primary_key_config()
 
 # Fallback to .env or system env
 DEEPSEEK_API_KEY = config.get("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEY")

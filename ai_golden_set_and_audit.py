@@ -10,18 +10,10 @@ import os
 import re
 import shutil
 from collections import Counter
+from runtime_paths import load_primary_key_config
 
 def load_config():
-    cfg = {}
-    for p in [os.path.join(os.path.dirname(__file__) or '.', '填写您的Key.txt'), '填写您的Key.txt']:
-        if os.path.isfile(p):
-            with open(p, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if '=' in line and not line.strip().startswith('#'):
-                        k, v = line.split('=', 1)
-                        cfg[k.strip()] = v.strip()
-            break
-    return cfg
+    return load_primary_key_config()
 
 def clean_leaf(s):
     if not s or not isinstance(s, str):

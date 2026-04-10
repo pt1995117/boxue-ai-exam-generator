@@ -364,6 +364,9 @@ export const generateQuestionsStream = async (tenantId, payload, handlers = {}) 
 export const listBankQuestions = (tenantId, params) =>
   client.get(`/${tenantId}/bank`, { params }).then((r) => r.data);
 
+export const getBankQuestion = (tenantId, questionId) =>
+  client.get(`/${tenantId}/bank/${encodeURIComponent(questionId)}`).then((r) => r.data);
+
 export const deleteBankQuestions = (tenantId, payload) =>
   client.post(`/${tenantId}/bank/delete`, payload).then((r) => r.data);
 

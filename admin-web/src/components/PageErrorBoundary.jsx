@@ -15,6 +15,14 @@ export default class PageErrorBoundary extends React.Component {
     console.error('[PageErrorBoundary]', error, info);
   }
 
+  componentDidUpdate(prevProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      // Route changed: clear stale error state so other pages can render normally.
+      // eslint-disable-next-line react/no-did-update-set-state
+      this.setState({ hasError: false, error: null });
+    }
+  }
+
   render() {
     if (this.state.hasError) {
       return (

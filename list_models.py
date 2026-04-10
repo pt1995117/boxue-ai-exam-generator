@@ -2,20 +2,11 @@
 # -*- coding: utf-8 -*-
 """Print configured model endpoints from local key file."""
 
-import os
+from runtime_paths import load_primary_key_config
 
 
-def load_config(path: str = "填写您的Key.txt") -> dict[str, str]:
-    cfg: dict[str, str] = {}
-    if not os.path.exists(path):
-        return cfg
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                cfg[k.strip()] = v.strip()
-    return cfg
+def load_config() -> dict[str, str]:
+    return load_primary_key_config()
 
 
 def main() -> None:

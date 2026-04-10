@@ -19076,6 +19076,33 @@ def api_bank_list(tenant_id: str):
     return _json_response(payload)
 
 
+@app.get('/api/<tenant_id>/bank/<question_id>')
+def api_bank_get_one(tenant_id: str, question_id: str):
+    try:
+        _check_tenant_permission(tenant_id, "gen.read")
+    except PermissionError as e:
+        return _error(str(e), "无权限访问题库", 403)
+
+    try:
+        qid = int(question_id)
+    except (TypeError, ValueError):
+        return _error("BAD_REQUEST", "question_id is invalid", 400)
+
+    bank = _load_bank(tenant_bank_path(tenant_id))
+    if qid < 0 or qid >= len(bank):
+        return _error("NOT_FOUND", "题目不存在", 404)
+
+    row = bank[qid]
+    if not isinstance(row, dict):
+        return _error("NOT_FOUND", "题目不存在", 404)
+
+    item = dict(row)
+    item["question_id"] = qid
+    origin_lookup = _build_bank_origin_lookup(tenant_id)
+    _fill_bank_item_origin_fields(item, origin_lookup)
+    return _json_response({"item": item})
+
+
 @app.post('/api/<tenant_id>/bank/optimize')
 def api_bank_optimize(tenant_id: str):
     try:

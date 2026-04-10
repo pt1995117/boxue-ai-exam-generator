@@ -37,8 +37,16 @@ export default function JudgeTaskPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [sourceTaskBankMap, setSourceTaskBankMap] = useState({});
   const [form] = Form.useForm();
-  const selectedRunIds = Form.useWatch('run_ids', form) || [];
-  const selectedSourceTaskIds = Form.useWatch('source_task_ids', form) || [];
+  const watchedRunIds = Form.useWatch('run_ids', form);
+  const watchedSourceTaskIds = Form.useWatch('source_task_ids', form);
+  const selectedRunIds = useMemo(
+    () => (Array.isArray(watchedRunIds) ? watchedRunIds : []),
+    [watchedRunIds]
+  );
+  const selectedSourceTaskIds = useMemo(
+    () => (Array.isArray(watchedSourceTaskIds) ? watchedSourceTaskIds : []),
+    [watchedSourceTaskIds]
+  );
   const tasksLoadingRef = useRef(false);
   const allLoadingRef = useRef(false);
 
@@ -153,7 +161,7 @@ export default function JudgeTaskPage() {
     let cancelled = false;
     const loadSourceTaskBankItems = async () => {
       if (!tenantId || !Array.isArray(selectedSourceTaskIds) || !selectedSourceTaskIds.length) {
-        setSourceTaskBankMap({});
+        setSourceTaskBankMap((prev) => (Object.keys(prev).length ? {} : prev));
         return;
       }
       const nextMap = {};
