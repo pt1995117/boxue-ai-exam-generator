@@ -65,12 +65,14 @@ export default function MaterialUploadPage() {
     // Backward compatibility for old backend payloads.
     return String(item?.slice_status || '') === 'success' && String(item?.mapping_status || '') === 'success';
   };
-  const mergeMaterialItems = (prevItems, nextItems) => {
+  const mergeMaterialItems = (prevItems, nextItems, resolvedKeys = new Set()) => {
     const incoming = Array.isArray(nextItems) ? nextItems : [];
     const previous = Array.isArray(prevItems) ? prevItems : [];
     const backendIds = new Set(incoming.map((x) => String(x?.material_version_id || '')).filter(Boolean));
     const pendingCarry = previous.filter((item) => {
       if (!item?._isPending) return false;
+      // Drop pending placeholder if its upload key was resolved by the server response.
+      if (resolvedKeys.has(String(item?._pendingUploadKey || ''))) return false;
       const trackedId = String(item?._expectedMaterialVersionId || item?.material_version_id || '').trim();
       return trackedId && !backendIds.has(trackedId);
     });
@@ -81,13 +83,13 @@ export default function MaterialUploadPage() {
     return `v${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}_${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}`;
   };
 
-  const loadMaterials = async (tid) => {
+  const loadMaterials = async (tid, resolvedKeys = new Set()) => {
     if (!tid) return;
     try {
       const res = await listMaterials(tid);
       const items = res.items || [];
       setMaterials((prev) => {
-        const mergedItems = mergeMaterialItems(prev, items);
+        const mergedItems = mergeMaterialItems(prev, items, resolvedKeys);
         const ids = new Set(mergedItems.map((x) => String(x?.material_version_id || '')).filter(Boolean));
         const fallbackId = pickDefaultMaterialId(mergedItems);
         setSelectedMaterialIdForMap((selectedPrev) => {
@@ -175,7 +177,7 @@ export default function MaterialUploadPage() {
       message.success(`上传并切片成功，共生成 ${res.slice_count || 0} 条`);
       setFileList([]);
       setTextContent('');
-      await loadMaterials(tenantId);
+      await loadMaterials(tenantId, new Set([pendingUploadKey]));
     } catch (e) {
       setMaterials((prev) => prev.filter((item) => item?._pendingUploadKey !== pendingUploadKey));
       message.error(getApiErrorMessage(e, '上传切片失败'));
