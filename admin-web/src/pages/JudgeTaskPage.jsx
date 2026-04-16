@@ -20,10 +20,16 @@ function getJudgeBaselineScore(offlineJudge) {
   return null;
 }
 
+function errMsg(e, fallback) {
+  return e?.response?.data?.error?.message || e?.message || fallback;
+}
+
 export default function JudgeTaskPage() {
   const [tenantId, setTenantId] = useState(getGlobalTenantId());
   const [pageMode, setPageMode] = useState('tasks'); // tasks | create
   const [loading, setLoading] = useState(false);
+  const [tasksReady, setTasksReady] = useState(false);
+  const [createDepsLoading, setCreateDepsLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [taskItems, setTaskItems] = useState([]);
   const [sourceTasks, setSourceTasks] = useState([]);
@@ -65,16 +71,20 @@ export default function JudgeTaskPage() {
     setRuns(items.filter((x) => Number(x?.saved_count || 0) > 0));
   };
 
-  const loadTasks = async (tid) => {
+  const loadTasks = async (tid, opts = {}) => {
     if (!tid) return;
     if (tasksLoadingRef.current) return;
+    const { showLoading = false } = opts;
     tasksLoadingRef.current = true;
+    if (showLoading) setLoading(true);
     try {
       const res = await listJudgeTasks(tid, { limit: 200 });
       const items = Array.isArray(res?.items) ? res.items : [];
       setTaskItems(items);
+      setTasksReady(true);
     } finally {
       tasksLoadingRef.current = false;
+      if (showLoading) setLoading(false);
     }
   };
 
@@ -85,26 +95,46 @@ export default function JudgeTaskPage() {
     setSourceTasks(items.filter((x) => Number(x?.saved_count || 0) > 0));
   };
 
-  const loadAll = async (tid) => {
+  const loadCreateDeps = async (tid) => {
     if (!tid) return;
     if (allLoadingRef.current) return;
     allLoadingRef.current = true;
-    setLoading(true);
+    setCreateDepsLoading(true);
     try {
-      await Promise.all([loadRuns(tid), loadTasks(tid), loadSourceTasks(tid)]);
-    } catch (e) {
-      message.error(e?.response?.data?.error?.message || '加载 Judge 任务失败');
+      const [runsRes, sourceRes] = await Promise.allSettled([
+        loadRuns(tid),
+        loadSourceTasks(tid),
+      ]);
+      const runFailed = runsRes.status === 'rejected';
+      const sourceFailed = sourceRes.status === 'rejected';
+      if (runFailed || sourceFailed) {
+        const parts = [];
+        if (runFailed) parts.push(`Run 列表失败：${errMsg(runsRes.reason, '请求失败')}`);
+        if (sourceFailed) parts.push(`出题任务列表失败：${errMsg(sourceRes.reason, '请求失败')}`);
+        message.warning(parts.join('；'));
+      }
     } finally {
       allLoadingRef.current = false;
-      setLoading(false);
+      setCreateDepsLoading(false);
     }
   };
 
   useEffect(() => {
     if (!tenantId) return;
-    loadAll(tenantId);
+    setTasksReady(false);
+    setTaskItems([]);
+    loadTasks(tenantId, { showLoading: true })
+      .catch((e) => message.error(errMsg(e, '加载 Judge 任务失败')))
+      .finally(() => setTasksReady(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tenantId]);
+
+  useEffect(() => {
+    if (pageMode !== 'create' || !tenantId) return;
+    if ((runs && runs.length > 0) && (sourceTasks && sourceTasks.length > 0)) return;
+    loadCreateDeps(tenantId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageMode, tenantId]);
 
   useEffect(() => {
     if (!tenantId) return undefined;
@@ -455,8 +485,25 @@ export default function JudgeTaskPage() {
               />
               <Button type="primary" onClick={() => { setQueryKeyword(taskKeyword.trim()); setQueryStatus(taskStatusFilter); }}>查询</Button>
               <Button onClick={() => { setTaskKeyword(''); setTaskStatusFilter(''); setQueryKeyword(''); setQueryStatus(''); }}>重置</Button>
-              <Button onClick={() => loadAll(tenantId)}>刷新列表</Button>
-              <Button type="primary" onClick={() => setPageMode('create')}>新建Judge任务</Button>
+              <Button
+                onClick={() => {
+                  setTasksReady(false);
+                  loadTasks(tenantId, { showLoading: true })
+                    .catch((e) => message.error(errMsg(e, '加载 Judge 任务失败')))
+                    .finally(() => setTasksReady(true));
+                }}
+              >
+                刷新列表
+              </Button>
+              <Button
+                type="primary"
+                onClick={async () => {
+                  setPageMode('create');
+                  await loadCreateDeps(tenantId);
+                }}
+              >
+                新建Judge任务
+              </Button>
             </Space>
           </Card>
           <Card>
@@ -464,7 +511,7 @@ export default function JudgeTaskPage() {
               rowKey={(r) => String(r?.task_id || '')}
               columns={taskColumns}
               dataSource={filteredTasks}
-              loading={loading}
+              loading={loading || (!!tenantId && !tasksReady)}
               size="small"
               pagination={{ pageSize: 12, showSizeChanger: false }}
               scroll={{ x: 1500 }}
@@ -478,6 +525,11 @@ export default function JudgeTaskPage() {
           <Typography.Paragraph type="secondary">
             同一城市任务会自动串行排队；切换城市不会清空已创建队列。
           </Typography.Paragraph>
+          {createDepsLoading ? (
+            <Typography.Paragraph type="secondary" style={{ marginTop: -8 }}>
+              正在加载 Run 与出题任务列表...
+            </Typography.Paragraph>
+          ) : null}
           <Form form={form} layout="vertical" onFinish={onSubmit}>
             <Form.Item name="task_name" label="任务名称" rules={[{ required: true, whitespace: true, message: '请输入任务名称' }]}>
               <Input placeholder="例如：北京-3月批量Judge-第1批" style={{ width: 420 }} />

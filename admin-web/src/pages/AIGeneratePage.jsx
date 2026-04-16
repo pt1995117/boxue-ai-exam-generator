@@ -1107,7 +1107,7 @@ export default function AIGeneratePage() {
       title: '操作',
       width: 200,
       render: (_, r) => (
-        <Space size={8}>
+        <Space size={8} wrap>
           <Button
             size="small"
             onClick={() => navigate(`/ai-generate/tasks/${encodeURIComponent(String(r?.task_id || ''))}`)}
@@ -1256,6 +1256,7 @@ export default function AIGeneratePage() {
               size="small"
               columns={taskColumns}
               dataSource={filteredTaskItems}
+              scroll={{ x: 1360 }}
               pagination={{ pageSize: 8, showSizeChanger: false }}
             />
           </Card>

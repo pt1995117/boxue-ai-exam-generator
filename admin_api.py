@@ -2285,12 +2285,22 @@ def _record_slice_generation_failure(
     current = bucket.get(key) if isinstance(bucket.get(key), dict) else {}
     fail_types, error_content = _extract_critic_issue_record(critic_result if isinstance(critic_result, dict) else {})
     failure_count = int(current.get("failure_count", 0) or 0) + 1
-    blocked = failure_count > 10
+    manual_blocked = bool(current.get("manual_blocked"))
+    manual_reason = str(current.get("blocked_reason", "") or "").strip()
+    auto_blocked = failure_count > 10
+    blocked = manual_blocked or auto_blocked
+    blocked_reason = (
+        manual_reason
+        if manual_blocked
+        else ("该切片累计非白名单失败超过10次，修改前禁止继续出题" if auto_blocked else "")
+    )
     bucket[key] = {
         "slice_id": int(slice_id),
         "failure_count": failure_count,
         "blocked": blocked,
-        "blocked_reason": "该切片累计非白名单失败超过10次，修改前禁止继续出题" if blocked else "",
+        "blocked_reason": blocked_reason,
+        "manual_blocked": manual_blocked,
+        "block_source": "manual" if manual_blocked else ("auto" if auto_blocked else ""),
         "last_fail_types": fail_types,
         "last_error_content": error_content,
         "last_task_id": str(task_id or ""),
@@ -3125,12 +3135,18 @@ def _reset_slice_generation_health_for_material(
         key = str(int(sid))
         if key not in bucket:
             continue
+        current = bucket.get(key) if isinstance(bucket.get(key), dict) else {}
+        # 手工禁用是显式业务决策，不应在切片内容/图片改动时自动解除。
+        if bool(current.get("manual_blocked")):
+            continue
         changed = True
         bucket[key] = {
             "slice_id": int(sid),
             "failure_count": 0,
             "blocked": False,
             "blocked_reason": "",
+            "manual_blocked": False,
+            "block_source": "",
             "last_fail_types": [],
             "last_error_content": "",
             "last_task_id": "",
@@ -3142,11 +3158,48 @@ def _reset_slice_generation_health_for_material(
         _save_material_bucket(path, material_version_id, bucket)
 
 
+def _set_slice_generation_manual_block_for_material(
+    tenant_id: str,
+    material_version_id: str,
+    *,
+    slice_id: int,
+    blocker: str,
+    reason: str,
+) -> dict[str, Any]:
+    path = _slice_generation_health_file_by_material(tenant_id)
+    bucket = _load_material_bucket(path, material_version_id)
+    key = str(int(slice_id))
+    current = bucket.get(key) if isinstance(bucket.get(key), dict) else {}
+    now = datetime.now(timezone.utc).isoformat()
+    next_reason = str(reason or "").strip() or "该切片已被手工标记为禁止出题"
+    bucket[key] = {
+        "slice_id": int(slice_id),
+        "failure_count": int(current.get("failure_count", 0) or 0),
+        "blocked": True,
+        "blocked_reason": next_reason,
+        "manual_blocked": True,
+        "block_source": "manual",
+        "last_fail_types": [str(x) for x in (current.get("last_fail_types") or []) if str(x).strip()],
+        "last_error_content": str(current.get("last_error_content", "") or ""),
+        "last_task_id": str(current.get("last_task_id", "") or ""),
+        "last_run_id": str(current.get("last_run_id", "") or ""),
+        "updated_at": now,
+        "blocked_at": now,
+        "blocked_by": str(blocker or ""),
+    }
+    _save_material_bucket(path, material_version_id, bucket)
+    return dict(bucket[key])
+
+
 def _blocked_slice_ids_for_material(tenant_id: str, material_version_id: str) -> set[int]:
     bucket = _load_slice_generation_health_for_material(tenant_id, material_version_id)
     out: set[int] = set()
     for k, v in bucket.items():
-        if not (str(k).isdigit() and isinstance(v, dict) and bool(v.get("blocked"))):
+        if not (
+            str(k).isdigit()
+            and isinstance(v, dict)
+            and (bool(v.get("blocked")) or bool(v.get("manual_blocked")))
+        ):
             continue
         try:
             out.add(int(k))
@@ -8195,6 +8248,51 @@ def _run_material_mapping_job_worker(
             "--output",
             str(output_path),
         ]
+        dep_check_cmd = [
+            sys.executable,
+            "-c",
+            "import flask, pandas, jieba, sentence_transformers, openpyxl, xlrd",
+        ]
+        dep_check = subprocess.run(
+            dep_check_cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent),
+        )
+        if dep_check.returncode != 0:
+            err_text = (
+                "映射依赖缺失，请检查 Python 环境（flask/pandas/jieba/sentence-transformers/openpyxl/xlrd）："
+                f" {(dep_check.stderr or dep_check.stdout or '').strip()[:400]}"
+            )
+            upsert_material_runtime(
+                tenant_id,
+                material_version_id,
+                mapping_status="failed",
+                mapping_error=err_text,
+            )
+            _update_mapping_job(
+                tenant_id,
+                material_version_id,
+                {
+                    "status": "failed",
+                    "progress": 100,
+                    "message": err_text,
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            _append_mapping_progress_event(
+                tenant_id,
+                material_version_id,
+                status="failed",
+                progress=100,
+                message=err_text,
+            )
+            return
+
+        env = os.environ.copy()
+        # Mapping must use the bundled local BGE model only on remote hosts.
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -8203,6 +8301,7 @@ def _run_material_mapping_job_worker(
             errors="replace",
             bufsize=1,
             cwd=str(Path(__file__).resolve().parent),
+            env=env,
         )
         last_progress = 5
         output_tail: list[str] = []
@@ -10433,6 +10532,7 @@ def api_slices(tenant_id: str):
             full_content = _extract_slice_text(s)
             image_items = _extract_slice_images(s)
             health = generation_health.get(str(i), {}) if isinstance(generation_health.get(str(i)), dict) else {}
+            generation_blocked = bool(health.get("blocked") or health.get("manual_blocked"))
             items.append(
                 {
                     'slice_id': i,
@@ -10446,7 +10546,7 @@ def api_slices(tenant_id: str):
                     'material_version_id': material_version_id,
                     'is_calculation_slice': _is_calculation_slice(s),
                     'generation_failure_count': int(health.get("failure_count", 0) or 0),
-                    'generation_blocked': bool(health.get("blocked")),
+                    'generation_blocked': generation_blocked,
                     'generation_block_reason': str(health.get("blocked_reason", "") or ""),
                     'generation_last_fail_types': [str(x) for x in (health.get("last_fail_types") or []) if str(x).strip()],
                     'generation_last_error_content': str(health.get("last_error_content", "") or ""),
@@ -10770,6 +10870,60 @@ def api_slice_update(tenant_id: str, slice_id: int):
         after={'slice_content': new_content[:200], 'material_version_id': material_version_id},
     )
     return _json_response({'ok': True, 'slice_id': slice_id, 'material_version_id': material_version_id})
+
+
+@app.post('/api/<tenant_id>/slices/<int:slice_id>/generation/block')
+def api_slice_generation_block(tenant_id: str, slice_id: int):
+    try:
+        system_user = _get_system_user()
+        _check_tenant_permission(tenant_id, "slice.review")
+    except PermissionError as e:
+        return _error(str(e), "无权限禁用切片出题", 403)
+
+    body = request.get_json(silent=True) or {}
+    requested_material_version_id = str(body.get('material_version_id', '')).strip()
+    reason = str(body.get('reason', '')).strip()
+    material_version_id = _resolve_material_version_id(tenant_id, requested_material_version_id)
+    if requested_material_version_id and not material_version_id:
+        return _error("MATERIAL_NOT_FOUND", "教材版本不存在", 404)
+    if not material_version_id:
+        return _error("MATERIAL_NOT_FOUND", "当前城市暂无教材版本", 400)
+
+    kb_file = _resolve_slice_file_for_material(tenant_id, material_version_id)
+    if not kb_file:
+        return _error("SLICE_FILE_NOT_FOUND", "切片文件不存在", 404)
+    kb_items = _load_kb_items_from_file(kb_file)
+    if slice_id < 0 or slice_id >= len(kb_items):
+        return _error("SLICE_NOT_FOUND", "切片不存在", 404)
+    if _is_slice_deleted(kb_items[slice_id]):
+        return _error("SLICE_NOT_FOUND", "切片不存在", 404)
+
+    health = _set_slice_generation_manual_block_for_material(
+        tenant_id,
+        material_version_id,
+        slice_id=slice_id,
+        blocker=system_user,
+        reason=reason,
+    )
+    write_audit_log(
+        tenant_id,
+        system_user,
+        'slice.generation.block',
+        'slice_item',
+        str(slice_id),
+        after={
+            'blocked': True,
+            'blocked_reason': str(health.get('blocked_reason', '') or ''),
+            'material_version_id': material_version_id,
+        },
+    )
+    return _json_response({
+        'ok': True,
+        'slice_id': slice_id,
+        'material_version_id': material_version_id,
+        'generation_blocked': True,
+        'generation_block_reason': str(health.get('blocked_reason', '') or ''),
+    })
 
 
 @app.post('/api/<tenant_id>/slices/<int:slice_id>/images/update')
@@ -11827,7 +11981,6 @@ def api_upload_reference_and_map(tenant_id: str, material_version_id: str):
         mapping_error="",
     )
     _mapping_progress_file_for_material(tenant_id, target).unlink(missing_ok=True)
-    _delete_material_bucket(_mapping_review_file_by_material(tenant_id), target)
     _delete_material_bucket(_mapping_review_file_by_material(tenant_id), target)
     mapping_dir = tenant_root(tenant_id) / "mapping"
     mapping_dir.mkdir(parents=True, exist_ok=True)
@@ -17428,6 +17581,22 @@ def api_qa_runs(tenant_id: str):
         success_only=success_only,
         target_count=target_count,
     )
+    # Build run->(task_id, task_name) lookup once to avoid O(runs * tasks) rescans.
+    run_task_lookup: dict[str, tuple[str, str]] = {}
+    latest_task_rows = list(_latest_gen_task_rows(tenant_id, allow_full_fallback=True).values())
+    latest_task_rows.sort(key=lambda x: str(x.get("updated_at", "") or x.get("created_at", "")))
+    for row in reversed(latest_task_rows):
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("run_id", "") or "").strip()
+        if not rid or rid.startswith("run_fail_") or rid in run_task_lookup:
+            continue
+        if str(row.get("status", "") or "").strip().lower() != "completed":
+            continue
+        run_task_lookup[rid] = (
+            str(row.get("task_id", "") or "").strip(),
+            str(row.get("task_name", "") or "").strip(),
+        )
     latest_judge_by_run = _load_latest_judge_task_by_run(tenant_id)
     items: list[dict[str, Any]] = []
     for r in runs:
@@ -17447,7 +17616,7 @@ def api_qa_runs(tenant_id: str):
         else:
             release_eligible_reason = ""
         run_id = r.get("run_id", "")
-        task_id, task_name = _get_task_id_and_name_by_run_id(tenant_id, run_id) if run_id else ("", "")
+        task_id, task_name = run_task_lookup.get(str(run_id or "").strip(), ("", "")) if run_id else ("", "")
         # Fallback to fields carried in run row (e.g. recovered runs from bank).
         if not str(task_id or "").strip():
             task_id = str(r.get("task_id", "") or "").strip()

@@ -15,9 +15,10 @@ NPM_BIN="$(whence -p npm || true)"
 
 resolve_python_bin() {
   local candidate=""
+  local dep_check='import flask, pandas, jieba, sentence_transformers, openpyxl, xlrd'
   for candidate in "${ROOT_DIR}/.venv/bin/python" "$(whence -p python3 || true)" "/usr/bin/python3"; do
     [[ -n "${candidate}" && -x "${candidate}" ]] || continue
-    if "${candidate}" -c "from flask import Flask" >/dev/null 2>&1; then
+    if "${candidate}" -c "${dep_check}" >/dev/null 2>&1; then
       echo "${candidate}"
       return 0
     fi
@@ -27,7 +28,8 @@ resolve_python_bin() {
 
 PYTHON_BIN="$(resolve_python_bin || true)"
 if [[ -z "${PYTHON_BIN}" ]]; then
-  echo "ERROR: No usable Python interpreter with Flask installed was found"
+  echo "ERROR: No usable Python interpreter with required mapping deps was found"
+  echo "       Required: flask, pandas, jieba, sentence-transformers, openpyxl, xlrd"
   exit 1
 fi
 if [[ -z "${NPM_BIN}" ]]; then NPM_BIN="/usr/bin/npm"; fi
@@ -138,6 +140,7 @@ cat > "${BACKEND_PLIST}" <<EOF
     <key>BOXUE_RUNTIME_DIR</key><string>${RUNTIME_DIR}</string>
     <key>BOXUE_CACHE_DIR</key><string>${CACHE_DIR}</string>
     <key>BOXUE_KEY_FILE</key><string>${KEY_FILE}</string>
+    <key>VITE_DISABLE_HMR</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

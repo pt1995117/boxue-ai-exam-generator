@@ -3,7 +3,7 @@ import { Alert, Button, Card, Col, Empty, Input, Modal, Popconfirm, Row, Select,
 import { MenuOutlined, SearchOutlined } from '@ant-design/icons';
 import { ReactFlow, Background, Controls, addEdge, applyEdgeChanges, applyNodeChanges } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { addSlice, batchReviewSlices, deleteSlice, exportSlicesExcel, fetchSliceImageBlob, getSliceImageUrl, getSlices, listMaterials, mergeSlices, reorderSlices, getSystemUser, updateSliceContent, updateSliceImageAnalysis } from '../services/api';
+import { addSlice, batchReviewSlices, blockSliceGeneration, deleteSlice, exportSlicesExcel, fetchSliceImageBlob, getSliceImageUrl, getSlices, listMaterials, mergeSlices, reorderSlices, getSystemUser, updateSliceContent, updateSliceImageAnalysis } from '../services/api';
 import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import MarkdownWithMermaid from '../components/MarkdownWithMermaid';
 
@@ -261,6 +261,7 @@ export default function SliceReviewPage() {
   const [savingImage, setSavingImage] = useState(false);
   const [merging, setMerging] = useState(false);
   const [deletingSliceId, setDeletingSliceId] = useState(null);
+  const [blockingSliceId, setBlockingSliceId] = useState(null);
   const [selectedTreePathPrefix, setSelectedTreePathPrefix] = useState('');
   const [selectedTreeLevel, setSelectedTreeLevel] = useState(0);
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -883,6 +884,25 @@ export default function SliceReviewPage() {
     }
   };
 
+  const onBlockSliceGeneration = async (row) => {
+    const sid = Number(row?.slice_id);
+    if (!tenantId || !Number.isFinite(sid)) return;
+    if (row?.generation_blocked) return;
+    setBlockingSliceId(sid);
+    try {
+      await blockSliceGeneration(tenantId, sid, {
+        material_version_id: materialVersionId || undefined,
+        reason: '人工标记禁止出题',
+      });
+      message.success(`切片 ${sid} 已禁止出题`);
+      await loadData();
+    } catch (e) {
+      message.error(e?.response?.data?.error?.message || '禁止出题失败');
+    } finally {
+      setBlockingSliceId(null);
+    }
+  };
+
   const onSaveImageAnalysis = async () => {
     if (!editingImage.open) return;
     const sliceId = editingImage.sliceId;
@@ -1402,6 +1422,23 @@ export default function SliceReviewPage() {
                                 disabled={deletingSliceId !== null && deletingSliceId !== sid}
                               >
                                 删除
+                              </Button>
+                            </Popconfirm>
+                            <Popconfirm
+                              title="确认禁止该切片继续出题？"
+                              description="禁止后该切片将无法继续出题（直到后续人工处理）。"
+                              okText="确认禁止"
+                              cancelText="取消"
+                              onConfirm={() => onBlockSliceGeneration(row)}
+                              disabled={row.generation_blocked}
+                            >
+                              <Button
+                                size="small"
+                                danger
+                                loading={blockingSliceId === sid}
+                                disabled={row.generation_blocked || (blockingSliceId !== null && blockingSliceId !== sid)}
+                              >
+                                {row.generation_blocked ? '已禁用出题' : '禁止出题'}
                               </Button>
                             </Popconfirm>
                             {row.review_status !== 'approved' && (

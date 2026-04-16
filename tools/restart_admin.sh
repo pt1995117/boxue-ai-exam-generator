@@ -11,9 +11,10 @@ NPM_BIN="$(command -v npm || true)"
 
 resolve_python_bin() {
   local candidate=""
+  local dep_check='import flask, pandas, jieba, sentence_transformers, openpyxl, xlrd'
   for candidate in "${ROOT_DIR}/.venv/bin/python" "$(command -v python3 || true)" "/usr/bin/python3"; do
     [[ -n "${candidate}" && -x "${candidate}" ]] || continue
-    if "${candidate}" -c "from flask import Flask" >/dev/null 2>&1; then
+    if "${candidate}" -c "${dep_check}" >/dev/null 2>&1; then
       echo "${candidate}"
       return 0
     fi
@@ -23,7 +24,8 @@ resolve_python_bin() {
 
 PYTHON_BIN="$(resolve_python_bin || true)"
 if [[ -z "${PYTHON_BIN}" ]]; then
-  echo "ERROR: No usable Python interpreter with Flask installed was found"
+  echo "ERROR: No usable Python interpreter with required mapping deps was found"
+  echo "       Required: flask, pandas, jieba, sentence-transformers, openpyxl, xlrd"
   exit 1
 fi
 if [[ -z "${NPM_BIN}" ]]; then
@@ -74,7 +76,8 @@ start_backend() {
 
 start_frontend() {
   cd "${ROOT_DIR}"
-  BOXUE_RUNTIME_DIR="${RUNTIME_DIR}" BOXUE_CACHE_DIR="${CACHE_DIR}" BOXUE_KEY_FILE="${KEY_FILE}" \
+  # Shared gateway access is unstable with Vite HMR; disable by default.
+  BOXUE_RUNTIME_DIR="${RUNTIME_DIR}" BOXUE_CACHE_DIR="${CACHE_DIR}" BOXUE_KEY_FILE="${KEY_FILE}" VITE_DISABLE_HMR=1 \
     nohup "${NPM_BIN}" --prefix admin-web run dev -- --host 127.0.0.1 --port "${FRONTEND_PORT}" >"${FRONTEND_LOG}" 2>&1 &
   echo $! >"${FRONTEND_PID_FILE}"
 }
