@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, List
@@ -75,7 +76,22 @@ def tenant_mapping_review_path(tenant_id: str) -> Path:
 
 
 def tenant_bank_path(tenant_id: str) -> Path:
-    return ensure_tenant_dirs(tenant_id) / "bank" / "local_question_bank.jsonl"
+    runtime_path = ensure_tenant_dirs(tenant_id) / "bank" / "local_question_bank.jsonl"
+    legacy_path = repo_tenant_data_dir(tenant_id) / "bank" / "local_question_bank.jsonl"
+    # Runtime-first migration: if runtime bank is missing/empty but legacy bank exists,
+    # bootstrap runtime from legacy so old data remains visible after switching to runtime dirs.
+    try:
+        runtime_size = runtime_path.stat().st_size if runtime_path.exists() else 0
+    except OSError:
+        runtime_size = 0
+    try:
+        legacy_size = legacy_path.stat().st_size if legacy_path.exists() else 0
+    except OSError:
+        legacy_size = 0
+    if runtime_size <= 0 and legacy_size > 0:
+        ensure_parent(runtime_path)
+        shutil.copy2(legacy_path, runtime_path)
+    return runtime_path
 
 
 def tenant_material_registry_path(tenant_id: str) -> Path:

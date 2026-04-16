@@ -7,7 +7,7 @@ import {
   listBankQuestions,
   listMaterials,
 } from '../services/api';
-import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
+import { getGlobalTenantId, setGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import QuestionDetailView from '../components/QuestionDetailView';
 
 export default function QuestionBankPage() {
@@ -26,6 +26,7 @@ export default function QuestionBankPage() {
   const [viewQuestionOpen, setViewQuestionOpen] = useState(false);
   const [viewQuestionRecord, setViewQuestionRecord] = useState(null);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
+  const [lastLoadedTotal, setLastLoadedTotal] = useState(0);
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
     const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
@@ -49,6 +50,7 @@ export default function QuestionBankPage() {
         pageSize: res.page_size || pageSize,
         total: res.total || 0,
       });
+      setLastLoadedTotal(Number(res.total || 0));
     } catch (e) {
       const apiMsg = e?.response?.data?.error?.message;
       const status = e?.response?.status;
@@ -254,6 +256,29 @@ export default function QuestionBankPage() {
 
   return (
     <div style={{ width: '100%', minWidth: 0 }}>
+      <Alert
+        style={{ marginBottom: 12 }}
+        type={lastLoadedTotal > 0 ? 'success' : 'warning'}
+        showIcon
+        message={`当前城市：${tenantId || '-'}；当前查询总数：${lastLoadedTotal}`}
+        description={lastLoadedTotal > 0 ? '题库数据已加载。' : '当前城市/筛选下暂无结果。'}
+        action={tenantId !== 'sh' ? (
+          <Button
+            size="small"
+            onClick={() => {
+              setGlobalTenantId('sh');
+              setTenantId('sh');
+              setMaterialVersionId('__all__');
+              setKeyword('');
+              setTemplateRole('all');
+              setTemplateRoutePrefix('');
+              setTemplateMastery('');
+            }}
+          >
+            切到上海重试
+          </Button>
+        ) : null}
+      />
       <Space className="toolbar" wrap>
         <Select
           value={materialVersionId}

@@ -80,6 +80,9 @@ export const updateSliceContent = (tenantId, sliceId, payload) =>
 export const updateSliceImageAnalysis = (tenantId, sliceId, payload) =>
   client.post(`/${tenantId}/slices/${encodeURIComponent(sliceId)}/images/update`, payload).then((r) => r.data);
 
+export const blockSliceGeneration = (tenantId, sliceId, payload) =>
+  client.post(`/${tenantId}/slices/${encodeURIComponent(sliceId)}/generation/block`, payload).then((r) => r.data);
+
 export const addSlice = (tenantId, payload) =>
   client.post(`/${tenantId}/slices/add`, payload).then((r) => r.data);
 
@@ -105,7 +108,7 @@ export const getQaOverview = (tenantId, params) =>
   client.get(`/${tenantId}/qa/overview`, { params }).then((r) => r.data);
 
 export const listQaRuns = (tenantId, params) =>
-  client.get(`/${tenantId}/qa/runs`, { params }).then((r) => r.data);
+  client.get(`/${tenantId}/qa/runs`, { params, timeout: 120000 }).then((r) => r.data);
 
 // Backward-compatible alias used by JudgeTaskPage.
 export const listQaRunsQuick = (tenantId, params = {}) => {

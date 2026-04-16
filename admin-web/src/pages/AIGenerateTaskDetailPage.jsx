@@ -715,9 +715,9 @@ export default function AIGenerateTaskDetailPage() {
     const requestedTotal = Number(task?.request?.num_questions || 0);
     const rawTotal = Number(task?.progress?.total || 0);
     const total = Math.max(rawTotal, requestedTotal);
-    const current = taskMetrics.saved_count;
+    const current = Number(task?.saved_count || 0);
     return { current, total };
-  }, [task?.progress?.total, task?.request?.num_questions, taskMetrics.saved_count]);
+  }, [task?.progress?.total, task?.request?.num_questions, task?.saved_count]);
 
   const passedQuestionLabel = useMemo(() => {
     const passed = Number(task?.saved_count || 0);
