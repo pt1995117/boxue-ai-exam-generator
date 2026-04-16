@@ -1,12 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { Alert, Button, Card, Input, Tag, message, Modal, Popconfirm, Select, Space, Table } from 'antd';
-import { deleteBankQuestions, exportBankQuestions, listBankQuestions, listMaterials } from '../services/api';
-import { getGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
+import { useNavigate } from 'react-router-dom';
+import {
+  deleteBankQuestions,
+  exportBankQuestions,
+  listBankQuestions,
+  listMaterials,
+} from '../services/api';
+import { getGlobalTenantId, setGlobalTenantId, subscribeGlobalTenant } from '../services/tenantScope';
 import QuestionDetailView from '../components/QuestionDetailView';
 
 export default function QuestionBankPage() {
+  const navigate = useNavigate();
   const [tenantId, setTenantId] = useState(getGlobalTenantId());
   const [keyword, setKeyword] = useState('');
+  const [templateRole, setTemplateRole] = useState('all');
+  const [templateRoutePrefix, setTemplateRoutePrefix] = useState('');
+  const [templateMastery, setTemplateMastery] = useState('');
   const [materials, setMaterials] = useState([]);
   const [materialVersionId, setMaterialVersionId] = useState('__all__');
   const [loading, setLoading] = useState(false);
@@ -16,6 +26,7 @@ export default function QuestionBankPage() {
   const [viewQuestionOpen, setViewQuestionOpen] = useState(false);
   const [viewQuestionRecord, setViewQuestionRecord] = useState(null);
   const [pagination, setPagination] = useState({ current: 1, pageSize: 50, total: 0 });
+  const [lastLoadedTotal, setLastLoadedTotal] = useState(0);
   const materialLabel = (m) => {
     const raw = String(m?.file_path || '').split('/').pop() || '';
     const name = raw.replace(/^v\d{8}_\d{6}_/, '') || raw || m?.material_version_id;
@@ -27,6 +38,10 @@ export default function QuestionBankPage() {
     setLoading(true);
     try {
       const params = { page, page_size: pageSize, keyword };
+      if (templateRole === 'formal') params.template_official = 1;
+      if (templateRole === 'backup') params.template_backup = 1;
+      if (templateRoutePrefix.trim()) params.template_route_prefix = templateRoutePrefix.trim();
+      if (templateMastery.trim()) params.template_mastery = templateMastery.trim();
       if (materialVersionId) params.material_version_id = materialVersionId;
       const res = await listBankQuestions(tenantId, params);
       setRows(res.items || []);
@@ -35,6 +50,7 @@ export default function QuestionBankPage() {
         pageSize: res.page_size || pageSize,
         total: res.total || 0,
       });
+      setLastLoadedTotal(Number(res.total || 0));
     } catch (e) {
       const apiMsg = e?.response?.data?.error?.message;
       const status = e?.response?.status;
@@ -84,7 +100,10 @@ export default function QuestionBankPage() {
     }
     setExporting(true);
     try {
-      const blob = await exportBankQuestions(tenantId, { question_ids: selectedRowKeys });
+      const blob = await exportBankQuestions(tenantId, {
+        question_ids: selectedRowKeys,
+        only_template_official: true,
+      });
       const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
       const filename = `${tenantId}_题库导出_${ts}.xlsx`;
       const url = window.URL.createObjectURL(blob);
@@ -93,7 +112,7 @@ export default function QuestionBankPage() {
       a.download = filename;
       a.click();
       window.URL.revokeObjectURL(url);
-      message.success(`导出成功（${selectedRowKeys.length}题）`);
+      message.success(`导出成功（按模板正式题过滤，已选${selectedRowKeys.length}题）`);
     } catch (e) {
       message.error(e?.response?.data?.error?.message || '导出失败');
     } finally {
@@ -114,9 +133,11 @@ export default function QuestionBankPage() {
     return score.toFixed(2);
   };
 
+  const TABLE_SCROLL_X = 2800;
+
   const columns = [
     { title: 'ID', dataIndex: 'question_id', width: 90 },
-    { title: '题干', dataIndex: '题干', ellipsis: true },
+    { title: '题干', dataIndex: '题干', ellipsis: true, width: 320 },
     { title: '答案', dataIndex: '正确答案', width: 100 },
     {
       title: '出题任务',
@@ -124,6 +145,32 @@ export default function QuestionBankPage() {
       width: 220,
       ellipsis: true,
       render: (_, record) => record?.source_task_name || record?.出题任务名称 || record?.source_task_id || record?.出题任务ID || '-',
+    },
+    {
+      title: '模板身份',
+      dataIndex: '模板正式题',
+      width: 120,
+      render: (_, record) => {
+        const isFormal = Boolean(record?.模板正式题);
+        const isBackup = Boolean(record?.模板备选题);
+        if (isFormal) return <Tag color="green">正式题</Tag>;
+        if (isBackup) return <Tag color="orange">备选题</Tag>;
+        return <Tag>普通题</Tag>;
+      },
+    },
+    { title: '模板位次', dataIndex: '模板目标位次', width: 100, render: (v) => v || '-' },
+    {
+      title: '模板路由前缀',
+      dataIndex: '模板路由前缀',
+      width: 220,
+      ellipsis: true,
+      render: (_, record) => record?.模板路由前缀 || record?.模板路由 || '-',
+    },
+    {
+      title: '模板掌握程度',
+      dataIndex: '模板掌握程度',
+      width: 120,
+      render: (_, record) => record?.模板掌握程度 || record?.模板掌握度 || '-',
     },
     {
       title: '最终分',
@@ -175,9 +222,24 @@ export default function QuestionBankPage() {
     { title: '教材版本', dataIndex: '教材版本ID', width: 170, render: (v) => v || 'legacy' },
     { title: '来源路径', dataIndex: '来源路径', ellipsis: true, width: 320 },
     {
+      title: '调优',
+      dataIndex: '_tune',
+      width: 90,
+      fixed: 'right',
+      render: (_, record) => (
+        <Button
+          size="small"
+          onClick={() => navigate(`/question-bank/${encodeURIComponent(String(record?.question_id || ''))}/tune`, { state: { question: record } })}
+        >
+          调优
+        </Button>
+      ),
+    },
+    {
       title: '查看',
       dataIndex: '_view',
       width: 90,
+      fixed: 'right',
       render: (_, record) => (
         <Button
           size="small"
@@ -193,7 +255,30 @@ export default function QuestionBankPage() {
   ];
 
   return (
-    <>
+    <div style={{ width: '100%', minWidth: 0 }}>
+      <Alert
+        style={{ marginBottom: 12 }}
+        type={lastLoadedTotal > 0 ? 'success' : 'warning'}
+        showIcon
+        message={`当前城市：${tenantId || '-'}；当前查询总数：${lastLoadedTotal}`}
+        description={lastLoadedTotal > 0 ? '题库数据已加载。' : '当前城市/筛选下暂无结果。'}
+        action={tenantId !== 'sh' ? (
+          <Button
+            size="small"
+            onClick={() => {
+              setGlobalTenantId('sh');
+              setTenantId('sh');
+              setMaterialVersionId('__all__');
+              setKeyword('');
+              setTemplateRole('all');
+              setTemplateRoutePrefix('');
+              setTemplateMastery('');
+            }}
+          >
+            切到上海重试
+          </Button>
+        ) : null}
+      />
       <Space className="toolbar" wrap>
         <Select
           value={materialVersionId}
@@ -212,6 +297,33 @@ export default function QuestionBankPage() {
           style={{ width: 260 }}
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
+        />
+        <Select
+          value={templateRole}
+          style={{ width: 140 }}
+          onChange={setTemplateRole}
+          options={[
+            { label: '全部身份', value: 'all' },
+            { label: '仅正式题', value: 'formal' },
+            { label: '仅备选题', value: 'backup' },
+          ]}
+        />
+        <Input
+          placeholder="模板路由前缀"
+          style={{ width: 220 }}
+          value={templateRoutePrefix}
+          onChange={(e) => setTemplateRoutePrefix(e.target.value)}
+        />
+        <Select
+          value={templateMastery}
+          style={{ width: 140 }}
+          onChange={setTemplateMastery}
+          options={[
+            { label: '全部掌握程度', value: '' },
+            { label: '了解', value: '了解' },
+            { label: '熟悉', value: '熟悉' },
+            { label: '掌握', value: '掌握' },
+          ]}
         />
         <Button type="primary" onClick={onSearch}>查询</Button>
       </Space>
@@ -232,6 +344,8 @@ export default function QuestionBankPage() {
           loading={loading}
           columns={columns}
           dataSource={rows}
+          tableLayout="fixed"
+          scroll={{ x: TABLE_SCROLL_X }}
           rowSelection={{ selectedRowKeys, onChange: setSelectedRowKeys, preserveSelectedRowKeys: true }}
           pagination={{
             current: pagination.current,
@@ -255,6 +369,6 @@ export default function QuestionBankPage() {
       >
         <QuestionDetailView question={viewQuestionRecord || {}} />
       </Modal>
-    </>
+    </div>
   );
 }

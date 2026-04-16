@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME_DIR="${BOXUE_RUNTIME_DIR:-${ROOT_DIR}/.local/runtime}"
+CACHE_DIR="${BOXUE_CACHE_DIR:-${ROOT_DIR}/.local/cache}"
 UID_NUM="$(id -u)"
 GUI_DOMAIN="gui/${UID_NUM}"
 LAUNCH_PATH="/opt/homebrew/bin:/Users/panting/miniconda3/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -13,9 +15,10 @@ NPM_BIN="$(whence -p npm || true)"
 
 resolve_python_bin() {
   local candidate=""
+  local dep_check='import flask, pandas, jieba, sentence_transformers, openpyxl, xlrd'
   for candidate in "${ROOT_DIR}/.venv/bin/python" "$(whence -p python3 || true)" "/usr/bin/python3"; do
     [[ -n "${candidate}" && -x "${candidate}" ]] || continue
-    if "${candidate}" -c "from flask import Flask" >/dev/null 2>&1; then
+    if "${candidate}" -c "${dep_check}" >/dev/null 2>&1; then
       echo "${candidate}"
       return 0
     fi
@@ -25,7 +28,8 @@ resolve_python_bin() {
 
 PYTHON_BIN="$(resolve_python_bin || true)"
 if [[ -z "${PYTHON_BIN}" ]]; then
-  echo "ERROR: No usable Python interpreter with Flask installed was found"
+  echo "ERROR: No usable Python interpreter with required mapping deps was found"
+  echo "       Required: flask, pandas, jieba, sentence-transformers, openpyxl, xlrd"
   exit 1
 fi
 if [[ -z "${NPM_BIN}" ]]; then NPM_BIN="/usr/bin/npm"; fi
@@ -37,15 +41,15 @@ FRONTEND_PLIST="${HOME}/Library/LaunchAgents/${FRONTEND_LABEL}.plist"
 
 BACKEND_LOG="/tmp/admin_api_8600.log"
 FRONTEND_LOG="/tmp/admin_web_${FRONTEND_PORT}.log"
-KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
+KEY_FILE="${BOXUE_KEY_FILE:-${RUNTIME_DIR}/config/填写您的Key.txt}"
 
 mkdir -p "${HOME}/Library/LaunchAgents"
 
 ensure_key_file_exists() {
+  mkdir -p "$(dirname "${KEY_FILE}")" "${CACHE_DIR}"
   if [[ ! -f "${KEY_FILE}" ]]; then
-    echo "ERROR: 缺少 ${KEY_FILE}，部署要求必须提供该文件。"
-    echo "请先从 填写您的Key.txt.example 复制并填写有效 Key 后重试。"
-    exit 1
+    echo "WARN: 缺少 ${KEY_FILE}，将自动创建空文件。可在管理后台【全局Key配置】中填写。"
+    : > "${KEY_FILE}"
   fi
   chmod 600 "${KEY_FILE}" 2>/dev/null || true
 }
@@ -133,6 +137,10 @@ cat > "${BACKEND_PLIST}" <<EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>${LAUNCH_PATH}</string>
+    <key>BOXUE_RUNTIME_DIR</key><string>${RUNTIME_DIR}</string>
+    <key>BOXUE_CACHE_DIR</key><string>${CACHE_DIR}</string>
+    <key>BOXUE_KEY_FILE</key><string>${KEY_FILE}</string>
+    <key>VITE_DISABLE_HMR</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -165,6 +173,9 @@ cat > "${FRONTEND_PLIST}" <<EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>${LAUNCH_PATH}</string>
+    <key>BOXUE_RUNTIME_DIR</key><string>${RUNTIME_DIR}</string>
+    <key>BOXUE_CACHE_DIR</key><string>${CACHE_DIR}</string>
+    <key>BOXUE_KEY_FILE</key><string>${KEY_FILE}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -234,3 +245,6 @@ echo ""
 echo "Logs:"
 echo "  ${BACKEND_LOG}"
 echo "  ${FRONTEND_LOG}"
+echo "Runtime Dir: ${RUNTIME_DIR}"
+echo "Cache Dir:   ${CACHE_DIR}"
+echo "Key File:    ${KEY_FILE}"

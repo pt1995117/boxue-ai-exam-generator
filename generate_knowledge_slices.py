@@ -19,6 +19,7 @@ from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.text.paragraph import Paragraph
 from tenants_config import tenant_slices_dir
+from runtime_paths import load_primary_key_config
 
 # Optional BGE embedding for sub-slicing under level-5 routes
 try:
@@ -54,15 +55,7 @@ except ImportError:
         generate_content = None
 
 def load_config():
-    config = {}
-    cfg_path = os.path.join(os.path.dirname(__file__) or '.', '填写您的Key.txt')
-    if os.path.isfile(cfg_path):
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if '=' in line and not line.strip().startswith('#'):
-                    k, v = line.split('=', 1)
-                    config[k.strip()] = v.strip()
-    return config
+    return load_primary_key_config()
 
 # --- Image Handling ---
 

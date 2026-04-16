@@ -17,18 +17,11 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from openai import OpenAI
 from volcenginesdkarkruntime import Ark
+from runtime_paths import load_primary_key_config
 
 def load_config():
     """加载配置文件"""
-    config = {}
-    cfg_path = os.path.join(os.path.dirname(__file__) or '.', '填写您的Key.txt')
-    if os.path.isfile(cfg_path):
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if '=' in line and not line.strip().startswith('#'):
-                    k, v = line.split('=', 1)
-                    config[k.strip()] = v.strip()
-    return config
+    return load_primary_key_config()
 
 def image_to_base64(image_path: str) -> str:
     """将图片转换为 base64 编码"""

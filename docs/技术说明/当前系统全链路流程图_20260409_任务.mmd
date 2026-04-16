@@ -1,0 +1,42 @@
+flowchart TD
+  A["创建任务<br/>/generate/tasks"] --> B["任务快照 pending"]
+  B --> C["进入 running"]
+
+  C --> D{"任务类型"}
+  D -->|"普通任务"| E["按 slice_ids / 范围出题"]
+  D -->|"模板任务"| F["模板规划<br/>route_rules + mastery_ratio<br/>planned_slots"]
+
+  F --> G["模板可达成性检查<br/>路由桶<br/>掌握度桶<br/>组合桶"]
+  G -->|"失败"| H["任务 failed<br/>返回缺口信息"]
+  G -->|"通过"| I["按模板槽位执行"]
+  E --> J["单题生成循环"]
+  I --> J
+
+  J --> K["Router / Specialist / Writer / Critic / Fixer<br/>内部多轮尝试"]
+  K --> L{"Critic 结果"}
+  L -->|"通过"| M["final_json 落入 process_trace"]
+  L -->|"驳回"| N["同题位重试 / 换切片 / 修复"]
+  N --> K
+
+  M --> O{"是否允许入库"}
+  O -->|"标准通过"| P["saved = true"]
+  O -->|"白名单通过"| Q["saved_with_issues = true"]
+  O -->|"未通过"| R["记录失败原因"]
+
+  P --> S["更新 generated_count / saved_count"]
+  Q --> S
+  R --> S
+
+  S --> T{"任务是否完成"}
+  T -->|"否"| J
+  T -->|"是"| U["completed / failed / cancelled"]
+
+  U --> V["生成 qa run<br/>batch_metrics<br/>llm_calls<br/>cost_summary"]
+  U --> W["任务详情页展示<br/>target_index<br/>trace_id<br/>critic_result<br/>repair_rounds<br/>live_subtask_traces"]
+
+  U --> X{"是否需要续跑"}
+  X -->|"普通任务"| Y["按剩余题量 resume"]
+  X -->|"模板任务"| Z["按缺失 target_index<br/>重建模板缺口"]
+  Y --> B
+  Z --> B
+

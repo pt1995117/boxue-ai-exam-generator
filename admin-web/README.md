@@ -18,13 +18,7 @@
 当前环境若无外网，`npm install` 会失败。请在可访问 npm 的环境执行：
 
 ```bash
-npm --prefix admin-web ci
-```
-
-建议固定 Node 版本为 20.x（项目根目录提供 `.nvmrc`）：
-
-```bash
-nvm use
+npm --prefix admin-web install
 ```
 
 ## 启动
@@ -41,7 +35,12 @@ python admin_api.py
 npm --prefix admin-web run dev
 ```
 
-默认前端端口：`8520`，已代理 `/api` 到 `http://127.0.0.1:8600`。
+默认前端端口：`8522`，已代理 `/api` 到 `http://127.0.0.1:8600`。
+
+说明：
+
+- Vite 缓存默认写入项目根目录下的 `.local/cache/admin-web/vite/`
+- 该目录已被 Git 忽略，用于避免前端开发缓存污染工作区
 
 ## 已实现 API
 

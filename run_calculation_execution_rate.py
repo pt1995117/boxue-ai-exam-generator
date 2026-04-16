@@ -7,6 +7,7 @@
 """
 import os
 import sys
+from runtime_paths import load_primary_key_config
 
 # 计算相关关键词，用于从知识库筛选用以跑测的 chunk
 CALC_KEYWORDS = [
@@ -38,14 +39,7 @@ def main():
     print("="*70)
 
     # 配置
-    config = {}
-    cfg_path = os.path.join(os.path.dirname(__file__) or '.', '填写您的Key.txt')
-    if os.path.isfile(cfg_path):
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if '=' in line and not line.startswith('#'):
-                    k, v = line.split('=', 1)
-                    config[k.strip()] = v.strip()
+    config = load_primary_key_config()
 
     from exam_factory import KnowledgeRetriever, KB_PATH, HISTORY_PATH
     from exam_graph import generate_content, parse_json_from_response, CALCULATION_GUIDE

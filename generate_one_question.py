@@ -5,6 +5,7 @@ import os
 import json
 import random
 import sys
+from runtime_paths import load_primary_key_config
 
 # Force UTF-8 output
 if sys.stdout.encoding != 'utf-8':
@@ -16,12 +17,7 @@ print("单题生成测试（可多次运行生成不同题目）")
 print("="*80)
 
 # Load config
-config = {}
-with open("填写您的Key.txt", 'r', encoding='utf-8') as f:
-    for line in f:
-        if "=" in line and not line.startswith("#"):
-            key, value = line.split("=", 1)
-            config[key.strip()] = value.strip()
+config = load_primary_key_config()
 
 from exam_factory import KnowledgeRetriever, KB_PATH, HISTORY_PATH
 from exam_graph import app as graph_app

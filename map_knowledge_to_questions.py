@@ -14,6 +14,7 @@ import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Tuple, Optional
 from tenants_config import resolve_tenant_kb_path, resolve_tenant_history_path, tenant_mapping_path
+from runtime_paths import load_primary_key_config
 
 # BGE embedding model - required, no fallback
 try:
@@ -83,16 +84,8 @@ SYNONYM_MAP = {
 }
 
 def load_config():
-    """Load API keys from config file."""
-    config = {}
-    cfg_path = os.path.join(os.path.dirname(__file__) or '.', '填写您的Key.txt')
-    if os.path.isfile(cfg_path):
-        with open(cfg_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                if '=' in line and not line.strip().startswith('#'):
-                    k, v = line.split('=', 1)
-                    config[k.strip()] = v.strip()
-    return config
+    """Load API keys from the unified primary key file."""
+    return load_primary_key_config()
 
 
 def _usable_key(v: str) -> bool:
@@ -295,6 +288,24 @@ def get_question_content_for_embedding(row):
 # Global BGE model instance
 _bge_model = None
 
+
+def _resolve_local_bge_model_dir() -> str:
+    """Resolve an on-disk BGE model directory that is already synced to the repo."""
+    base_dir = os.path.dirname(os.path.abspath(__file__)) or "."
+    local_root = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
+    snapshot_root = os.path.join(local_root, "models--BAAI--bge-small-zh-v1.5", "snapshots")
+    if os.path.isdir(snapshot_root):
+        for name in sorted(os.listdir(snapshot_root)):
+            candidate = os.path.join(snapshot_root, name)
+            if os.path.isfile(os.path.join(candidate, "config.json")):
+                return candidate
+    if os.path.isfile(os.path.join(local_root, "config.json")):
+        return local_root
+    raise RuntimeError(
+        "Local BGE model is missing. Expected under "
+        f"{local_root} (or snapshot dir). Please sync models/bge-small-zh-v1.5 to the remote host."
+    )
+
 def get_bge_model():
     """Get or initialize BGE model from a fixed local cache directory.
 
@@ -308,19 +319,17 @@ def get_bge_model():
                 "BGE embedding model is required but sentence-transformers is not installed!"
             )
         try:
-            base_dir = os.path.dirname(os.path.abspath(__file__)) or "."
-            local_cache = os.path.join(base_dir, "models", "bge-small-zh-v1.5")
-            print(f"Loading BGE model from local cache: {local_cache} ...")
+            local_model_dir = _resolve_local_bge_model_dir()
+            print(f"Loading BGE model from local path: {local_model_dir} ...")
             _bge_model = SentenceTransformer(
-                BGE_MODEL_NAME,
-                cache_folder=local_cache,
+                local_model_dir,
+                local_files_only=True,
             )
             print("BGE model loaded successfully")
         except Exception as e:
             raise RuntimeError(
-                "Failed to load BGE model from local cache. "
-                "Please ensure you have pre-downloaded 'BAAI/bge-small-zh-v1.5' "
-                "into ./models/bge-small-zh-v1.5. "
+                "Failed to load BGE model from local files only. "
+                "Please ensure remote host has models/bge-small-zh-v1.5 synced. "
                 f"Original error: {e}"
             )
     return _bge_model

@@ -1,3 +1,5 @@
+import contextvars
+import math
 import os
 import json
 import operator
@@ -8,6 +10,7 @@ import time
 import uuid
 from collections import Counter, defaultdict
 from pathlib import Path
+from datetime import datetime
 from typing import Annotated, List, Dict, Optional, TypedDict, Union, Any, Tuple
 from typing_extensions import TypedDict
 
@@ -49,6 +52,51 @@ from exam_factory import (
 )
 
 MAX_QUESTION_RETRY_ROUNDS = 3
+
+# 由 admin_api 在每题 graph.stream 前设置：整题墙钟内所有 call_llm 累计不得超过该预算。
+_QUESTION_WALL_CLOCK: contextvars.ContextVar[Optional[tuple[float, int]]] = contextvars.ContextVar(
+    "question_wall_clock",
+    default=None,
+)
+
+
+def attach_question_wall_clock_budget(*, started_at_utc: datetime, max_elapsed_ms: int) -> contextvars.Token:
+    """
+    绑定当前出题尝试的墙钟截止时间（started_at_utc + max_elapsed_ms）。
+    LangGraph 在两次 stream 事件之间可能长时间阻塞；在 call_llm 内按剩余时间收紧单次 HTTP timeout，并在耗尽时立即返回错误。
+    @param started_at_utc 本题尝试开始时间（建议 UTC 带 tz）
+    @param max_elapsed_ms 允许的最长墙钟毫秒（与 MAX_QUESTION_ELAPSED_MS 一致）
+    @returns contextvars.Token，须在 finally 中传入 detach_question_wall_clock_budget
+    """
+    ms = max(1, int(max_elapsed_ms or 0))
+    deadline = float(started_at_utc.timestamp()) + ms / 1000.0
+    return _QUESTION_WALL_CLOCK.set((deadline, ms))
+
+
+def detach_question_wall_clock_budget(token: Optional[contextvars.Token]) -> None:
+    """解除 attach_question_wall_clock_budget 设置的预算。"""
+    if token is not None:
+        _QUESTION_WALL_CLOCK.reset(token)
+
+
+def _question_wall_clock_cap_http_timeout(base_timeout_seconds: int) -> tuple[int, Optional[str]]:
+    """
+    按单题墙钟预算收紧本次 HTTP 调用的 timeout（秒）。
+    @param base_timeout_seconds 环境变量等推导出的基础超时
+    @returns (http_timeout_seconds, error_message)；error_message 非空表示预算已耗尽，应中止 call_llm
+    """
+    cap = _QUESTION_WALL_CLOCK.get(None)
+    if not cap:
+        return max(1, int(base_timeout_seconds)), None
+    deadline_ts, max_ms = cap
+    now = time.time()
+    rem = deadline_ts - now
+    if rem <= 0:
+        return 0, f"超出单题耗时上限({max_ms}ms)"
+    base = max(1, int(base_timeout_seconds))
+    capped = min(base, max(1, int(math.ceil(rem))))
+    return capped, None
+
 
 CALCULATION_GUIDE = """
 # 计算规则说明（用于动态生成Python代码）
@@ -205,6 +253,8 @@ CALC_PARAMETER_GROUNDING_GUIDE = """
 # Standard blank bracket: full-width parentheses with one full-width space (U+3000) inside
 BLANK_BRACKET = "（\u3000）"
 ENDING_PUNCTUATION_CHARS = "。．？！?!；;：:，,、"
+_STEM_REWRITE_CACHE: Dict[str, str] = {}
+_STEM_AFFIRMATIVE_JUDGE_CACHE: Dict[str, bool] = {}
 
 def normalize_blank_brackets(text: str) -> str:
     if not isinstance(text, str) or not text:
@@ -411,24 +461,126 @@ def _normalize_choice_tail_unit(text: str) -> str:
     return f"{prefix}{normalized_unit}{BLANK_BRACKET}。"
 
 
-def _normalize_judgment_affirmative_stem(text: str) -> str:
-    """Normalize common interrogative true/false stems into affirmative declarative stems."""
-    if not isinstance(text, str) or not text:
-        return text
-    t = text.strip()
-    # Canonical replacements for the most common patterns seen online.
-    t = re.sub(r"(以下|下列|上述|以上)?(说法|表述|做法|观点)?\s*是否正确$", r"\1\2正确", t)
-    t = re.sub(r"(以下|下列|上述|以上)?(说法|表述|做法|观点)?\s*是否错误$", r"\1\2错误", t)
-    t = re.sub(r"\s*是否正确$", "正确", t)
-    t = re.sub(r"\s*是否错误$", "错误", t)
-    t = re.sub(r"\s*对不对$", "正确", t)
-    t = re.sub(r"\s*是不是正确$", "正确", t)
-    t = re.sub(r"\s*是不是错误$", "错误", t)
-    # "XX的做法是正确的" -> "XX做法正确"
-    t = re.sub(r"的做法是(正确|错误)的$", r"做法\1", t)
-    # Remove residual terminal interrogative particles.
-    t = re.sub(r"[吗么]\s*$", "", t)
-    return t.strip()
+def _is_affirmative_stem_by_llm(stem: str, target_type: str) -> bool:
+    """
+    Ask LLM whether the stem is already an affirmative declarative sentence.
+
+    @param stem Stem text before the ending blank bracket
+    @param target_type Question type: 单选题/多选题/判断题
+    @returns True if LLM judges the stem as affirmative declarative
+    """
+    s = str(stem or "").strip()
+    if not s:
+        return True
+    cache_key = f"{target_type}::{s}"
+    if cache_key in _STEM_AFFIRMATIVE_JUDGE_CACHE:
+        return _STEM_AFFIRMATIVE_JUDGE_CACHE[cache_key]
+
+    prompt = f"""
+你是中文语义判定器。请判断下面题干主干是否已经是“肯定陈述句”（不是疑问句、不是反问句、不是询问式表达）。
+
+仅返回严格 JSON：
+{{"is_affirmative": true/false, "reason": "一句话"}}
+
+题型：{target_type}
+题干主干：{s}
+""".strip()
+    model_name = WRITER_MODEL or MODEL_NAME
+    provider = resolve_provider(model_name, BASE_URL, "ait")
+    try:
+        content, _, _ = call_llm(
+            node_name="format.stem_affirmative_judge",
+            prompt=prompt,
+            model_name=model_name,
+            api_key=API_KEY,
+            base_url=BASE_URL,
+            provider=provider,
+            temperature=0.0,
+            max_tokens=80,
+            timeout=20,
+        )
+        parsed = parse_json_from_response(content)
+        result = bool(parsed.get("is_affirmative", True)) if isinstance(parsed, dict) else True
+    except Exception:
+        result = True
+    _STEM_AFFIRMATIVE_JUDGE_CACHE[cache_key] = result
+    return result
+
+
+def _should_rewrite_stem_with_llm(stem: str, target_type: str) -> bool:
+    """
+    Decide whether stem rewrite should run.
+
+    Trigger policy:
+    1) Question mark at tail -> always rewrite.
+    2) Otherwise use LLM semantic judge; rewrite when not affirmative.
+
+    @param stem Stem text before the ending blank bracket
+    @param target_type Question type
+    @returns True if rewrite should run
+    """
+    s = str(stem or "").strip()
+    if not s:
+        return False
+    if re.search(r"[？?]\s*$", s):
+        return True
+    return not _is_affirmative_stem_by_llm(s, target_type)
+
+
+def _rewrite_stem_with_llm(stem: str, target_type: str) -> str:
+    """
+    Rewrite interrogative stem into natural declarative wording via LLM.
+
+    @param stem Stem text before the ending blank bracket
+    @param target_type Question type: 单选题/多选题/判断题
+    @returns Rewritten declarative stem, or original stem on failure
+    """
+    raw = str(stem or "").strip()
+    if not raw:
+        return raw
+    cache_key = f"{target_type}::{raw}"
+    if cache_key in _STEM_REWRITE_CACHE:
+        return _STEM_REWRITE_CACHE[cache_key]
+    if not _should_rewrite_stem_with_llm(raw, target_type):
+        _STEM_REWRITE_CACHE[cache_key] = raw
+        return raw
+
+    prompt = f"""
+你是中文教研编辑。请把下面题干改写为“自然、通顺、语义等价”的陈述句题干主干。
+
+要求：
+1. 必须保持原题语义与考点，不得新增/删减关键条件，不得泄露答案。
+2. 仅改写语气与句式，使其不再是问句，不要生硬。
+3. 不要输出作答括号（如（　））和结尾标点。
+4. 只输出改写后的单行文本，不要解释。
+
+题型：{target_type}
+原题干主干：{raw}
+""".strip()
+    model_name = WRITER_MODEL or MODEL_NAME
+    provider = resolve_provider(model_name, BASE_URL, "ait")
+    try:
+        content, _, _ = call_llm(
+            node_name="format.stem_rewrite",
+            prompt=prompt,
+            model_name=model_name,
+            api_key=API_KEY,
+            base_url=BASE_URL,
+            provider=provider,
+            temperature=0.0,
+            max_tokens=120,
+            timeout=20,
+        )
+        rewritten = str(content or "").strip()
+        rewritten = re.sub(r"^```[\w-]*\s*", "", rewritten)
+        rewritten = re.sub(r"\s*```$", "", rewritten)
+        rewritten = re.sub(rf"{re.escape(BLANK_BRACKET)}", "", rewritten)
+        rewritten = re.sub(r"[。．？！?!；;：:，,、\s]+$", "", rewritten).strip()
+        final_text = rewritten if rewritten else raw
+    except Exception:
+        final_text = raw
+    _STEM_REWRITE_CACHE[cache_key] = final_text
+    return final_text
 
 
 def _has_judgment_interrogative_tail(stem: str) -> bool:
@@ -487,21 +639,31 @@ def enforce_question_bracket_and_punct(text: str, target_type: str) -> str:
     # Remove leading bracket if present
     t = re.sub(r"^" + re.escape(BLANK_BRACKET), "", t).lstrip()
     if target_type in ["单选题", "多选题"]:
-        t = _normalize_choice_tail_unit(t)
-        # Do not force canonical tail "...（　）。".
-        # Only ensure placeholder exists somewhere; if absent, append a minimal one.
         if BLANK_BRACKET not in t:
             t = re.sub(rf"[{re.escape(ENDING_PUNCTUATION_CHARS)}\s]*$", "", t)
             t = f"{t}{BLANK_BRACKET}"
-        if not re.search(r"[。．？！?!]\s*$", t):
+        idx = t.rfind(BLANK_BRACKET)
+        if idx >= 0:
+            prefix = str(t[:idx] or "").strip()
+            suffix = str(t[idx + len(BLANK_BRACKET):] or "")
+            suffix = re.sub(rf"[{re.escape(ENDING_PUNCTUATION_CHARS)}\s]+$", "", suffix).strip()
+            stem_raw = f"{prefix}{suffix}".strip()
+            stem_part = _rewrite_stem_with_llm(stem_raw, target_type)
+            stem_part = re.sub(rf"[{re.escape(ENDING_PUNCTUATION_CHARS)}\s]+$", "", str(stem_part or "")).strip()
+            if not stem_part:
+                stem_part = stem_raw
+            t = f"{stem_part}{BLANK_BRACKET}。"
+        elif not re.search(r"[。．？！?!]\s*$", t):
             t = f"{t}。"
     elif target_type == "判断题":
-        # Keep declarative normalization, but do not force the blank bracket to be tail position.
-        core = _normalize_judgment_affirmative_stem(t)
-        core = re.sub(r"[。．？！?!；;：:，,、\s]+$", "", core).strip()
-        t = core
         if BLANK_BRACKET not in t:
-            t = f"{t}{BLANK_BRACKET}" if t else BLANK_BRACKET
+            t = re.sub(rf"[{re.escape(ENDING_PUNCTUATION_CHARS)}\s]*$", "", t)
+            t = f"{t}{BLANK_BRACKET}"
+        idx = t.rfind(BLANK_BRACKET)
+        core_raw = (t[:idx] if idx >= 0 else t).strip()
+        core = _rewrite_stem_with_llm(core_raw, target_type)
+        core = re.sub(r"[。．？！?!；;：:，,、\s]+$", "", str(core or "")).strip()
+        t = f"{core}{BLANK_BRACKET}" if core else BLANK_BRACKET
     return t
 
 def validate_question_template_semantics(question: str, target_type: str) -> List[str]:
@@ -530,15 +692,25 @@ def validate_question_template_semantics(question: str, target_type: str) -> Lis
 def validate_writer_format(question: str, options: List[str], answer, target_type: str) -> List[str]:
     issues = []
     q = question or ""
+    opt_count = len(options or []) if isinstance(options, list) else 0
     if target_type in ["单选题", "多选题", "判断题"]:
         if BLANK_BRACKET not in q:
             issues.append("题干缺少标准占位括号（须为全角括号且括号内有且仅有一个全角空格）")
+    if target_type in ["单选题", "多选题"] and opt_count != 4:
+        issues.append("选择题选项数量必须为4个")
+    if target_type == "判断题" and opt_count != 2:
+        issues.append("判断题选项数量必须为2个")
     # Judge DeterministicFilter: 选择题题干作答占位括号（ ）只能出现一次
     if target_type in ["单选题", "多选题"] and q.count(BLANK_BRACKET) > 1:
         issues.append("选择题题干作答占位括号（ ）只能出现一次")
     if target_type in ["单选题", "多选题"]:
         if not q.endswith("。"):
             issues.append("选择题题干未以句号结尾")
+    if target_type in ["单选题", "多选题", "判断题"]:
+        if has_invalid_ending_blank_bracket(q):
+            issues.append("题干结尾括号中间必须有且仅有一个全角空格（不能多）")
+        if has_forbidden_symbol_before_ending_blank_bracket(q):
+            issues.append("题干结尾作答括号前不能有任何符号或空格")
     issues.extend(validate_question_template_semantics(q, target_type))
     # Validate options bracket formatting if present
     for opt in options or []:
@@ -556,18 +728,71 @@ def validate_writer_format(question: str, options: List[str], answer, target_typ
         if not (isinstance(answer, str) and answer.strip().upper() in ["A", "B"]):
             issues.append("判断题答案格式应为A/B")
     elif target_type == "单选题":
-        if not (isinstance(answer, str) and re.fullmatch(r"[A-Ha-h]", answer.strip())):
+        if not (isinstance(answer, str) and re.fullmatch(r"[A-Da-d]", answer.strip())):
             issues.append("单选题答案格式应为单个字母")
     elif target_type == "多选题":
         if isinstance(answer, list):
-            if not answer or not all(re.fullmatch(r"[A-Ha-h]", str(x).strip()) for x in answer):
+            if not answer or not all(re.fullmatch(r"[A-Da-d]", str(x).strip()) for x in answer):
                 issues.append("多选题答案列表格式不规范")
         elif isinstance(answer, str):
-            if not re.fullmatch(r"[A-Ha-h]{2,}", answer.strip()):
+            if not re.fullmatch(r"[A-Da-d]{2,4}", answer.strip()):
                 issues.append("多选题答案格式应为多个字母")
         else:
             issues.append("多选题答案格式不规范")
     return issues
+
+
+_SCENARIO_ROLE_TOKENS = (
+    "经纪人", "客户", "业主", "买方", "卖方", "门店", "带看", "签约", "委托", "成交",
+    "过户", "网签", "咨询", "接待", "培训", "入职", "看房", "交易",
+)
+_SCENARIO_ACTION_TOKENS = (
+    "介绍", "沟通", "办理", "完成", "核验", "签署", "判断", "确认", "推荐", "提醒",
+    "审核", "报价", "计算", "应当", "需要", "必须", "负责",
+)
+
+
+def _contains_scenario_anchor(text: str) -> bool:
+    """
+    判断题干是否包含可识别的业务场景锚点（角色/动作）。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return False
+    has_role = any(tok in t for tok in _SCENARIO_ROLE_TOKENS)
+    has_action = any(tok in t for tok in _SCENARIO_ACTION_TOKENS)
+    if has_role and has_action:
+        return True
+    # 兼容“角色+姓名+动作”场景
+    if re.search(r"(经纪人|客户|业主|买方|卖方)[\u4e00-\u9fff]{1,3}", t) and has_action:
+        return True
+    return False
+
+
+def _has_redundant_stem_repetition(text: str) -> bool:
+    """
+    粗粒度检测题干是否出现重复语义片段（同句重复/近邻重复）。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return False
+    parts = [re.sub(r"\s+", "", p) for p in re.split(r"[，。；;！？?!]", t) if str(p).strip()]
+    long_parts = [p for p in parts if len(p) >= 8]
+    if len(long_parts) < 2:
+        return False
+    seen = set()
+    for p in long_parts:
+        if p in seen:
+            return True
+        seen.add(p)
+    # 邻近片段前后缀高重合也视为重复
+    for i in range(len(long_parts) - 1):
+        a, b = long_parts[i], long_parts[i + 1]
+        if a in b or b in a:
+            return True
+        if len(set(a) & set(b)) >= min(len(a), len(b)) * 0.75:
+            return True
+    return False
 
 
 def _detect_option_prefix_in_draft(draft: Dict[str, Any]) -> List[str]:
@@ -879,12 +1104,22 @@ def validate_critic_format(final_json: Dict[str, Any], question_type: str) -> Li
         if val is not None and str(val) != "":
             options.append(str(val))
     answer = final_json.get("正确答案", "")
+    opt_count = len(options)
     if question_type in ["单选题", "多选题", "判断题"]:
         if BLANK_BRACKET not in q:
             issues.append("题干缺少标准占位括号（须为全角括号且括号内有且仅有一个全角空格）")
+    if question_type in ["单选题", "多选题"] and opt_count != 4:
+        issues.append("选择题选项数量必须为4个")
+    if question_type == "判断题" and opt_count != 2:
+        issues.append("判断题选项数量必须为2个")
     if question_type in ["单选题", "多选题"]:
         if not q.endswith("。"):
             issues.append("选择题题干未以句号结尾")
+    if question_type in ["单选题", "多选题", "判断题"]:
+        if has_invalid_ending_blank_bracket(q):
+            issues.append("题干结尾括号中间必须有且仅有一个全角空格（不能多）")
+        if has_forbidden_symbol_before_ending_blank_bracket(q):
+            issues.append("题干结尾作答括号前不能有任何符号或空格")
     for opt in options:
         if has_invalid_blank_bracket(opt):
             issues.append("选项括号格式不规范")
@@ -897,11 +1132,18 @@ def validate_critic_format(final_json: Dict[str, Any], question_type: str) -> Li
         if not (isinstance(answer, str) and re.fullmatch(r"[ABab]", str(answer).strip())):
             issues.append("判断题答案格式应为A/B")
     elif question_type == "单选题":
-        if not (isinstance(answer, str) and re.fullmatch(r"[A-Ha-h]", str(answer).strip())):
+        if not (isinstance(answer, str) and re.fullmatch(r"[A-Da-d]", str(answer).strip())):
             issues.append("单选题答案格式应为单个字母")
     elif question_type == "多选题":
-        if not (isinstance(answer, str) and re.fullmatch(r"[A-Ha-h]{2,}", str(answer).strip())):
-            issues.append("多选题答案格式应为多个字母")
+        if isinstance(answer, list):
+            labels = [str(x).strip() for x in answer if str(x).strip()]
+            if not labels or not all(re.fullmatch(r"[A-Da-d]", x) for x in labels):
+                issues.append("多选题答案列表格式不规范")
+        elif isinstance(answer, str):
+            if not re.fullmatch(r"[A-Da-d]{2,4}", str(answer).strip()):
+                issues.append("多选题答案格式应为多个字母")
+        else:
+            issues.append("多选题答案格式不规范")
     # Name usage checks (no 姓+女士/先生 or 小+姓氏)
     q_text = str(final_json.get("题干", "") or "")
     exp_text = str(final_json.get("解析", "") or "")
@@ -917,7 +1159,7 @@ def _parse_answer_labels(answer: Any) -> List[str]:
     if isinstance(answer, list):
         labels = [str(x).strip().upper() for x in answer if str(x).strip()]
     else:
-        labels = re.findall(r"[A-H]", str(answer or "").upper())
+        labels = re.findall(r"[A-D]", str(answer or "").upper())
     out: List[str] = []
     seen: set[str] = set()
     for label in labels:
@@ -2326,7 +2568,7 @@ def _normalize_semantic_answer(raw_answer: Any, question_type: str, fallback_ans
         if text in {"错误", "FALSE", "F"}:
             return "B"
     else:
-        letters = re.sub(r"[^A-H]", "", text)
+        letters = re.sub(r"[^A-D]", "", text)
         if question_type == "多选题" and len(letters) >= 2:
             return "".join(dict.fromkeys(letters))
         if question_type == "单选题" and len(letters) == 1:
@@ -2334,11 +2576,17 @@ def _normalize_semantic_answer(raw_answer: Any, question_type: str, fallback_ans
     fallback_text = str(fallback_answer or "").strip().upper()
     if question_type == "判断题" and fallback_text in {"A", "B"}:
         return fallback_text
-    fallback_letters = re.sub(r"[^A-H]", "", fallback_text)
+    fallback_letters = re.sub(r"[^A-D]", "", fallback_text)
     if question_type == "多选题" and len(fallback_letters) >= 2:
         return "".join(dict.fromkeys(fallback_letters))
     if question_type == "单选题" and len(fallback_letters) == 1:
         return fallback_letters
+    if question_type == "判断题":
+        return "A"
+    if question_type == "单选题":
+        return "A"
+    if question_type == "多选题":
+        return "AB"
     return fallback_text
 
 
@@ -2451,9 +2699,9 @@ def prepare_draft_for_writer(draft: Dict[str, Any], target_type: str) -> Dict[st
             cleaned["answer"] = ans.strip().upper()[:1]
     elif target_type == "多选题":
         if isinstance(ans, list):
-            cleaned["answer"] = [str(x).strip().upper() for x in ans if str(x).strip()]
+            cleaned["answer"] = [str(x).strip().upper() for x in ans if re.fullmatch(r"[A-Da-d]", str(x).strip())]
         elif isinstance(ans, str):
-            cleaned["answer"] = re.sub(r"[^A-Ha-h]", "", ans.strip()).upper()
+            cleaned["answer"] = re.sub(r"[^A-Da-d]", "", ans.strip()).upper()
     return cleaned
 
 
@@ -2474,7 +2722,7 @@ def _infer_draft_type_for_writer(draft: Dict[str, Any]) -> str:
         return "多选题"
     if isinstance(answer, str):
         ans = answer.strip().upper()
-        if len(ans) > 1 and all(c in "ABCDE" for c in ans):
+        if len(ans) > 1 and all(c in "ABCD" for c in ans):
             return "多选题"
     return "单选题"
 
@@ -2494,7 +2742,7 @@ def _infer_final_json_question_type(final_json: Optional[Dict[str, Any]]) -> str
     expl_labels = _infer_multiselect_labels_from_explanation(explanation, option_count=len([x for x in [opt1, opt2, opt3, opt4] if x]))
     if len(expl_labels) > 1:
         return "多选题"
-    letters = re.sub(r"[^A-H]", "", ans)
+    letters = re.sub(r"[^A-D]", "", ans)
     if len(letters) > 1:
         return "多选题"
     return "单选题"
@@ -2504,14 +2752,14 @@ def _infer_multiselect_labels_from_explanation(explanation: str, option_count: i
     text = str(explanation or "")
     labels: List[str] = []
     # e.g. "选项A正确" / "A正确"
-    for m in re.findall(r"(?:选项)?([A-H])(?:项)?\s*正确", text, flags=re.IGNORECASE):
+    for m in re.findall(r"(?:选项)?([A-D])(?:项)?\s*正确", text, flags=re.IGNORECASE):
         lab = str(m).upper()
         if lab not in labels:
             labels.append(lab)
     if len(labels) >= 2:
         return labels
     # e.g. "本题答案为ACD"
-    ans_match = re.search(r"本题答案为\s*([A-H]{2,8})", text, flags=re.IGNORECASE)
+    ans_match = re.search(r"本题答案为\s*([A-D]{2,4})", text, flags=re.IGNORECASE)
     if ans_match:
         for ch in str(ans_match.group(1)).upper():
             if ch not in labels:
@@ -2875,7 +3123,7 @@ def _build_writer_polish_prompt_issue_only(
     kb_context: str,
     examples_text: str,
     term_lock_text: str,
-    router_focus_text: str,
+    router_focus_text: str = "",
     difficulty_instruction_writer: str,
     self_check_text: str,
     issue_messages: List[str],
@@ -2904,6 +3152,8 @@ def _build_writer_polish_prompt_issue_only(
 4. 输出严格 JSON，不要输出额外说明文字。
 5. 允许为提升语句通顺度进行整句重写，但不得改变题目语义、考点与答案判定。
 6. 优先使用自然中文表达，禁止机械模板句（如“属于，因为……/不属于，因为……”）反复出现。
+7. 若初稿题干存在业务场景锚点（角色+动作/条件），除非“问题清单”明确要求删除，否则必须保留至少一个场景锚点，不得改写成“根据教材内容……”这类无场景空壳句。
+8. 题干禁止语义重复：不得在同一题干中重复同义设问或重复条件。
 
 初稿（已做代码归一化）: {json.dumps(draft_for_prompt, ensure_ascii=False)}
 参考教材: {kb_context}
@@ -4545,6 +4795,18 @@ def call_llm(
         started = time.time()
         ark_backoff_seconds = [2, 5, 10]
         for attempt in range(len(ark_backoff_seconds) + 1):
+            http_timeout, wall_err = _question_wall_clock_cap_http_timeout(effective_timeout)
+            if wall_err:
+                record = build_record(
+                    success=False,
+                    used_model=model_name,
+                    provider_used="ark",
+                    started_at=started,
+                    retries=attempt,
+                    usage_obj=None,
+                    error=wall_err,
+                )
+                return "", model_name, record
             if time.time() - started > total_timeout_cap:
                 record = build_record(
                     success=False,
@@ -4576,7 +4838,7 @@ def call_llm(
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    timeout=effective_timeout,
+                    timeout=http_timeout,
                     extra_headers=({"X-Project-Name": ARK_PROJECT_NAME} if ARK_PROJECT_NAME else None),
                 )
                 content = resp.choices[0].message.content if resp.choices else ""
@@ -4625,6 +4887,18 @@ def call_llm(
     url_candidates = [u for u in url_candidates if not (u in seen_url or seen_url.add(u))]
 
     for attempt in range(len(backoff_seconds) + 1):
+        http_timeout, wall_err = _question_wall_clock_cap_http_timeout(effective_timeout)
+        if wall_err:
+            record = build_record(
+                success=False,
+                used_model=used_model,
+                provider_used=(provider or "ait"),
+                started_at=started,
+                retries=attempt,
+                usage_obj=None,
+                error=wall_err,
+            )
+            return "", used_model, record
         if time.time() - started > total_timeout_cap:
             record = build_record(
                 success=False,
@@ -4640,13 +4914,25 @@ def call_llm(
             last_non_retryable: Optional[Exception] = None
             for candidate_url in url_candidates:
                 try:
+                    http_timeout, wall_err = _question_wall_clock_cap_http_timeout(effective_timeout)
+                    if wall_err:
+                        record = build_record(
+                            success=False,
+                            used_model=used_model,
+                            provider_used=(provider or "ait"),
+                            started_at=started,
+                            retries=attempt,
+                            usage_obj=None,
+                            error=wall_err,
+                        )
+                        return "", used_model, record
                     client = OpenAI(api_key=key, base_url=candidate_url)
                     resp = client.chat.completions.create(
                         model=used_model,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=temperature,
                         max_tokens=max_tokens,
-                        timeout=effective_timeout,
+                        timeout=http_timeout,
                     )
                     content = resp.choices[0].message.content if resp.choices else ""
                     if isinstance(content, list):
@@ -5246,7 +5532,7 @@ def specialist_node(state: AgentState, config):
     elif target_type == "多选题":
         type_instruction = (
             "题型要求：多选题。\n"
-            "至少4个选项。\n"
+            "必须固定4个选项（仅A/B/C/D）。\n"
             "答案必须是列表形式，如 ['A','C','D']。\n"
             "括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
         )
@@ -5309,7 +5595,7 @@ def specialist_node(state: AgentState, config):
         if question_type == "判断题":
             type_instruction_repair = "题型要求：判断题。选项必须固定为：['正确','错误']。答案必须是 'A' 或 'B'。括号格式：题干末尾必须精确写成“（　）”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后不能再加句号。"
         elif question_type == "多选题":
-            type_instruction_repair = "题型要求：多选题。至少4个选项。答案必须是列表形式，如 ['A','C','D']。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
+            type_instruction_repair = "题型要求：多选题。必须固定4个选项（仅A/B/C/D）。答案必须是列表形式，如 ['A','C','D']，且只能使用A-D。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
         else:
             type_instruction_repair = "题型要求：单选题。4个选项且只有一个正确。答案必须是单个字母，如 'A'。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
         
@@ -5392,6 +5678,7 @@ def specialist_node(state: AgentState, config):
 2. 新题不得复现上一轮已指出的问题；若同类问题仍存在，视为修复失败。
 3. 若上一轮问题集中在解析、结论、口径或前提条件，新题必须在题干/选项/解析中显式消除该问题，不能只换说法。
 4. 不得产出与上一轮题目高度相似的题干结构、设问目标或错误结论路径；必须明显避开上一轮失败写法。
+5. 题干不得出现语义重复或句式重复（同一条件/同一设问意图只允许表达一次）。
 
 # 禁止
 - 禁止解释出题过程
@@ -5489,6 +5776,7 @@ def specialist_node(state: AgentState, config):
 1. **聚焦考点**：围绕教材切片核心知识点命题；是否使用业务场景由筛选条件决定。
 2. **真诚说人话**：情境描述要通俗易懂，避免生僻词和专业黑话，使用自然的日常表达。
 3. **简洁不啰嗦**：情境表述要简洁清晰，避免冗余信息，突出核心要点。
+4. **禁止重复表达**：题干中同一语义条件和设问意图不得重复出现，避免“换句话再说一遍”。
 
 ## 好方法（用什么方法）
 1. **直接不拐弯**：考点直接，不设置复杂陷阱，让学员能清晰理解要考察的知识点。
@@ -5598,7 +5886,7 @@ def specialist_node(state: AgentState, config):
    - 正确示例（单选题）：options 填四句正文，如 ["网签合同信息一旦录入系统便无法修改，可能导致过户失败", "线上过户无法调取网签合同，可能影响客户提取公积金", ...]；判断题：["正确", "错误"]。
    - 错误示例：不要写 ["A. 网签...", "B. 线上..."] 或 ["A", "B", "C", "D"]，否则展示会变成 A. A 网签… 双重序号。
 1. **选项数量与正确性**：
-   - 选择题每题4个选项；单选题仅1个正确，多选题≥2个正确。
+   - 选择题每题固定4个选项；单选题仅1个正确；多选题正确答案为2-4个且只能使用A/B/C/D。
    - 多选题中正确选项数量要合理，不要多道题都只有1个答案。
 2. **标点与语义**：
    - 每个选项末尾不添加标点符号。
@@ -5684,7 +5972,7 @@ def specialist_node(state: AgentState, config):
 # 自检清单（必须逐条核对）
 1. **题干与选项逻辑一致**：任一选项不得与题干中已明确给出的条件、前提或设定相悖（题干已设定某事实成立时，选项不得出现与该事实矛盾的表述）。
 2. **规则要素完整**：若教材规则包含触发条件、适用范围、约束主体、作用对象、角色边界、时间/流程时点，题干与正确项不得遗漏或偷换这些要素。
-3. **正确项完整覆盖考点**：若切片对考点明确了多个并列要点，正确选项须覆盖这些关键要素，不得遗漏。
+3. **正确项覆盖规则（4选项约束）**：在“仅4个选项（A-D）”前提下，题干与正确选项组合必须覆盖考点关键条件；若并列要点过多，优先收敛题干范围，不得通过新增E/F/G选项补覆盖。
 4. **唯一答案**：题干条件足以排除其他选项，不能出现两条合理路径。
 5. **解析规范（试题解析三段论）**：1、教材原文（路由前三个标题即目标题内容+分级+原文≤400字，不要写「目标题：」字样）2、试题分析（用自己的话解释各选项，多选覆盖全部）3、结论（判断题写本题答案为正确/错误，选择题写本题答案为A/B/C/D/AB/AC...）。
 6. **一致性**：题干/选项/答案/解析前后一致，计算题与计算过程一致。
@@ -5828,7 +6116,13 @@ def writer_node(state: AgentState, config):
     pre_writer_logs: List[str] = []
     draft_for_prompt = draft
     pre_hard_issues: List[str] = []
+    draft_question_text = ""
+    draft_has_scenario_anchor = False
+    draft_has_redundant_repetition = False
     if isinstance(draft, dict):
+        draft_question_text = str(draft.get("question", "") or "")
+        draft_has_scenario_anchor = _contains_scenario_anchor(draft_question_text)
+        draft_has_redundant_repetition = _has_redundant_stem_repetition(draft_question_text)
         pre_question_ir = _writer_normalize_phase(draft, target_type)
         pre_report = _writer_validate_phase(
             pre_question_ir,
@@ -5956,7 +6250,7 @@ def writer_node(state: AgentState, config):
     writer_logs.append(f"🖋️ Writer模型={model_to_use}（原因={writer_model_reason}）")
     final_report: ValidationReport = {"passed": False, "issues": [], "summary": "未执行"}
     writer_retry_exhausted = False
-    for attempt in range(2):
+    for attempt in range(3):
         self_check_text = ""
         if extra_self_check_issues:
             self_check_text = f"""
@@ -5966,6 +6260,10 @@ def writer_node(state: AgentState, config):
         issue_messages_for_prompt = [str(x) for x in extra_self_check_issues if str(x).strip()]
         if not issue_messages_for_prompt:
             issue_messages_for_prompt = pre_hard_issues[:]
+        if draft_has_scenario_anchor:
+            issue_messages_for_prompt.append("保留至少一个业务场景锚点（角色+动作/条件），不得改写成“根据教材内容…”的空壳题干")
+        if draft_has_redundant_repetition:
+            issue_messages_for_prompt.append("题干存在重复表达，请合并重复语义，只保留一次明确设问")
         issue_only_prompt = _build_writer_polish_prompt_issue_only(
             target_type=target_type,
             draft_for_prompt=draft_for_prompt if isinstance(draft_for_prompt, dict) else {},
@@ -6059,7 +6357,7 @@ def writer_node(state: AgentState, config):
 # 选项规范（必须遵守）
 1. **选项内容**：只填选项正文，禁止在内容前写 A./B./C./D. 标签。
 2. **选项数量与正确性**：
-   - 选择题每题4个选项；单选题仅1个正确，多选题≥2个正确。
+   - 选择题每题固定4个选项；单选题仅1个正确；多选题正确答案为2-4个且只能使用A/B/C/D。
    - 多选题中正确选项数量要合理，不要多道题都只有1个答案。
 3. **标点与语义**：
    - 每个选项末尾不添加标点符号。
@@ -6184,6 +6482,21 @@ def writer_node(state: AgentState, config):
                 final_ir = _writer_normalize_phase(final_dict, target_type)
                 final_dict = dict(final_ir)
                 writer_logs.append("⚠️ 作家: 已在润色后执行格式硬修复")
+                final_question_text = str(final_ir.get("question", "") or "")
+                if draft_has_scenario_anchor and not _contains_scenario_anchor(final_question_text):
+                    scenario_hint = "题干丢失业务场景锚点：请保留至少一个角色+动作/条件，不得仅保留“根据教材内容”空壳设问"
+                    extra_self_check_issues.append(scenario_hint)
+                    writer_logs.append(f"⚠️ 作家: {scenario_hint}")
+                    if attempt < 2:
+                        writer_logs.append("⚠️ 作家: 触发场景锚点回补，发起二次润色")
+                        continue
+                if _has_redundant_stem_repetition(final_question_text):
+                    repeat_hint = "题干存在重复语义：请合并重复句，保留单次明确设问"
+                    extra_self_check_issues.append(repeat_hint)
+                    writer_logs.append(f"⚠️ 作家: {repeat_hint}")
+                    if attempt < 2:
+                        writer_logs.append("⚠️ 作家: 触发题干去重复，发起二次润色")
+                        continue
                 final_report = _writer_validate_phase(
                     final_ir,
                     target_type,
@@ -6220,7 +6533,7 @@ def writer_node(state: AgentState, config):
                     post_hint = f"前置条件不足：{precond_reason}{missing_desc}"
                     extra_self_check_issues.append(post_hint)
                     writer_logs.append(f"⚠️ 作家: {post_hint}")
-                    if attempt == 0:
+                    if attempt < 2:
                         writer_logs.append("⚠️ 作家: 触发前置条件补齐，发起二次润色")
                         continue
                 # writer 阶段“最小充分条件”审计：去除与判题无关的冗余条件（如无关金额/年限/利率堆砌）
@@ -6243,7 +6556,7 @@ def writer_node(state: AgentState, config):
                     min_hint = f"最小充分条件不足：{min_reason}{red_desc}"
                     extra_self_check_issues.append(min_hint)
                     writer_logs.append(f"⚠️ 作家: {min_hint}")
-                    if attempt == 0:
+                    if attempt < 2:
                         writer_logs.append("⚠️ 作家: 触发题干瘦身，发起二次润色")
                         continue
                 post_issue_lines = []
@@ -6255,7 +6568,7 @@ def writer_node(state: AgentState, config):
                     post_issue_lines.append((msg, f"{msg}；修复建议：{fix}" if fix else msg))
                 post_issues = [t[0] for t in post_issue_lines]
                 post_issue_with_fix = [t[1] for t in post_issue_lines]
-                if post_issue_with_fix and attempt == 0:
+                if post_issue_with_fix and attempt < 2:
                     extra_self_check_issues.extend([f"定向修复项: {x}" for x in post_issue_with_fix])
                     writer_logs.append(
                         f"⚠️ 作家: 仍存在待修复问题，发起二次润色（{'; '.join(post_issues[:6])}）"
@@ -6766,29 +7079,34 @@ def critic_node(state: AgentState, config):
                         invalid_fields.append(key)
         if invalid_fields:
             reason = "选项若有占位括号须为全角括号且括号内有且仅有一个全角空格（不能多）"
-            # 轻微格式问题降级为非阻断提示，不再直接判失败。
-            return {
-                "critic_feedback": "PASS_WITH_WARNING",
+            critic_payload = {
+                "critic_feedback": "FAIL",
                 "critic_rules_context": full_rules_text,
                 "critic_related_rules": related_rules,
                 "critic_result": {
-                    "passed": True,
+                    "passed": False,
                     "issue_type": "minor",
                     "reason": reason,
                     "fix_strategy": "fix_question",
-                    "soft_quality_only": True,
-                    "soft_quality_issues": [reason],
+                    "required_fixes": ["format:bracket"],
                     "fail_types": ["format_bracket"],
                 },
+                "critic_required_fixes": ["format:bracket"],
                 "option_hierarchy_conflict_flag": option_hierarchy_conflict_flag,
                 "option_hierarchy_conflict_pairs": option_hierarchy_conflict_pairs,
                 "option_hierarchy_conflict_message": option_hierarchy_conflict_message,
                 "critic_details": f"{reason}（字段：{', '.join(invalid_fields)}）",
                 "critic_model_used": "rule-based",
-                "retry_count": state.get("retry_count", 0),
+                "retry_count": state.get("retry_count", 0) + 1,
                 "llm_trace": llm_records,
-                "logs": [f"🔍 批评家: ⚠️ {reason}（非阻断）"]
+                "logs": [f"🔍 批评家: ❌ {reason} → 进入修复"],
             }
+            critic_payload["critic_issue_items"] = _build_critic_issue_items(
+                required_fixes=["format:bracket"],
+                reason_text=reason,
+                extra_issue_map={"format:bracket": f"{reason}（字段：{', '.join(invalid_fields)}）"},
+            )
+            return _attach_first_failure_snapshot(state, critic_payload)
 
     # ✅ Material missing check: multiple missing required materials -> Fail
     has_material_issue, missing_materials = material_missing_check(final_json, kb_context)
@@ -6968,33 +7286,32 @@ def critic_node(state: AgentState, config):
             reason = name_reason or "题目存在当事人角色/人名混淆，影响判题稳定性"
             if name_issues:
                 reason = f"{reason}；问题：{'; '.join(name_issues[:4])}"
-            # 轻微人名语义问题降级为提示，不阻断入库。
             if severity != "major":
-                return {
-                    "critic_feedback": "PASS_WITH_WARNING",
+                critic_payload = {
+                    "critic_feedback": "FAIL",
                     "critic_rules_context": full_rules_text,
                     "critic_related_rules": related_rules,
                     "critic_result": {
-                        "passed": True,
+                        "passed": False,
                         "issue_type": "minor",
                         "reason": reason,
                         "fix_strategy": "fix_question",
-                        "soft_quality_only": True,
-                        "soft_quality_issues": list(name_issues or [reason]),
+                        "required_fixes": required_fixes,
                         "fail_types": fail_types,
                     },
                     "critic_required_fixes": required_fixes,
-                    "critic_details": f"⚠️ 审核通过（轻微语义提示）: {reason}",
+                    "critic_details": reason,
                     "critic_model_used": "llm-semantic",
-                    "retry_count": state.get("retry_count", 0),
+                    "retry_count": state.get("retry_count", 0) + 1,
                     "llm_trace": llm_records,
-                    "logs": [f"🔍 批评家: ⚠️ {reason}（非阻断）"],
+                    "logs": [f"🔍 批评家: ❌ {reason} → 进入修复"],
                     "critic_issue_items": _build_critic_issue_items(
                         required_fixes=required_fixes,
                         reason_text=reason,
                         quality_issues=list(name_issues or [reason]),
                     ),
                 }
+                return _attach_first_failure_snapshot(state, critic_payload)
             critic_payload = {
                 "critic_feedback": "FAIL",
                 "critic_rules_context": full_rules_text,
@@ -7513,7 +7830,7 @@ def critic_node(state: AgentState, config):
   - **流程/步骤类：主体或视角歧义**：若切片中的流程、步骤**未明确每一步的执行主体或视角**（如谁来做、从谁的角度），则不得出因「主体或视角不同会产生歧义」的题目或选项。例如：流程列“A→B→C”但未区分当事人操作与部门操作，则不宜出“最后一步是？”或依赖“当事人角度的最后一步”与“流程顺序最后一步”区分的选项；否则判为不合格，quality_check_passed=false，fix_reason 建议删除或限定题干视角（如明确“按流程顺序”或“买方完成的最后一步”）。
   - **选项与题干条件相悖**：任一选项不得与题干中已明确给出的条件、前提或设定在逻辑上矛盾；若题干已设定某事实成立，选项中不得出现与该事实相悖的表述，否则判为不合格，quality_check_passed=false，fix_reason 建议修改或删除相悖选项。
   - **规则要素缺失或绝对化**：若教材原规则包含触发条件、适用范围、约束主体、作用对象、角色边界、时间/流程时点中的任意关键要素，题干/正确项/解析却遗漏、偷换或改写为无条件绝对命题（把“在X条件下成立”写成“任何情况下都成立”），判为不合格，quality_check_passed=false，fix_reason 建议补全关键要素并重写题干与解析。
-  - **正确选项须完整覆盖考点关键要素**：若教材/切片对某概念、流程或规则明确了多个并列要点，正确选项不得只表述其中部分要点而遗漏其他关键要素，否则判为正确项不完整，quality_check_passed=false，fix_reason 建议补全正确项。
+  - **正确选项覆盖规则（4选项约束）**：多选题固定4个选项（A-D），不得要求扩展到E/F/G。若教材/切片并列要点较多，应通过收敛题干范围与重写选项来覆盖关键条件；仍遗漏关键条件时判为不通过，quality_check_passed=false，fix_reason 建议重构题干与4个选项。
 
 ## 1. 地理与范围审计 (Geo-Consistency)
 - **规则**: 如果教材明确限定了城市（如"北京市"），题干必须严格遵守。
@@ -7560,6 +7877,19 @@ Fail 条件（任一即 Fail）：
 - 不同规则分支在题干中未被明确排除
 - 需要考生“猜规则”“默认前提”才能算出答案
 
+条件表达识别规则（必须遵守）：
+- 题干中以“若/设/假设/在…情况下/当…时/已知/给定/按…计算”等方式出现的数值、年份、日期、阈值、口径，均视为**已给定作答前提**，可直接用于推导，不得仅因表述形式而判为“缺条件”。
+- 例如“若当前为2026年”“已知房龄按竣工日期计算”“假设月利率为0.375%”都属于有效输入，不得改写为“题干未提供当前年份/利率”。
+- 仅在以下情形才可判“缺条件”：(1) 题干未给出该变量任何可用取值；(2) 同一变量在题干内自相矛盾；(3) 题干给值与题干内其他硬约束冲突且无法消解。
+- 不得因“若/假设”是条件句语气，就否定其作为计算前提的效力。
+
+多路径一致性裁决（必须遵守）：
+- 若你识别到两条及以上“可辩护”的理解路径，必须继续比对这些路径对应的最终作答选项。
+- 只有当这些路径会导向**不同答案选项**（或一条可答、一条不可答）时，才可判定为“无法唯一作答”（reverse_solve_success=false / can_deduce_unique_answer=false）。
+- 若多条路径最终导向同一答案选项（例如都指向 B），则视为“答案可唯一确定”，不得仅因路径解释差异判 Fail。
+- 规则适用范围的语义歧义若不改变最终答案，只能作为可读性/表述优化建议，不得升级为 reverse_solve_fail。
+- 当你声称“存在多路径导致不唯一”时，必须在 deduction_process 中明确写出“路径A->答案X、路径B->答案Y（X≠Y）”；若写不出不同答案，不得判不唯一。
+
 ⚠️ **严禁给出空泛理由**：
 - 禁止只因为“教材/切片里有多条相近规则”或“有两个相关切片”就写成“需要学员猜测/信息不足”这一类抽象描述。
 - 当你判定“存在多解 / 需要学员猜测”时，必须：
@@ -7567,6 +7897,12 @@ Fail 条件（任一即 Fail）：
   2. 说明这两处文本是如何在含义上产生冲突、互斥或模糊的（例如：一个按建筑面积，一个按套数；一个按“新建”日常含义，一个按教材专门口径）。
   3. 明确写出：在完全只依赖【题干 + 这些切片】的前提下，学员可能会分别依据哪些理解选出哪几个不同答案，从而**无法在不靠主观猜测的情况下锁定唯一答案**。
 - 若你无法给出上述“具体文本 + 冲突关系 + 误导路径”三点，请不要使用“需要学员猜测/信息不足”这一类总结性话术，而应改为其它更精确的问题描述（如“题干缺少 ×× 条件”“规则 A/B 的适用范围未在题干中区分”等)。
+
+“缺条件”判定前自检（必须逐条满足）：
+1. 先列出你认为缺失的变量名（如“当前年份”）。
+2. 在题干中逐字检索该变量是否以“若/设/假设/已知/给定/当…时”等条件表达给出。
+3. 若已给出且无冲突，禁止写入 missing_conditions，且不得触发 reverse_solve_fail。
+4. 只有在“未给出或冲突不可解”时，才允许写入 missing_conditions 并判失败。
 
 **注意**：题干已给出规则所需的某数值时，直接使用即可；不得以「缺少可推导或验证该数值的其他信息」为由判缺条件或反向解题失败。
 
@@ -8576,90 +8912,6 @@ Fail 条件（任一即 Fail）：
             deduction_process=deduction_process,
         )
 
-        # 仅软失败（不影响唯一答案/答案正确/计算闭环/题型契约）时，改为通过+告警，不阻断题目。
-        if _is_soft_only_critic_failure(fail_types) and not _should_force_fix_before_soft_pass(fail_types):
-            critic_issue_types = _derive_critic_issue_types(
-                required_fixes=required_fixes,
-                quality_issues=quality_issues,
-                all_issues=all_issues,
-                critic_issue_items=[],
-                critic_result={
-                    "reason": reason if reason else fail_reason,
-                    "basis_source": basis_source,
-                    "non_current_slice_basis": non_current_slice_basis,
-                    "analysis_rewrite_sufficient": analysis_rewrite_sufficient,
-                    "multi_option_coverage_rate": multi_option_coverage_rate,
-                },
-            )
-            warn_items = list(dict.fromkeys(all_issues or quality_issues or [str(reason or fail_reason or "轻微质量问题")]))
-            critic_payload = {
-                "critic_feedback": "PASS_WITH_WARNING",
-                "critic_details": f"✅ 审核通过（存在非阻断告警）: {reason if reason else fail_reason}",
-                "critic_tool_usage": critic_tool_usage,
-                "critic_issue_types": critic_issue_types,
-                "critic_issue_items": _build_critic_issue_items(
-                    required_fixes=required_fixes,
-                    reason_text=(reason if reason else fail_reason or ""),
-                    missing_conditions=missing_conditions,
-                    quality_issues=quality_issues,
-                    writer_issues=writer_issues if isinstance(writer_issues, list) else [],
-                    term_lock_issues=term_lock_issues,
-                    deduction_process=deduction_process,
-                    example_conflict=example_conflict,
-                    fix_hints=fix_hints,
-                ),
-                "critic_result": {
-                    "passed": True,
-                    "issue_type": "minor",
-                    "reason": reason if reason else fail_reason,
-                    "fix_strategy": fix_strategy,
-                    "fix_reason": fix_reason,
-                    "missing_conditions": missing_conditions,
-                    "example_conflict": example_conflict,
-                    "quality_check_passed": True,
-                    "quality_issues": quality_issues,
-                    "numeric_distractor_quality_passed": numeric_distractor_quality_passed,
-                    "numeric_distractor_issues": numeric_distractor_issues,
-                    "numeric_distractor_analysis": numeric_distractor_analysis,
-                    "term_lock_issues": term_lock_issues,
-                    "context_strength": context_strength,
-                    "option_dimension_consistency": option_dimension_consistency,
-                    "deduction_process": deduction_process,
-                    "can_deduce_unique_answer": can_deduce_unique_answer,
-                    "all_issues": all_issues,
-                    "multi_option_coverage_rate": multi_option_coverage_rate,
-                    "missing_options": missing_options,
-                    "first_part_missing_target_title": first_part_missing_target_title,
-                    "first_part_missing_level": first_part_missing_level,
-                    "first_part_missing_textbook_raw": first_part_missing_textbook_raw,
-                    "first_part_structured_issues": first_part_structured_issues,
-                    "analysis_rewrite_sufficient": analysis_rewrite_sufficient,
-                    "analysis_rewrite_issues": analysis_rewrite_issues,
-                    "fail_types": fail_types,
-                    "basis_source": basis_source,
-                    "basis_paths": basis_paths,
-                    "basis_reason": basis_reason,
-                    "non_current_slice_basis": non_current_slice_basis,
-                    "soft_quality_only": True,
-                    "soft_quality_issues": warn_items,
-                },
-                "critic_required_fixes": required_fixes,
-                "critic_fix_hints": fix_hints,
-                "critic_basis_source": basis_source,
-                "critic_basis_paths": basis_paths,
-                "critic_non_current_basis": non_current_slice_basis,
-                "critic_format_issues": critic_format_issues,
-                "option_hierarchy_conflict_flag": option_hierarchy_conflict_flag,
-                "option_hierarchy_conflict_pairs": option_hierarchy_conflict_pairs,
-                "option_hierarchy_conflict_message": option_hierarchy_conflict_message,
-                "critic_model_used": critic_model_used,
-                "llm_trace": llm_records,
-                "retry_count": state['retry_count'],
-                "logs": [f"{log_prefix} 审核通过（非阻断告警）：{reason if reason else fail_reason}"],
-            }
-            print(f"DEBUG CRITIC RESULT: {critic_payload['critic_result']}")
-            return critic_payload
-
         critic_issue_items = _build_critic_issue_items(
             required_fixes=required_fixes,
             reason_text=(reason if reason else fail_reason or ""),
@@ -9013,7 +9265,7 @@ def fixer_node(state: AgentState, config):
     if question_type == "判断题":
         type_instruction = "题型要求：判断题。选项必须固定为：['正确','错误']。答案必须是 'A' 或 'B'。括号格式：题干末尾必须精确写成“（　）”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后不能再加句号。"
     elif question_type == "多选题":
-        type_instruction = "题型要求：多选题。至少4个选项。答案必须是列表形式，如 ['A','C','D']。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
+        type_instruction = "题型要求：多选题。必须固定4个选项（仅A/B/C/D）。答案必须是列表形式，如 ['A','C','D']，且只能使用A-D。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
     else:
         type_instruction = "题型要求：单选题。4个选项且只有一个正确。答案必须是单个字母，如 'A'。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
     
@@ -9768,7 +10020,18 @@ def fixer_node(state: AgentState, config):
         print(f"{'='*60}")
         print(f"📝 修改字段: {', '.join(changed_fields) if changed_fields else '无变化'}")
         print(f"{'='*60}\n")
-        # Rebuild calculator/code state so Critic can verify fixed question with executable evidence.
+        # 第二阶段：测点收敛（仅做主测点压缩，不再依赖 Router 槽位模板）。
+        if "quality:focus_slimming" in required_fix_set:
+            keep_conditions: List[str] = []
+            if isinstance(critic_result, dict):
+                keep_conditions.extend([str(x).strip() for x in (critic_result.get("missing_conditions") or []) if str(x).strip()])
+            keep_conditions = keep_conditions[:2]
+            fixed_json = patch_focus_slimming(fixed_json, must_keep_conditions=keep_conditions)
+            fixed_json["_was_fixed"] = True
+            fix_summary = build_fix_summary(final_json or {}, fixed_json or {})
+            changed_fields = fix_summary.get("changed_fields", changed_fields)
+            if changed_fields:
+                log_msg += " | 已执行测点收敛"
         calc_state_updates = _rebuild_calc_execution_state(fixed_json)
         derived_state = _sync_downstream_state_from_final_json(
             fixed_json,
@@ -9779,17 +10042,6 @@ def fixer_node(state: AgentState, config):
             is_calculation=bool(state.get("generated_code")) or state.get("agent_name") == "CalculatorAgent",
             expected_calc_target=str(state.get("calc_target_signature", "") or ""),
         )
-        # 第二阶段：测点收敛（仅做主测点压缩，不再依赖 Router 槽位模板）。
-        if "quality:focus_slimming" in required_fix_set:
-            keep_conditions: List[str] = []
-            if isinstance(critic_result, dict):
-                keep_conditions.extend([str(x).strip() for x in (critic_result.get("missing_conditions") or []) if str(x).strip()])
-            keep_conditions = keep_conditions[:2]
-            fixed_json = patch_focus_slimming(fixed_json, must_keep_conditions=keep_conditions)
-            fix_summary = build_fix_summary(final_json or {}, fixed_json or {})
-            changed_fields = fix_summary.get("changed_fields", changed_fields)
-            if changed_fields:
-                log_msg += " | 已执行测点收敛"
 
         return {
             "final_json": fixed_json,
@@ -9836,6 +10088,8 @@ def critical_decision(state: AgentState):
         or state.get("critic_non_current_basis")
     )
     if non_current_basis:
+        if round_retry_count >= MAX_QUESTION_RETRY_ROUNDS:
+            return "self_heal"
         return "reroute"
 
     # 配置冲突（如“禁出单选”切片 + 强制单选配置）直接自愈返回，避免无效循环
@@ -9843,6 +10097,8 @@ def critical_decision(state: AgentState):
     if isinstance(fail_types, list) and "question_type_config_conflict" in fail_types:
         return "self_heal"
     if isinstance(fail_types, list) and "no_question" in fail_types:
+        if round_retry_count >= MAX_QUESTION_RETRY_ROUNDS:
+            return "self_heal"
         return "reroute"
 
     # 超限自愈（按当前轮次计数，不跨 reroute 叠加）
@@ -9853,7 +10109,17 @@ def critical_decision(state: AgentState):
     # 触发条件：
     # 1) can_deduce_unique_answer 明确为 False；或
     # 2) fail_types 含 reverse_solve_fail（兼容历史/不同分支）
-    question_type = state.get("current_question_type")
+    final_json = state.get("final_json") if isinstance(state.get("final_json"), dict) else {}
+    has_type_evidence = any(
+        str(final_json.get(key, "") or "").strip()
+        for key in ["选项1", "选项2", "选项3", "选项4", "正确答案", "解析"]
+    )
+    inferred_question_type = _infer_final_json_question_type(final_json) if has_type_evidence else ""
+    question_type = (
+        inferred_question_type
+        or state.get("locked_question_type")
+        or state.get("current_question_type")
+    )
     reverse_solve_failed = (critic_result.get("can_deduce_unique_answer") is False) or (
         isinstance(fail_types, list) and "reverse_solve_fail" in fail_types
     )
@@ -10122,12 +10388,12 @@ def calculator_node(state: AgentState, config):
 {CALC_PARAMETER_GROUNDING_GUIDE}
 
 # 计算代码硬约束（必须遵守）
-1. **是否需要代码（由你判断）**：仅当本题必须依赖**算术/公式/分步数值推导**才能得出选项中的数时，设 `need_calculation=true` 并生成 `python_code`。
-   - `need_calculation=false`（且 `python_code` 为空）适用于：纯法条或规则适用、**仅在已给出的数字之间取最小/最大/孰短孰长**、无新的运算链条、或答案不依赖可执行数值推导。
-   - 不要仅因材料里出现“公式”“年限”“税率”等词就强行 `true`；若考生只需套用规则选数而无需你写代码再算一遍，应 `false`。
-2. 若 `need_calculation=true`，代码必须算出“最终要放进正确选项里的数值结果”，不能只停留在无用中间值；若确实有中间步骤，也必须继续算到最终答案。
-3. 代码最后必须把最终结果赋给变量 `result`，且该结果后续将直接用于校验正确选项。
-4. 若 `need_calculation=true` 但你无法把最终结果算清楚，就不要输出模糊题目；应优先重构数据后再算。
+1. **先做单一判断**：只判断“这道题是否需要计算”。
+   - 若需要：`need_calculation=true`，并给出 `python_code`。
+   - 若不需要：`need_calculation=false`，`python_code` 置空。
+2. 若 `need_calculation=true`，代码必须算出可直接用于判定答案的最终数值，并赋值给 `result`。
+3. 不要因为出现“公式/年限/税率”等关键词就机械判定为需要计算；以题目求解是否真的依赖计算为准。
+4. 若无法稳定算出结果，宁可返回 `need_calculation=false`，不要输出不可靠代码。
 
 # 输出 JSON
 {{
@@ -10246,7 +10512,7 @@ def calculator_node(state: AgentState, config):
     if target_type == "判断题":
         type_instruction = "题型要求：判断题。选项必须固定为：['正确','错误']。答案必须是 'A' 或 'B'。括号格式：题干末尾必须精确写成“（　）”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后不能再加句号。"
     elif target_type == "多选题":
-        type_instruction = "题型要求：多选题。至少4个选项。答案必须是列表形式，如 ['A','C','D']。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
+        type_instruction = "题型要求：多选题。必须固定4个选项（仅A/B/C/D）。答案必须是列表形式，如 ['A','C','D']，且只能使用A-D。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
     else:
         type_instruction = "题型要求：单选题。4个选项且只有一个正确。答案必须是单个字母，如 'A'。括号格式：题干末尾必须精确写成“（　）。”；括号必须是中文全角括号，括号内有且仅有一个全角空格，括号前不能有任何符号或空格，括号后一律紧跟中文句号。"
     
@@ -10328,7 +10594,7 @@ def calculator_node(state: AgentState, config):
    - 正确示例（单选题）：options 填四句正文，如 ["网签合同信息一旦录入系统便无法修改，可能导致过户失败", "线上过户无法调取网签合同，可能影响客户提取公积金", ...]；判断题：["正确", "错误"]。
    - 错误示例：不要写 ["A. 网签...", "B. 线上..."] 或 ["A", "B", "C", "D"]，否则展示会变成 A. A 网签… 双重序号。
 1. **选项数量与正确性**：
-   - 选择题每题4个选项；单选题仅1个正确，多选题≥2个正确。
+   - 选择题每题固定4个选项；单选题仅1个正确；多选题正确答案为2-4个且只能使用A/B/C/D。
    - 多选题中正确选项数量要合理，不要多道题都只有1个答案。
 2. **标点与语义**：
    - 每个选项末尾不添加标点符号。

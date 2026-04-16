@@ -1,0 +1,47 @@
+flowchart TD
+  A["登录与上下文初始化"] --> B["鉴权模式<br/>legacy: X-System-User<br/>oidc: Authorization Bearer"]
+  B --> C["加载可访问城市<br/>/api/tenants<br/>/api/meta"]
+  C --> D["选择城市 tenant_id"]
+
+  D --> E["平台管理分支"]
+  D --> F["业务生产分支"]
+
+  E --> E1["城市管理<br/>新增/停用/删除城市<br/>绑定系统号与角色"]
+  E --> E2["全局 Key 配置<br/>模型 Key<br/>Git 凭据"]
+
+  F --> G["资源上传<br/>/materials/upload"]
+  G --> H["教材版本创建<br/>material_version_id"]
+  H --> I["自动切片<br/>切片文本<br/>切片图片<br/>图片解析"]
+  H --> J["参考题上传<br/>/materials/{mid}/reference/upload"]
+  J --> K["自动映射<br/>切片 -> 母题"]
+
+  I --> L["切片核对<br/>/slices<br/>/slices/review/batch<br/>/slices/update"]
+  K --> M["映射确认<br/>/mappings<br/>/mappings/review/batch"]
+
+  L --> N{"是否满足生效前置条件"}
+  M --> N
+  N -->|"否"| L
+  N -->|"是"| O["教材设为 effective<br/>/materials/effective"]
+
+  O --> P["出题模板<br/>/generate-templates<br/>question_count<br/>route_rules<br/>mastery_ratio"]
+  O --> Q["AI 出题<br/>/generate/tasks"]
+  P --> Q
+
+  Q --> R["长任务执行<br/>任务详情<br/>trace<br/>取消<br/>续跑<br/>批量续跑未完成"]
+  R --> S["成功题落库<br/>question bank"]
+  R --> T["失败/缺口<br/>resume<br/>repair rounds"]
+
+  S --> U["Judge 任务<br/>/judge/tasks<br/>/qa/runs/{run_id}/run-judge"]
+  U --> V["QA 评估<br/>overview<br/>trends<br/>drift<br/>thresholds<br/>alerts<br/>release-report<br/>ops-weekly"]
+
+  V --> W{"run 是否可发布<br/>saved_count > 0<br/>且已跑离线 Judge"}
+  W -->|"否"| Q
+  W -->|"是"| X["版本管理<br/>/qa/releases"]
+
+  X --> Y["可选 Git 提交与推送<br/>代码类文件过滤<br/>失败时回退分支"]
+  X --> Z["发布记录写入<br/>version<br/>run_ids<br/>published_by"]
+
+  S --> AA["题库管理<br/>/bank<br/>检索<br/>AI 调优<br/>人工修改<br/>删除<br/>导出<br/>手工加题"]
+  V --> AA
+  Z --> AA
+

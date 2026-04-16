@@ -204,6 +204,8 @@ export default function JudgeTaskDetailPage() {
       if (rid) {
         const detail = await getQaRunDetail(tenantId, rid);
         setRunDetail(detail || {});
+      } else if (Array.isArray(t?.questions) && t.questions.length > 0) {
+        setRunDetail({ questions: t.questions });
       } else {
         setRunDetail({});
       }

@@ -2,7 +2,17 @@ import React, { useEffect, useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { Breadcrumb, Button, Input, Layout, Menu, Select, Space, Typography, message } from 'antd';
 import { FileSearchOutlined, LinkOutlined, DashboardOutlined, UploadOutlined, RobotOutlined, DatabaseOutlined, TeamOutlined, MenuFoldOutlined, MenuUnfoldOutlined, BookOutlined, LineChartOutlined, TagOutlined, OrderedListOutlined, KeyOutlined, ProfileOutlined } from '@ant-design/icons';
-import { getAuthToken, getSystemUser, listTenants, setAuthToken, setSystemUser } from '../services/api';
+import {
+  getAuthMeta,
+  getAuthToken,
+  getSystemUser,
+  listTenants,
+  logoutSso,
+  setAuthToken,
+  setSystemUser,
+  startSsoLogin,
+  switchSsoSystemUser,
+} from '../services/api';
 import { getGlobalTenantId, setGlobalTenantId } from '../services/tenantScope';
 
 const { Header, Sider, Content } = Layout;
@@ -33,6 +43,9 @@ export default function AdminLayout() {
   const [globalTenantId, setGlobalTenantIdState] = useState(getGlobalTenantId());
   const [globalSystemUser, setGlobalSystemUser] = useState(getSystemUser());
   const [globalAuthToken, setGlobalAuthToken] = useState(getAuthToken());
+  const [authBooting, setAuthBooting] = useState(true);
+  const [ssoEnabled, setSsoEnabled] = useState(false);
+  const [ssoAccounts, setSsoAccounts] = useState([]);
   const routeNameMap = {
     '/': '工作台',
     '/materials': '资源上传',
@@ -54,6 +67,40 @@ export default function AdminLayout() {
   ];
 
   useEffect(() => {
+    let active = true;
+    const returnTo = `${location.pathname || '/'}${location.search || ''}${location.hash || ''}` || '/';
+    (async () => {
+      try {
+        const authMeta = await getAuthMeta({ return_to: returnTo });
+        if (!active) return;
+        const enabled = Boolean(authMeta?.enabled);
+        setSsoEnabled(enabled);
+        if (enabled) {
+          if (!authMeta?.logged_in) {
+            startSsoLogin(returnTo);
+            return;
+          }
+          const currentSystemUser = String(authMeta?.system_user || '').trim();
+          setSsoAccounts(Array.isArray(authMeta?.accounts) ? authMeta.accounts : []);
+          setGlobalSystemUser(currentSystemUser);
+          setSystemUser(currentSystemUser);
+          setAuthToken('');
+          setGlobalAuthToken('');
+        } else {
+          setSsoAccounts([]);
+        }
+      } catch (e) {
+        if (!active) return;
+        message.error(e?.response?.data?.error?.message || '鉴权信息加载失败');
+      } finally {
+        if (active) setAuthBooting(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [location.hash, location.pathname, location.search]);
+
+  useEffect(() => {
+    if (authBooting) return;
     listTenants()
       .then((data) => {
         const items = data.items || [];
@@ -66,9 +113,17 @@ export default function AdminLayout() {
           setGlobalTenantId(chosen);
         }
       })
-      .catch((e) => message.error(e?.response?.data?.error?.message || '加载城市失败'));
+      .catch((e) => {
+        const msg = e?.response?.data?.error?.message || '加载城市失败';
+        if (ssoEnabled && Number(e?.response?.status || 0) === 401) {
+          const returnTo = `${location.pathname || '/'}${location.search || ''}${location.hash || ''}` || '/';
+          startSsoLogin(returnTo);
+          return;
+        }
+        message.error(msg);
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [authBooting, ssoEnabled]);
 
   return (
     <Layout className="admin-shell">
@@ -115,27 +170,70 @@ export default function AdminLayout() {
                 options={tenants.map((t) => ({ label: `${t.name} (${t.tenant_id})`, value: t.tenant_id }))}
               />
               <Typography.Text type="secondary">用户</Typography.Text>
-              <Input
-                value={globalSystemUser}
-                style={{ width: 140 }}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setGlobalSystemUser(next);
-                  setSystemUser(next);
-                }}
-                onBlur={() => setSystemUser(globalSystemUser)}
-              />
-              <Input.Password
-                value={globalAuthToken}
-                placeholder="OIDC Token(可选)"
-                style={{ width: 220 }}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setGlobalAuthToken(next);
-                  setAuthToken(next);
-                }}
-                onBlur={() => setAuthToken(globalAuthToken)}
-              />
+              {ssoEnabled ? (
+                <>
+                  <Select
+                    value={globalSystemUser || undefined}
+                    style={{ width: 200 }}
+                    placeholder="选择系统号"
+                    onChange={async (value) => {
+                      try {
+                        await switchSsoSystemUser(value);
+                        setGlobalSystemUser(value);
+                        setSystemUser(value);
+                      } catch (e) {
+                        message.error(e?.response?.data?.error?.message || '切换系统号失败');
+                      }
+                    }}
+                    options={(ssoAccounts || []).map((item) => ({
+                      label: item?.is_default ? `${item.system_user}（默认）` : item.system_user,
+                      value: item.system_user,
+                    }))}
+                  />
+                  <Button
+                    onClick={async () => {
+                      try {
+                        const returnTo = `${location.pathname || '/'}${location.search || ''}${location.hash || ''}` || '/';
+                        const res = await logoutSso(returnTo);
+                        const url = String(res?.logout_url || '').trim();
+                        if (url) {
+                          window.location.assign(url);
+                          return;
+                        }
+                        startSsoLogin('/');
+                      } catch (e) {
+                        message.error(e?.response?.data?.error?.message || '退出失败');
+                      }
+                    }}
+                  >
+                    退出登录
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Input
+                    value={globalSystemUser}
+                    style={{ width: 140 }}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setGlobalSystemUser(next);
+                      setSystemUser(next);
+                    }}
+                    onBlur={() => setSystemUser(globalSystemUser)}
+                  />
+                  <Input.Password
+                    value={globalAuthToken}
+                    placeholder="OIDC Token(可选)"
+                    style={{ width: 220 }}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setGlobalAuthToken(next);
+                      setAuthToken(next);
+                    }}
+                    onBlur={() => setAuthToken(globalAuthToken)}
+                  />
+                </>
+              )}
             </Space>
           </Space>
         </Header>

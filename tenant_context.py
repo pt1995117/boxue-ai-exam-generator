@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Dict, List, Optional
 
+from runtime_paths import ensure_parent, resolve_tenant_user_file
 from tenants_config import DEFAULT_TENANTS, ROLE_PERMISSIONS, list_tenants
-
-USER_TENANT_FILE = Path("tenant_users.json")
-
 
 def _default_acl() -> Dict[str, dict]:
     tenant_ids = list(DEFAULT_TENANTS.keys())
@@ -19,9 +16,10 @@ def _default_acl() -> Dict[str, dict]:
 
 
 def load_acl() -> Dict[str, dict]:
-    if USER_TENANT_FILE.exists():
+    user_tenant_file = resolve_tenant_user_file()
+    if user_tenant_file.exists():
         try:
-            data = json.loads(USER_TENANT_FILE.read_text(encoding="utf-8"))
+            data = json.loads(user_tenant_file.read_text(encoding="utf-8"))
             if isinstance(data, dict) and data:
                 return data
         except json.JSONDecodeError:
@@ -30,7 +28,8 @@ def load_acl() -> Dict[str, dict]:
 
 
 def save_acl(data: Dict[str, dict]) -> None:
-    USER_TENANT_FILE.write_text(
+    path = ensure_parent(resolve_tenant_user_file())
+    path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )

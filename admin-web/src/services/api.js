@@ -20,6 +20,21 @@ export const setAuthToken = (token) => {
   }
 };
 
+export const getAuthMeta = (params = {}) =>
+  client.get('/auth/meta', { params }).then((r) => r.data);
+
+export const startSsoLogin = (returnTo = '/') => {
+  const params = new URLSearchParams();
+  params.set('return_to', returnTo || '/');
+  window.location.assign(`/api/auth/login?${params.toString()}`);
+};
+
+export const switchSsoSystemUser = (systemUser) =>
+  client.post('/auth/switch-system-user', { system_user: systemUser }).then((r) => r.data);
+
+export const logoutSso = (returnTo = '/') =>
+  client.post('/auth/logout', { return_to: returnTo || '/' }).then((r) => r.data);
+
 client.interceptors.request.use((config) => {
   const user = getSystemUser();
   const token = getAuthToken();
@@ -32,6 +47,15 @@ client.interceptors.request.use((config) => {
 });
 
 export const listTenants = () => client.get('/tenants').then((r) => r.data);
+
+export const getApiErrorMessage = (error, fallback = '请求失败') => {
+  const code = String(error?.response?.data?.error?.code || '').trim();
+  const raw = String(error?.response?.data?.error?.message || '').trim();
+  if (code === 'TENANT_DATA_MISSING') {
+    return raw || '当前城市数据未初始化，请先上传该城市教材并补齐母题文件。';
+  }
+  return raw || error?.message || fallback;
+};
 
 export const getSlices = (tenantId, params) =>
   client.get(`/${tenantId}/slices`, { params }).then((r) => r.data);
@@ -71,8 +95,14 @@ export const updateSliceContent = (tenantId, sliceId, payload) =>
 export const updateSliceImageAnalysis = (tenantId, sliceId, payload) =>
   client.post(`/${tenantId}/slices/${encodeURIComponent(sliceId)}/images/update`, payload).then((r) => r.data);
 
+export const blockSliceGeneration = (tenantId, sliceId, payload) =>
+  client.post(`/${tenantId}/slices/${encodeURIComponent(sliceId)}/generation/block`, payload).then((r) => r.data);
+
 export const addSlice = (tenantId, payload) =>
   client.post(`/${tenantId}/slices/add`, payload).then((r) => r.data);
+
+export const deleteSlice = (tenantId, sliceId, payload) =>
+  client.post(`/${tenantId}/slices/${encodeURIComponent(sliceId)}/delete`, payload).then((r) => r.data);
 
 export const reorderSlices = (tenantId, payload) =>
   client.post(`/${tenantId}/slices/order`, payload).then((r) => r.data);
@@ -93,7 +123,20 @@ export const getQaOverview = (tenantId, params) =>
   client.get(`/${tenantId}/qa/overview`, { params }).then((r) => r.data);
 
 export const listQaRuns = (tenantId, params) =>
-  client.get(`/${tenantId}/qa/runs`, { params }).then((r) => r.data);
+  client.get(`/${tenantId}/qa/runs`, { params, timeout: 120000 }).then((r) => r.data);
+
+// Backward-compatible alias used by JudgeTaskPage.
+export const listQaRunsQuick = (tenantId, params = {}) => {
+  const nextParams = { ...params };
+  if (nextParams.limit != null && nextParams.page_size == null) {
+    nextParams.page_size = nextParams.limit;
+  }
+  if (nextParams.page == null) {
+    nextParams.page = 1;
+  }
+  delete nextParams.limit;
+  return listQaRuns(tenantId, nextParams);
+};
 
 export const getQaRunDetail = (tenantId, runId) =>
   client.get(`/${tenantId}/qa/runs/${encodeURIComponent(runId)}`).then((r) => r.data);
@@ -113,6 +156,12 @@ export const getJudgeTask = (tenantId, taskId) =>
 
 export const cancelJudgeTask = (tenantId, taskId) =>
   client.post(`/${tenantId}/judge/tasks/${encodeURIComponent(taskId)}/cancel`).then((r) => r.data);
+
+// The current backend does not expose these endpoints yet. Keep the UI usable
+// and the production build unblocked with graceful fallbacks.
+export const listGenerateTaskJudgeBankItems = async () => ({ items: [] });
+
+export const previewJudgeRuns = async () => ({ items: [] });
 
 export const listQaLlmCalls = (tenantId, params) =>
   client.get(`/${tenantId}/qa/llm-calls`, { params }).then((r) => r.data);
@@ -333,6 +382,9 @@ export const generateQuestionsStream = async (tenantId, payload, handlers = {}) 
 export const listBankQuestions = (tenantId, params) =>
   client.get(`/${tenantId}/bank`, { params }).then((r) => r.data);
 
+export const getBankQuestion = (tenantId, questionId) =>
+  client.get(`/${tenantId}/bank/${encodeURIComponent(questionId)}`).then((r) => r.data);
+
 export const deleteBankQuestions = (tenantId, payload) =>
   client.post(`/${tenantId}/bank/delete`, payload).then((r) => r.data);
 
@@ -341,6 +393,12 @@ export const addBankQuestions = (tenantId, payload) =>
 
 export const exportBankQuestions = (tenantId, payload) =>
   client.post(`/${tenantId}/bank/export`, payload, { responseType: 'blob' }).then((r) => r.data);
+
+export const optimizeBankQuestion = (tenantId, payload) =>
+  client.post(`/${tenantId}/bank/optimize`, payload, { timeout: 180000 }).then((r) => r.data);
+
+export const updateBankQuestion = (tenantId, payload) =>
+  client.post(`/${tenantId}/bank/update`, payload).then((r) => r.data);
 
 export const listAdminCities = (params) =>
   client.get('/admin/cities', { params }).then((r) => r.data);

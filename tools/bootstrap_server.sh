@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NODE_REQUIRED_MAJOR=20
-KEY_FILE="${ROOT_DIR}/填写您的Key.txt"
+RUNTIME_DIR="${BOXUE_RUNTIME_DIR:-${ROOT_DIR}/.local/runtime}"
+CACHE_DIR="${BOXUE_CACHE_DIR:-${ROOT_DIR}/.local/cache}"
+KEY_FILE="${BOXUE_KEY_FILE:-${RUNTIME_DIR}/config/填写您的Key.txt}"
 
 echo "[bootstrap] root=${ROOT_DIR}"
 
@@ -36,9 +38,10 @@ bootstrap_python() {
 }
 
 ensure_key_file() {
+  mkdir -p "$(dirname "${KEY_FILE}")" "${CACHE_DIR}"
   if [[ ! -f "${KEY_FILE}" ]]; then
     echo "[bootstrap][error] missing required key file: ${KEY_FILE}"
-    echo "[bootstrap][hint] copy 填写您的Key.txt.example to 填写您的Key.txt and fill valid keys"
+    echo "[bootstrap][hint] copy 填写您的Key.txt.example to ${KEY_FILE} and fill valid keys"
     exit 1
   fi
   chmod 600 "${KEY_FILE}" 2>/dev/null || true
@@ -61,5 +64,8 @@ bootstrap_python
 bootstrap_frontend
 
 echo "[bootstrap] done"
+echo "[bootstrap] runtime=${RUNTIME_DIR}"
+echo "[bootstrap] cache=${CACHE_DIR}"
+echo "[bootstrap] key=${KEY_FILE}"
 echo "[bootstrap] start backend: ${ROOT_DIR}/.venv/bin/python ${ROOT_DIR}/admin_api.py"
 echo "[bootstrap] start frontend: npm --prefix ${ROOT_DIR}/admin-web run dev -- --host 127.0.0.1 --port 8522"

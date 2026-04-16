@@ -49,6 +49,7 @@ wheels/
 
 # Logs
 *.log
+logs/
 
 # Test outputs
 test_output/
@@ -61,14 +62,14 @@ llm_rerank_debug_*.txt
 # Temporary files
 *.tmp
 *.bak
+.local/
 
 # Node / frontend build artifacts
 node_modules/
 admin-web/node_modules/
 admin-web/dist/
+admin-web/.vite/
 
-# Local model/cache artifacts
-models/
 
 # Runtime/temp outputs
 tmp/
@@ -79,6 +80,12 @@ test_output.txt
 # Runtime data (do not version generated runtime states)
 data/admin_p0.db
 data/*/audit/*.jsonl
+data/*/audit/*.json
+data/*/audit/**/*.jsonl
+data/*/audit/**/*.json
 data/*/materials/uploads/
+data/*/materials/registry.json
 data/*/slices/
 data/*/mapping/
+data/*/exports/
+data/*/bank/
