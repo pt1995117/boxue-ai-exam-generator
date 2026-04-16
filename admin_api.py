@@ -1199,6 +1199,9 @@ def _get_principal() -> Principal:
     if principal is None:
         auth_header = (request.headers.get("Authorization") or "")
         system_user_header = (request.headers.get("X-System-User") or "")
+        # SSO 开启时禁止 legacy X-System-User 绕过
+        if SSO_MANAGER.enabled and system_user_header.strip() and not auth_header.strip():
+            raise AccessDenied("SSO_LEGACY_BYPASS_DENIED")
         try:
             principal = resolve_principal(
                 authorization_header=auth_header,
@@ -10170,6 +10173,12 @@ def _handle_options():
         return None
     auth_header = (request.headers.get("Authorization") or "")
     system_user_header = (request.headers.get("X-System-User") or "")
+
+    # 当 SSO 开启时，禁止通过 legacy X-System-User 头绕过 SSO 直接进入。
+    # OIDC Bearer token 仍然允许（供机器账号 / 内部服务调用）。
+    if SSO_MANAGER.enabled and system_user_header.strip() and not auth_header.strip():
+        return _error("SSO_LEGACY_BYPASS_DENIED", "SSO 模式下不允许使用 X-System-User 头直接认证", 401)
+
     try:
         principal = resolve_principal(
             authorization_header=auth_header,
@@ -10353,7 +10362,17 @@ def api_auth_logout():
         resp = redirect(logout_url, code=302)
     else:
         resp = _json_response({"ok": True, "logout_url": logout_url})
-    resp.delete_cookie(SSO_MANAGER.cookie_name, path="/")
+    # 同时触发服务端过期 session 清理（非阻塞，异常不影响响应）
+    try:
+        SSO_MANAGER._get_store().purge_expired_sso_sessions()
+    except Exception:
+        pass
+    resp.delete_cookie(
+        SSO_MANAGER.cookie_name,
+        path="/",
+        samesite="Lax",
+        secure=SSO_MANAGER.cookie_secure,
+    )
     return resp
 
 

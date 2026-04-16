@@ -51,6 +51,24 @@ class DBStore:
             if self.is_postgres:
                 cur.execute(
                     """
+                    create table if not exists sso_sessions (
+                      sid text primary key,
+                      ucid text not null,
+                      tenant_id text not null,
+                      system_user text not null,
+                      accounts_json text not null default '[]',
+                      business_token text not null default '',
+                      st text not null default '',
+                      created_at float not null,
+                      expires_at float not null
+                    )
+                    """
+                )
+                cur.execute(
+                    "create index if not exists idx_sso_sessions_expires_at on sso_sessions (expires_at)"
+                )
+                cur.execute(
+                    """
                     create table if not exists slice_review (
                       tenant_id text not null,
                       slice_id integer not null,
@@ -127,6 +145,24 @@ class DBStore:
                         """
                     )
             else:
+                cur.execute(
+                    """
+                    create table if not exists sso_sessions (
+                      sid text primary key,
+                      ucid text not null,
+                      tenant_id text not null,
+                      system_user text not null,
+                      accounts_json text not null default '[]',
+                      business_token text not null default '',
+                      st text not null default '',
+                      created_at real not null,
+                      expires_at real not null
+                    )
+                    """
+                )
+                cur.execute(
+                    "create index if not exists idx_sso_sessions_expires_at on sso_sessions (expires_at)"
+                )
                 cur.execute(
                     """
                     create table if not exists slice_review (
@@ -568,6 +604,135 @@ class DBStore:
                 (tenant_id, material_version_id),
             )
             return cur.rowcount > 0
+
+
+    # ── SSO session store ──────────────────────────────────────────────────────
+
+    def upsert_sso_session(self, session_dict: dict) -> None:
+        import json as _json
+        sid = str(session_dict["sid"])
+        ucid = str(session_dict["ucid"])
+        tenant_id = str(session_dict["tenant_id"])
+        system_user = str(session_dict["system_user"])
+        accounts_json = _json.dumps(list(session_dict.get("accounts", [])), ensure_ascii=False)
+        business_token = str(session_dict.get("business_token", ""))
+        st = str(session_dict.get("st", ""))
+        created_at = float(session_dict["created_at"])
+        expires_at = float(session_dict["expires_at"])
+        with self.connect() as conn:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute(
+                    """
+                    insert into sso_sessions
+                      (sid, ucid, tenant_id, system_user, accounts_json, business_token, st, created_at, expires_at)
+                    values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    on conflict (sid) do update set
+                      system_user=excluded.system_user,
+                      accounts_json=excluded.accounts_json,
+                      business_token=excluded.business_token,
+                      expires_at=excluded.expires_at
+                    """,
+                    (sid, ucid, tenant_id, system_user, accounts_json, business_token, st, created_at, expires_at),
+                )
+            else:
+                cur.execute(
+                    """
+                    insert into sso_sessions
+                      (sid, ucid, tenant_id, system_user, accounts_json, business_token, st, created_at, expires_at)
+                    values (?,?,?,?,?,?,?,?,?)
+                    on conflict(sid) do update set
+                      system_user=excluded.system_user,
+                      accounts_json=excluded.accounts_json,
+                      business_token=excluded.business_token,
+                      expires_at=excluded.expires_at
+                    """,
+                    (sid, ucid, tenant_id, system_user, accounts_json, business_token, st, created_at, expires_at),
+                )
+
+    def get_sso_session(self, sid: str) -> Optional[dict]:
+        import json as _json
+        import time as _time
+        now = _time.time()
+        with self.connect() as conn:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute(
+                    "select sid,ucid,tenant_id,system_user,accounts_json,business_token,st,created_at,expires_at"
+                    " from sso_sessions where sid=%s and expires_at>%s",
+                    (sid, now),
+                )
+            else:
+                cur.execute(
+                    "select sid,ucid,tenant_id,system_user,accounts_json,business_token,st,created_at,expires_at"
+                    " from sso_sessions where sid=? and expires_at>?",
+                    (sid, now),
+                )
+            row = cur.fetchone()
+        if not row:
+            return None
+        accounts = []
+        try:
+            accounts = _json.loads(row[4])
+        except Exception:
+            pass
+        return {
+            "sid": row[0],
+            "ucid": row[1],
+            "tenant_id": row[2],
+            "system_user": row[3],
+            "accounts": accounts,
+            "business_token": row[5],
+            "st": row[6],
+            "created_at": float(row[7]),
+            "expires_at": float(row[8]),
+        }
+
+    def refresh_sso_session(self, sid: str, new_expires_at: float) -> None:
+        with self.connect() as conn:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute(
+                    "update sso_sessions set expires_at=%s where sid=%s",
+                    (new_expires_at, sid),
+                )
+            else:
+                cur.execute(
+                    "update sso_sessions set expires_at=? where sid=?",
+                    (new_expires_at, sid),
+                )
+
+    def update_sso_session_system_user(self, sid: str, system_user: str) -> None:
+        with self.connect() as conn:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute(
+                    "update sso_sessions set system_user=%s where sid=%s",
+                    (system_user, sid),
+                )
+            else:
+                cur.execute(
+                    "update sso_sessions set system_user=? where sid=?",
+                    (system_user, sid),
+                )
+
+    def delete_sso_session(self, sid: str) -> None:
+        with self.connect() as conn:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute("delete from sso_sessions where sid=%s", (sid,))
+            else:
+                cur.execute("delete from sso_sessions where sid=?", (sid,))
+
+    def purge_expired_sso_sessions(self) -> None:
+        import time as _time
+        now = _time.time()
+        with self.connect() as conn:
+            cur = conn.cursor()
+            if self.is_postgres:
+                cur.execute("delete from sso_sessions where expires_at<=%s", (now,))
+            else:
+                cur.execute("delete from sso_sessions where expires_at<=?", (now,))
 
 
 _store: Optional[DBStore] = None

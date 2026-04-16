@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode, urljoin
+from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 from runtime_paths import REPO_ROOT, runtime_config_root
 
 CAS_NS = "{http://www.yale.edu/tp/cas}"
+
+# 活跃续期阈值：会话剩余时间不足此值时，访问即自动续期
+_RENEW_THRESHOLD_SEC = 3600
 
 
 class SSOError(RuntimeError):
@@ -59,9 +62,25 @@ def _as_bool(value: Any, default: bool = False) -> bool:
 
 
 def _safe_return_to(raw: str) -> str:
+    """
+    只允许相对路径跳转，防止 open redirect。
+    - 必须以 / 开头且不以 // 开头（防协议相对 URL）
+    - URL 解码后再做一次检查，防止 %2f%2f 绕过
+    - 过滤 CRLF 字符，防止 header injection
+    """
+    from urllib.parse import unquote
     value = str(raw or "").strip()
+    # 过滤 CRLF
+    value = value.replace("\r", "").replace("\n", "")
     if not value:
         return "/"
+    # URL 解码后再检查，防 %2f%2f 绕过
+    decoded = unquote(value)
+    if not decoded.startswith("/"):
+        return "/"
+    if decoded.startswith("//"):
+        return "/"
+    # 再次检查原始值
     if not value.startswith("/"):
         return "/"
     if value.startswith("//"):
@@ -76,6 +95,20 @@ def _find_text(root: ET.Element, path: str) -> str:
     return str(node.text).strip()
 
 
+def _urlopen_with_retry(req: Request, timeout: int, retries: int = 2) -> bytes:
+    """带重试的 urlopen，每次超时或网络错误后重试一次。"""
+    last_exc: Exception = RuntimeError("no attempts")
+    for attempt in range(retries + 1):
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except URLError as exc:
+            last_exc = exc
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))
+    raise last_exc
+
+
 class SSOManager:
     def __init__(self) -> None:
         self.enabled = _as_bool(os.getenv("SSO_ENABLED"), False)
@@ -88,8 +121,12 @@ class SSOManager:
         self.cookie_name = os.getenv("SSO_COOKIE_NAME", "boxue_sso_sid").strip() or "boxue_sso_sid"
         self.cookie_secure = _as_bool(os.getenv("SSO_COOKIE_SECURE"), False)
         self.session_ttl_sec = max(int(os.getenv("SSO_SESSION_TTL_SEC", "28800") or 28800), 300)
-        self._lock = threading.Lock()
-        self._sessions: Dict[str, dict[str, Any]] = {}
+        # 验证超时：默认 10 秒，允许环境变量覆盖
+        self._validate_timeout = max(int(os.getenv("SSO_VALIDATE_TIMEOUT_SEC", "10") or 10), 3)
+
+    def _get_store(self):
+        from db_store import get_store
+        return get_store()
 
     def _binding_path(self) -> Path:
         runtime_file = runtime_config_root() / "sso_user_bindings.json"
@@ -149,16 +186,12 @@ class SSOManager:
         return self._load_bindings().get(str(ucid).strip())
 
     def _pick_default_system_user(self, accounts: list[dict[str, Any]]) -> str:
+        if not accounts:
+            return ""
         for account in accounts:
             if bool(account.get("is_default")):
                 return str(account.get("system_user", "")).strip()
         return str(accounts[0].get("system_user", "")).strip()
-
-    def _purge_expired_sessions(self) -> None:
-        now = time.time()
-        expired = [sid for sid, item in self._sessions.items() if float(item.get("expires_at", 0)) <= now]
-        for sid in expired:
-            self._sessions.pop(sid, None)
 
     def create_session(self, *, ucid: str, tenant_id: str, accounts: list[dict[str, Any]], st: str, business_token: str) -> SSOSession:
         system_user = self._pick_default_system_user(accounts)
@@ -177,45 +210,53 @@ class SSOManager:
             created_at=now,
             expires_at=now + float(self.session_ttl_sec),
         )
-        with self._lock:
-            self._purge_expired_sessions()
-            self._sessions[sid] = session.to_dict()
+        self._get_store().upsert_sso_session(session.to_dict())
         return session
 
     def get_session(self, sid: str) -> Optional[dict[str, Any]]:
+        """
+        获取会话，同时实现滑动续期：
+        若会话剩余时间不足 _RENEW_THRESHOLD_SEC，自动延长至完整 TTL。
+        """
         key = str(sid or "").strip()
         if not key:
             return None
-        with self._lock:
-            self._purge_expired_sessions()
-            item = self._sessions.get(key)
-            return dict(item) if item else None
+        store = self._get_store()
+        item = store.get_sso_session(key)
+        if not item:
+            return None
+        remaining = item["expires_at"] - time.time()
+        if remaining < _RENEW_THRESHOLD_SEC:
+            new_expires_at = time.time() + float(self.session_ttl_sec)
+            store.refresh_sso_session(key, new_expires_at)
+            item["expires_at"] = new_expires_at
+        return dict(item)
 
     def clear_session(self, sid: str) -> None:
         key = str(sid or "").strip()
         if not key:
             return
-        with self._lock:
-            self._sessions.pop(key, None)
+        self._get_store().delete_sso_session(key)
 
     def switch_system_user(self, sid: str, system_user: str) -> dict[str, Any]:
         key = str(sid or "").strip()
         target = str(system_user or "").strip()
         if not key or not target:
             raise SSOError("BAD_REQUEST")
-        with self._lock:
-            item = self._sessions.get(key)
-            if not item:
-                raise SSOError("SESSION_NOT_FOUND")
-            users = {str(x.get("system_user", "")).strip() for x in item.get("accounts", []) if isinstance(x, dict)}
-            if target not in users:
-                raise SSOError("SYSTEM_USER_FORBIDDEN")
-            item["system_user"] = target
-            self._sessions[key] = item
-            return dict(item)
+        store = self._get_store()
+        item = store.get_sso_session(key)
+        if not item:
+            raise SSOError("SESSION_NOT_FOUND")
+        users = {str(x.get("system_user", "")).strip() for x in item.get("accounts", []) if isinstance(x, dict)}
+        if target not in users:
+            raise SSOError("SYSTEM_USER_FORBIDDEN")
+        store.update_sso_session_system_user(key, target)
+        item["system_user"] = target
+        return dict(item)
 
     def frontend_redirect_url(self, return_to: str) -> str:
-        return urljoin(self.frontend_base_url + "/", _safe_return_to(return_to).lstrip("/"))
+        safe = _safe_return_to(return_to)
+        return urljoin(self.frontend_base_url + "/", safe.lstrip("/"))
 
     def service_url(self, return_to: str) -> str:
         rt = _safe_return_to(return_to)
@@ -240,8 +281,8 @@ class SSOManager:
         url = f"{self.validate_url}?{urlencode({'ticket': t, 'service': s})}"
         req = Request(url, headers={"Accept": "application/xml"})
         try:
-            with urlopen(req, timeout=5) as resp:
-                xml_text = resp.read().decode("utf-8", errors="replace")
+            raw = _urlopen_with_retry(req, timeout=self._validate_timeout, retries=2)
+            xml_text = raw.decode("utf-8", errors="replace")
         except Exception as exc:
             raise SSOError(f"CAS_VALIDATE_FAILED:{exc}") from exc
         try:

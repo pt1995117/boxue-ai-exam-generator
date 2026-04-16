@@ -67,9 +67,9 @@ def ensure_dir(path: Path) -> Path:
 
 def resolve_primary_key_file() -> Path:
     runtime_file = runtime_key_file()
-    if runtime_file.exists():
+    if runtime_file.exists() and runtime_file.stat().st_size > 0:
         return runtime_file
-    if REPO_KEY_FILE.exists():
+    if REPO_KEY_FILE.exists() and REPO_KEY_FILE.stat().st_size > 0:
         return REPO_KEY_FILE
     return runtime_file
 
