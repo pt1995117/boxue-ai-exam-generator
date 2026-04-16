@@ -147,7 +147,69 @@ def _autoload_primary_key_env(*, override: bool = False) -> dict[str, str]:
     for k, v in cfg.items():
         if _is_usable_secret(v) and (override or not os.environ.get(k)):
             os.environ[k] = str(v).strip()
+    _sync_key_modules(cfg)
     return cfg
+
+
+def _sync_key_modules(cfg: dict) -> None:
+    """将 Key 配置同步回 exam_factory / exam_graph 的模块级变量。
+
+    exam_factory 和 exam_graph 里的 API_KEY / BASE_URL / *_MODEL 是模块级常量，
+    在进程启动时求值。当管理后台在线写入 Key 后，需要主动把这些变量更新，
+    否则那些直接引用模块级常量的 LLM 调用仍然用空 key，导致 no_question。
+    """
+    import exam_factory
+    import exam_graph as _exam_graph_mod
+
+    api_key = (
+        str(cfg.get("AIT_API_KEY") or cfg.get("OPENAI_API_KEY") or cfg.get("DEEPSEEK_API_KEY") or "").strip()
+    )
+    base_url = (
+        str(cfg.get("AIT_BASE_URL") or cfg.get("OPENAI_BASE_URL") or cfg.get("DEEPSEEK_BASE_URL") or "").strip()
+        or "https://openapi-ait.ke.com/v1"
+    )
+    model_name = (
+        str(cfg.get("AIT_MODEL") or cfg.get("OPENAI_MODEL") or cfg.get("DEEPSEEK_MODEL") or "").strip()
+        or "deepseek-v3.2"
+    )
+    _EMPTY = ("", None)
+
+    def _pick(key: str, fallback: str) -> str:
+        v = str(cfg.get(key) or "").strip()
+        return v if v else fallback
+
+    for mod in (exam_factory, _exam_graph_mod):
+        if api_key:
+            if getattr(mod, "API_KEY", None) in _EMPTY:
+                mod.API_KEY = api_key
+            mod.API_KEY = api_key  # always refresh on override
+        if base_url:
+            mod.BASE_URL = base_url
+        if model_name:
+            if getattr(mod, "MODEL_NAME", None) in _EMPTY:
+                mod.MODEL_NAME = model_name
+            mod.MODEL_NAME = model_name
+
+    # Sync role-specific models
+    for attr, key in (
+        ("WRITER_MODEL", "WRITER_MODEL"),
+        ("ROUTER_MODEL", "ROUTER_MODEL"),
+        ("SPECIALIST_MODEL", "SPECIALIST_MODEL"),
+        ("CALC_MODEL", "CALC_MODEL"),
+        ("CRITIC_API_KEY", "CRITIC_API_KEY"),
+        ("CRITIC_BASE_URL", "CRITIC_BASE_URL"),
+        ("CRITIC_MODEL", "CRITIC_MODEL"),
+        ("CODE_GEN_API_KEY", "CODE_GEN_API_KEY"),
+        ("CODE_GEN_BASE_URL", "CODE_GEN_BASE_URL"),
+        ("CODE_GEN_MODEL", "CODE_GEN_MODEL"),
+        ("ARK_API_KEY", "ARK_API_KEY"),
+    ):
+        v = _pick(key, "")
+        if not v:
+            continue
+        for mod in (exam_factory, _exam_graph_mod):
+            if hasattr(mod, attr):
+                setattr(mod, attr, v)
 
 
 def _resolve_generation_llm_from_primary_key() -> tuple[str, str, str]:
