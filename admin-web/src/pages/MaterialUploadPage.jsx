@@ -177,7 +177,7 @@ export default function MaterialUploadPage() {
         )));
         setSelectedMaterialIdForMap(resolvedVersionId);
       }
-      message.success(`上传并切片成功，共生成 ${res.slice_count || 0} 条`);
+      message.success(res?.accepted ? '上传成功，切片正在后台生成，请稍候…' : `上传并切片成功，共生成 ${res.slice_count || 0} 条`);
       setFileList([]);
       setTextContent('');
       resolvedPendingKeysRef.current = new Set([...resolvedPendingKeysRef.current, pendingUploadKey]);

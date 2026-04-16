@@ -12716,66 +12716,61 @@ def api_upload_material(tenant_id: str):
         "--extract-dir",
         str(slice_image_dir),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parent))
-    if proc.returncode != 0:
-        err_text = f"切片脚本执行失败: {proc.stderr[-500:] if proc.stderr else proc.stdout[-500:]}"
-        upsert_material_runtime(
-            tenant_id,
-            version_id,
-            status="failed",
-            slice_status="failed",
-            slice_error=err_text,
-        )
-        return _error(
-            "SLICE_FAILED",
-            err_text,
-            500,
-        )
+    cwd_str = str(Path(__file__).resolve().parent)
 
-    line_count = 0
-    if slices_output.exists():
-        with slices_output.open("r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    line_count += 1
-    if line_count <= 0:
-        upsert_material_runtime(
-            tenant_id,
-            version_id,
-            status="failed",
-            slice_status="failed",
-            slice_error="切片结果为空，请检查教材内容后重试",
-        )
-        return _error("SLICE_EMPTY", "切片结果为空，请检查教材内容后重试", 400)
-    upsert_material_runtime(
-        tenant_id,
-        version_id,
-        status="ready_for_review",
-        slice_status="success",
-        slice_error="",
-        mapping_status="pending",
-        mapping_error="",
-    )
-    write_audit_log(
-        tenant_id,
-        system_user,
-        "material.upload.slice",
-        "material",
-        version_id,
-        after={
-            "source_file": str(source_path),
-            "docx_file": str(docx_path),
-            "slices_file": str(slices_output),
-            "slice_count": line_count,
-        },
-    )
+    def _run_slice():
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd_str)
+            if proc.returncode != 0:
+                err_text = f"切片脚本执行失败: {proc.stderr[-500:] if proc.stderr else proc.stdout[-500:]}"
+                upsert_material_runtime(
+                    tenant_id, version_id,
+                    status="failed", slice_status="failed", slice_error=err_text,
+                )
+                return
+            line_count = 0
+            if slices_output.exists():
+                with slices_output.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip():
+                            line_count += 1
+            if line_count <= 0:
+                upsert_material_runtime(
+                    tenant_id, version_id,
+                    status="failed", slice_status="failed",
+                    slice_error="切片结果为空，请检查教材内容后重试",
+                )
+                return
+            upsert_material_runtime(
+                tenant_id, version_id,
+                status="ready_for_review", slice_status="success",
+                slice_error="", mapping_status="pending", mapping_error="",
+            )
+            write_audit_log(
+                tenant_id, system_user, "material.upload.slice", "material", version_id,
+                after={
+                    "source_file": str(source_path),
+                    "docx_file": str(docx_path),
+                    "slices_file": str(slices_output),
+                    "slice_count": line_count,
+                },
+            )
+        except Exception as exc:
+            upsert_material_runtime(
+                tenant_id, version_id,
+                status="failed", slice_status="failed",
+                slice_error=f"切片异常: {exc}",
+            )
+
+    threading.Thread(target=_run_slice, daemon=True).start()
     return _json_response(
         {
             "material_version_id": version_id,
             "source_file": str(source_path),
-            "slices_file": str(slices_output),
-            "slice_count": line_count,
-        }
+            "accepted": True,
+            "slice_count": 0,
+        },
+        201,
     )
 
 

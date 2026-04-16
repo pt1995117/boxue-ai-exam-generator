@@ -33,10 +33,6 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8600',
         changeOrigin: true,
-        // Long-running requests (material upload+slice, question generation) can
-        // take many minutes; raise the proxy timeout to 2 hours to avoid 504s.
-        timeout: 7200000,
-        proxyTimeout: 7200000,
       },
     },
   },
