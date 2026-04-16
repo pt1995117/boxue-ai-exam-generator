@@ -40,6 +40,17 @@ This repository has a hard requirement: coding work must not leave runtime artif
 
 8. If worktree hygiene fails, fix the artifact routing or local ignore strategy before ending the task.
 
+9. Git submission must follow this exact config by default:
+   - remote (push target): `git@git.lianjia.com:confucius/huaqiao_vibe/boxue-ai-exam-generator.git`
+   - `git config user.email`: `panting047@ke.com`
+   - `git config user.name`: `panting047`
+   - commit message: `[紧急]fix` (or same prefix with extra detail)
+   - use SSH for push operations; do not switch to HTTPS unless explicitly requested
+
+10. Keep BGE mapping dependency intact:
+   - do not ignore or drop `models/bge-small-zh-v1.5/` from git when mapping requires BGE
+   - before finishing mapping-related changes, verify BGE model files are still tracked
+
 ## Notes
 
 - `.githooks/pre-commit` blocks runtime/cache artifacts from entering commits.
