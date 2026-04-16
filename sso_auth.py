@@ -258,10 +258,12 @@ class SSOManager:
         safe = _safe_return_to(return_to)
         return urljoin(self.frontend_base_url + "/", safe.lstrip("/"))
 
-    def service_url(self, return_to: str) -> str:
-        rt = _safe_return_to(return_to)
-        query = urlencode({"rt": rt})
-        return f"{self.service_base_url}{self.callback_path}?{query}"
+    def service_url(self, return_to: str = "/") -> str:
+        # Do NOT include return_to in the service URL — CAS may normalize/decode
+        # percent-encoded characters (e.g. %2F → /) before echoing the URL back,
+        # causing a mismatch between the service registered at login and the one
+        # sent to serviceValidate. Pass return_to via a short-lived cookie instead.
+        return f"{self.service_base_url}{self.callback_path}"
 
     def login_redirect_url(self, return_to: str, level: str = "") -> str:
         params = {"service": self.service_url(return_to)}

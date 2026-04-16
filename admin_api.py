@@ -10345,7 +10345,13 @@ def api_auth_login():
         return _error("SSO_DISABLED", "单点登录未开启", 404)
     return_to = str(request.args.get("return_to", "/") or "/")
     level = str(request.args.get("level", "") or "")
-    return redirect(SSO_MANAGER.login_redirect_url(return_to=return_to, level=level), code=302)
+    resp = redirect(SSO_MANAGER.login_redirect_url(return_to=return_to, level=level), code=302)
+    # Store return_to in a short-lived cookie so the callback can redirect the
+    # user back to the right page without encoding it in the CAS service URL.
+    resp.set_cookie("sso_return_to", _safe_return_to(return_to),
+                    max_age=300, httponly=True,
+                    secure=SSO_MANAGER.cookie_secure, samesite="Lax", path="/")
+    return resp
 
 
 @app.get('/api/auth/callback')
@@ -10353,10 +10359,14 @@ def api_auth_callback():
     if not SSO_MANAGER.enabled:
         return _error("SSO_DISABLED", "单点登录未开启", 404)
     ticket = str(request.args.get("ticket", "")).strip()
-    return_to = str(request.args.get("rt", "/") or "/")
+    # Read return_to from the cookie set at login; fall back to rt query param
+    # for backwards-compatibility, then default to "/".
+    return_to = (request.cookies.get("sso_return_to")
+                 or str(request.args.get("rt", "/") or "/"))
+    return_to = _safe_return_to(return_to)
     if not ticket:
         return _error("TICKET_REQUIRED", "缺少 ticket 参数", 400)
-    service = SSO_MANAGER.service_url(return_to=return_to)
+    service = SSO_MANAGER.service_url()
     try:
         cas_result = SSO_MANAGER.validate_ticket(ticket=ticket, service=service)
     except SSOError as e:
