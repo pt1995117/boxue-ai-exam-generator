@@ -67,7 +67,7 @@ from exam_graph import (
     summarize_llm_trace,
 )
 from reference_loader import load_reference_questions
-from sso_auth import SSOError, SSOManager
+from sso_auth import SSOError, SSOManager, _safe_return_to
 
 app = Flask(__name__)
 init_observability("exam-admin-api")
