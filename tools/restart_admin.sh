@@ -70,6 +70,14 @@ kill_port() {
 start_backend() {
   cd "${ROOT_DIR}"
   BOXUE_RUNTIME_DIR="${RUNTIME_DIR}" BOXUE_CACHE_DIR="${CACHE_DIR}" BOXUE_KEY_FILE="${KEY_FILE}" \
+    SSO_ENABLED="${SSO_ENABLED:-false}" \
+    SSO_LOGIN_URL="${SSO_LOGIN_URL:-https://login.ke.com/login}" \
+    SSO_LOGOUT_URL="${SSO_LOGOUT_URL:-https://login.ke.com/logout}" \
+    SSO_VALIDATE_URL="${SSO_VALIDATE_URL:-http://i.login.lianjia.com/serviceValidate}" \
+    SSO_SERVICE_BASE_URL="${SSO_SERVICE_BASE_URL:-http://127.0.0.1:8600}" \
+    SSO_FRONTEND_BASE_URL="${SSO_FRONTEND_BASE_URL:-http://127.0.0.1:8522}" \
+    SSO_COOKIE_SECURE="${SSO_COOKIE_SECURE:-false}" \
+    SSO_SESSION_TTL_SEC="${SSO_SESSION_TTL_SEC:-28800}" \
     nohup "${PYTHON_BIN}" admin_api.py >"${BACKEND_LOG}" 2>&1 &
   echo $! >"${BACKEND_PID_FILE}"
 }
