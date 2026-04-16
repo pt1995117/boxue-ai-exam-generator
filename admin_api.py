@@ -9334,8 +9334,8 @@ def _get_offline_judge_llm() -> tuple[Any | None, str | None]:
     if cfg:
         for k in ait_keys:
             v = str(cfg.get(k, "")).strip()
-            if _is_usable_secret(v) and not os.environ.get(k):
-                os.environ[k] = v
+            if _is_usable_secret(v):
+                os.environ[k] = v  # always override so online key updates take effect
     try:
         judge_model = os.getenv("AIT_JUDGE_MODEL") or os.getenv("JUDGE_MODEL", "gpt-5.2")
         llm = build_llm(
