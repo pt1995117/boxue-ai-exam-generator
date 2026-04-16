@@ -39,9 +39,13 @@ client.interceptors.request.use((config) => {
   const user = getSystemUser();
   const token = getAuthToken();
   config.headers = config.headers || {};
-  config.headers['X-System-User'] = user;
   if (token) {
+    // SSO mode: use Bearer token only; do NOT also send X-System-User or the
+    // backend SSO guard will reject the request with SSO_LEGACY_BYPASS_DENIED.
     config.headers.Authorization = `Bearer ${token}`;
+  } else {
+    // Non-SSO mode: authenticate via the legacy X-System-User header.
+    config.headers['X-System-User'] = user;
   }
   return config;
 });

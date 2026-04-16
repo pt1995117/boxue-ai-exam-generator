@@ -29,6 +29,9 @@ export default function MaterialUploadPage() {
   const [resliceLoadingId, setResliceLoadingId] = useState('');
   const [remapLoadingId, setRemapLoadingId] = useState('');
   const submitInFlightRef = useRef(false);
+  // Tracks upload keys that have been confirmed by the server. Persisted across
+  // re-renders so polling timer calls to loadMaterials also drop stale pending cards.
+  const resolvedPendingKeysRef = useRef(new Set());
   const pickDefaultMaterialId = (items) => {
     const list = Array.isArray(items) ? items : [];
     const effective = list.find((x) => String(x?.status || '') === 'effective');
@@ -118,7 +121,7 @@ export default function MaterialUploadPage() {
     const hasRunning = materials.some((x) => x?.slice_status === 'running' || x?.mapping_status === 'running' || x?.status === 'slicing');
     if (!hasRunning) return undefined;
     const timer = setInterval(() => {
-      loadMaterials(tenantId);
+      loadMaterials(tenantId, resolvedPendingKeysRef.current);
     }, 3000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -177,7 +180,8 @@ export default function MaterialUploadPage() {
       message.success(`上传并切片成功，共生成 ${res.slice_count || 0} 条`);
       setFileList([]);
       setTextContent('');
-      await loadMaterials(tenantId, new Set([pendingUploadKey]));
+      resolvedPendingKeysRef.current = new Set([...resolvedPendingKeysRef.current, pendingUploadKey]);
+      await loadMaterials(tenantId, resolvedPendingKeysRef.current);
     } catch (e) {
       setMaterials((prev) => prev.filter((item) => item?._pendingUploadKey !== pendingUploadKey));
       message.error(getApiErrorMessage(e, '上传切片失败'));
