@@ -1,0 +1,18 @@
+{
+  "users": [
+    {
+      "ucid": "1000001000000003",
+      "tenant_id": "hz",
+      "accounts": [
+        {
+          "system_user": "teacher_hz",
+          "is_default": true
+        },
+        {
+          "system_user": "viewer_hz",
+          "is_default": false
+        }
+      ]
+    }
+  ]
+}

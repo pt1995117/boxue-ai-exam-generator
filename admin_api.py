@@ -21,10 +21,10 @@ from copy import deepcopy
 from urllib.parse import quote, urlsplit, urlunsplit
 
 import pandas as pd
-from flask import Flask, Response, g, jsonify, request, send_file, stream_with_context
+from flask import Flask, Response, g, jsonify, redirect, request, send_file, stream_with_context
 from werkzeug.exceptions import HTTPException
 
-from authn import AccessDenied, Principal, resolve_principal
+from authn import AccessDenied, Principal, resolve_legacy_principal, resolve_principal
 from audit_log import write_audit_log
 from governance import circuit_breaker, rate_limiter, select_release_channel
 from mapping_review_store import load_mapping_review
@@ -67,9 +67,11 @@ from exam_graph import (
     summarize_llm_trace,
 )
 from reference_loader import load_reference_questions
+from sso_auth import SSOError, SSOManager
 
 app = Flask(__name__)
 init_observability("exam-admin-api")
+SSO_MANAGER = SSOManager()
 
 BACKEND_HOST = "127.0.0.1"
 BACKEND_PORT = 8600
@@ -1145,13 +1147,68 @@ def _error(code: str, message: str, status: int = 400):
     return _json_response({"error": {"code": code, "message": message}}, status=status)
 
 
+def _get_sso_sid_from_cookie() -> str:
+    if not SSO_MANAGER.enabled:
+        return ""
+    return str(request.cookies.get(SSO_MANAGER.cookie_name, "")).strip()
+
+
+def _get_sso_session() -> dict[str, Any] | None:
+    sid = _get_sso_sid_from_cookie()
+    if not sid:
+        return None
+    return SSO_MANAGER.get_session(sid)
+
+
+def _resolve_principal_from_sso_session() -> Principal:
+    session = _get_sso_session()
+    if not session:
+        raise AccessDenied("SSO_SESSION_REQUIRED")
+    system_user = str(session.get("system_user", "")).strip()
+    if not system_user:
+        raise AccessDenied("SSO_SYSTEM_USER_MISSING")
+    principal = resolve_legacy_principal(system_user)
+    if str(session.get("tenant_id", "")).strip() and str(session.get("tenant_id", "")).strip() not in principal.tenants:
+        raise AccessDenied("TENANT_FORBIDDEN")
+    g.sso_session = session
+    return principal
+
+
+def _sso_public_session(session: dict[str, Any] | None) -> dict[str, Any]:
+    if not session:
+        return {"logged_in": False}
+    return {
+        "logged_in": True,
+        "ucid": str(session.get("ucid", "")).strip(),
+        "tenant_id": str(session.get("tenant_id", "")).strip(),
+        "system_user": str(session.get("system_user", "")).strip(),
+        "accounts": [
+            {
+                "system_user": str(item.get("system_user", "")).strip(),
+                "is_default": bool(item.get("is_default", False)),
+            }
+            for item in (session.get("accounts") or [])
+            if isinstance(item, dict) and str(item.get("system_user", "")).strip()
+        ],
+        "expires_at": float(session.get("expires_at", 0) or 0),
+    }
+
+
 def _get_principal() -> Principal:
     principal = getattr(g, "principal", None)
     if principal is None:
-        principal = resolve_principal(
-            authorization_header=(request.headers.get("Authorization") or ""),
-            system_user_header=(request.headers.get("X-System-User") or ""),
-        )
+        auth_header = (request.headers.get("Authorization") or "")
+        system_user_header = (request.headers.get("X-System-User") or "")
+        try:
+            principal = resolve_principal(
+                authorization_header=auth_header,
+                system_user_header=system_user_header,
+            )
+        except AccessDenied:
+            if SSO_MANAGER.enabled and not auth_header.strip() and not system_user_header.strip():
+                principal = _resolve_principal_from_sso_session()
+            else:
+                raise
         g.principal = principal
     return principal
 
@@ -10106,16 +10163,26 @@ def _handle_options():
     path = request.path or ""
     if not path.startswith("/api/"):
         return None
+    if path.startswith("/api/auth/"):
+        return None
     # Allow unauthenticated GET for slice images so前端 Markdown 图片渲染不会因缺少头失败
     if request.method == "GET" and re.match(r"^/api/[^/]+/slices/image$", path):
         return None
+    auth_header = (request.headers.get("Authorization") or "")
+    system_user_header = (request.headers.get("X-System-User") or "")
     try:
         principal = resolve_principal(
-            authorization_header=(request.headers.get("Authorization") or ""),
-            system_user_header=(request.headers.get("X-System-User") or ""),
+            authorization_header=auth_header,
+            system_user_header=system_user_header,
         )
     except AccessDenied as e:
-        return _error(str(e), "认证失败，请检查系统号或 OIDC Token", 401)
+        if SSO_MANAGER.enabled and not auth_header.strip() and not system_user_header.strip():
+            try:
+                principal = _resolve_principal_from_sso_session()
+            except AccessDenied as sso_err:
+                return _error(str(sso_err), "认证失败，请先完成单点登录", 401)
+        else:
+            return _error(str(e), "认证失败，请检查系统号或 OIDC Token", 401)
     g.principal = principal
     try:
         request_tick = int(os.times().elapsed * 1000)
@@ -10175,12 +10242,119 @@ def api_meta():
             "release_channel": getattr(g, "release_channel", "stable"),
             "features": {
                 "oidc": os.getenv("AUTH_MODE", "legacy").strip().lower() == "oidc",
+                "sso": SSO_MANAGER.enabled,
                 "rate_limit_rpm": int(os.getenv("ADMIN_API_RATE_LIMIT_RPM", "240")),
                 "circuit_breaker": True,
                 "otel_enabled": bool(os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()),
             },
         }
     )
+
+
+@app.get('/api/auth/meta')
+def api_auth_meta():
+    return_to = str(request.args.get("return_to", "/") or "/")
+    if not SSO_MANAGER.enabled:
+        return _json_response({"enabled": False, "logged_in": False})
+    session = _get_sso_session()
+    payload = _sso_public_session(session)
+    payload.update(
+        {
+            "enabled": True,
+            "login_url": SSO_MANAGER.login_redirect_url(return_to=return_to),
+            "logout_url": SSO_MANAGER.logout_redirect_url(return_to=return_to),
+        }
+    )
+    return _json_response(payload)
+
+
+@app.get('/api/auth/login')
+def api_auth_login():
+    if not SSO_MANAGER.enabled:
+        return _error("SSO_DISABLED", "单点登录未开启", 404)
+    return_to = str(request.args.get("return_to", "/") or "/")
+    level = str(request.args.get("level", "") or "")
+    return redirect(SSO_MANAGER.login_redirect_url(return_to=return_to, level=level), code=302)
+
+
+@app.get('/api/auth/callback')
+def api_auth_callback():
+    if not SSO_MANAGER.enabled:
+        return _error("SSO_DISABLED", "单点登录未开启", 404)
+    ticket = str(request.args.get("ticket", "")).strip()
+    return_to = str(request.args.get("rt", "/") or "/")
+    if not ticket:
+        return _error("TICKET_REQUIRED", "缺少 ticket 参数", 400)
+    service = SSO_MANAGER.service_url(return_to=return_to)
+    try:
+        cas_result = SSO_MANAGER.validate_ticket(ticket=ticket, service=service)
+    except SSOError as e:
+        return _error("CAS_VALIDATE_FAILED", str(e), 401)
+    ucid = str(cas_result.get("ucid", "")).strip()
+    binding = SSO_MANAGER.resolve_binding(ucid)
+    if not binding:
+        return _error("UCID_NOT_BOUND", "当前账号未绑定系统号，请联系管理员", 403)
+    try:
+        session = SSO_MANAGER.create_session(
+            ucid=ucid,
+            tenant_id=str(binding.get("tenant_id", "")).strip().lower(),
+            accounts=list(binding.get("accounts") or []),
+            st=ticket,
+            business_token=str(cas_result.get("business_token", "")).strip(),
+        )
+    except SSOError as e:
+        return _error("SSO_SESSION_CREATE_FAILED", str(e), 500)
+    resp = redirect(SSO_MANAGER.frontend_redirect_url(return_to=return_to), code=302)
+    resp.set_cookie(
+        SSO_MANAGER.cookie_name,
+        session.sid,
+        max_age=SSO_MANAGER.session_ttl_sec,
+        httponly=True,
+        secure=SSO_MANAGER.cookie_secure,
+        samesite="Lax",
+        path="/",
+    )
+    return resp
+
+
+@app.post('/api/auth/switch-system-user')
+def api_auth_switch_system_user():
+    if not SSO_MANAGER.enabled:
+        return _error("SSO_DISABLED", "单点登录未开启", 404)
+    sid = _get_sso_sid_from_cookie()
+    if not sid:
+        return _error("SSO_SESSION_REQUIRED", "请先登录", 401)
+    body = request.get_json(silent=True) or {}
+    target_system_user = str(body.get("system_user", "")).strip()
+    if not target_system_user:
+        return _error("SYSTEM_USER_REQUIRED", "system_user 不能为空", 400)
+    try:
+        session = SSO_MANAGER.switch_system_user(sid=sid, system_user=target_system_user)
+    except SSOError as e:
+        return _error(str(e), "切换系统号失败", 400)
+    return _json_response({"ok": True, "session": _sso_public_session(session)})
+
+
+@app.route('/api/auth/logout', methods=['GET', 'POST'])
+def api_auth_logout():
+    if not SSO_MANAGER.enabled:
+        return _json_response({"ok": True})
+    return_to = "/"
+    if request.method == "GET":
+        return_to = str(request.args.get("return_to", "/") or "/")
+    else:
+        body = request.get_json(silent=True) or {}
+        return_to = str(body.get("return_to", "/") or "/")
+    sid = _get_sso_sid_from_cookie()
+    if sid:
+        SSO_MANAGER.clear_session(sid)
+    logout_url = SSO_MANAGER.logout_redirect_url(return_to=return_to)
+    if request.method == "GET":
+        resp = redirect(logout_url, code=302)
+    else:
+        resp = _json_response({"ok": True, "logout_url": logout_url})
+    resp.delete_cookie(SSO_MANAGER.cookie_name, path="/")
+    return resp
 
 
 @app.get('/api/admin/key-config')

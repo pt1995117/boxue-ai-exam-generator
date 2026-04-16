@@ -205,6 +205,10 @@ def resolve_principal(authorization_header: str, system_user_header: str) -> Pri
     return _principal_from_legacy_header(system_user_header or "")
 
 
+def resolve_legacy_principal(system_user_header: str) -> Principal:
+    return _principal_from_legacy_header(system_user_header or "")
+
+
 def compute_canary_bucket(system_user: str, salt: str = "") -> int:
     digest = hashlib.sha256(f"{salt}:{system_user}".encode("utf-8")).hexdigest()
     return int(digest[:8], 16) % 100

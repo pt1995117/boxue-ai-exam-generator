@@ -20,6 +20,21 @@ export const setAuthToken = (token) => {
   }
 };
 
+export const getAuthMeta = (params = {}) =>
+  client.get('/auth/meta', { params }).then((r) => r.data);
+
+export const startSsoLogin = (returnTo = '/') => {
+  const params = new URLSearchParams();
+  params.set('return_to', returnTo || '/');
+  window.location.assign(`/api/auth/login?${params.toString()}`);
+};
+
+export const switchSsoSystemUser = (systemUser) =>
+  client.post('/auth/switch-system-user', { system_user: systemUser }).then((r) => r.data);
+
+export const logoutSso = (returnTo = '/') =>
+  client.post('/auth/logout', { return_to: returnTo || '/' }).then((r) => r.data);
+
 client.interceptors.request.use((config) => {
   const user = getSystemUser();
   const token = getAuthToken();
