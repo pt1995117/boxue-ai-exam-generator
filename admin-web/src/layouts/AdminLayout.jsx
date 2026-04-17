@@ -9,6 +9,7 @@ import {
   listTenants,
   logoutSso,
   setAuthToken,
+  setSsoEnabled as persistSsoEnabled,
   setSystemUser,
   startSsoLogin,
   switchSsoSystemUser,
@@ -46,6 +47,7 @@ export default function AdminLayout() {
   const [authBooting, setAuthBooting] = useState(true);
   const [ssoEnabled, setSsoEnabled] = useState(false);
   const [ssoAccounts, setSsoAccounts] = useState([]);
+  const [ssoUcid, setSsoUcid] = useState('');
   const routeNameMap = {
     '/': '工作台',
     '/materials': '资源上传',
@@ -74,6 +76,7 @@ export default function AdminLayout() {
         const authMeta = await getAuthMeta({ return_to: returnTo });
         if (!active) return;
         const enabled = Boolean(authMeta?.enabled);
+        persistSsoEnabled(enabled);
         setSsoEnabled(enabled);
         if (enabled) {
           if (!authMeta?.logged_in) {
@@ -82,6 +85,7 @@ export default function AdminLayout() {
           }
           const currentSystemUser = String(authMeta?.system_user || '').trim();
           setSsoAccounts(Array.isArray(authMeta?.accounts) ? authMeta.accounts : []);
+          setSsoUcid(String(authMeta?.ucid || '').trim());
           setGlobalSystemUser(currentSystemUser);
           setSystemUser(currentSystemUser);
           setAuthToken('');
@@ -172,6 +176,7 @@ export default function AdminLayout() {
               <Typography.Text type="secondary">用户</Typography.Text>
               {ssoEnabled ? (
                 <>
+                  {ssoUcid && <Typography.Text type="secondary">UCID: <Typography.Text strong>{ssoUcid}</Typography.Text></Typography.Text>}
                   <Select
                     value={globalSystemUser || undefined}
                     style={{ width: 200 }}

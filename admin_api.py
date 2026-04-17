@@ -10372,14 +10372,13 @@ def api_auth_callback():
     except SSOError as e:
         return _error("CAS_VALIDATE_FAILED", str(e), 401)
     ucid = str(cas_result.get("ucid", "")).strip()
-    binding = SSO_MANAGER.resolve_binding(ucid)
-    if not binding:
-        return _error("UCID_NOT_BOUND", "当前账号未绑定系统号，请联系管理员", 403)
+    if not ucid:
+        return _error("UCID_MISSING", "SSO 未返回 UCID", 401)
     try:
         session = SSO_MANAGER.create_session(
             ucid=ucid,
-            tenant_id=str(binding.get("tenant_id", "")).strip().lower(),
-            accounts=list(binding.get("accounts") or []),
+            tenant_id="",
+            accounts=[{"system_user": ucid, "is_default": True}],
             st=ticket,
             business_token=str(cas_result.get("business_token", "")).strip(),
         )

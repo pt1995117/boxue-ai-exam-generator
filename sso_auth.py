@@ -6,13 +6,10 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 from urllib.error import URLError
-
-from runtime_paths import REPO_ROOT, runtime_config_root
 
 CAS_NS = "{http://www.yale.edu/tp/cas}"
 
@@ -127,63 +124,6 @@ class SSOManager:
     def _get_store(self):
         from db_store import get_store
         return get_store()
-
-    def _binding_path(self) -> Path:
-        runtime_file = runtime_config_root() / "sso_user_bindings.json"
-        repo_file = REPO_ROOT / "sso_user_bindings.json"
-        if runtime_file.exists():
-            return runtime_file
-        return repo_file
-
-    def _load_bindings(self) -> dict[str, dict[str, Any]]:
-        path = self._binding_path()
-        if not path.exists():
-            return {}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        items = payload.get("users") if isinstance(payload, dict) else []
-        if not isinstance(items, list):
-            return {}
-        out: dict[str, dict[str, Any]] = {}
-        for raw in items:
-            if not isinstance(raw, dict):
-                continue
-            ucid = str(raw.get("ucid", "")).strip()
-            tenant_id = str(raw.get("tenant_id", "")).strip().lower()
-            if not ucid or not tenant_id:
-                continue
-            accounts_raw = raw.get("accounts")
-            accounts: list[dict[str, Any]] = []
-            if isinstance(accounts_raw, list):
-                for account in accounts_raw:
-                    if not isinstance(account, dict):
-                        continue
-                    system_user = str(account.get("system_user", "")).strip()
-                    if not system_user:
-                        continue
-                    accounts.append(
-                        {
-                            "system_user": system_user,
-                            "is_default": bool(account.get("is_default", False)),
-                        }
-                    )
-            if not accounts:
-                system_user = str(raw.get("system_user", "")).strip()
-                if system_user:
-                    accounts.append({"system_user": system_user, "is_default": True})
-            if not accounts:
-                continue
-            out[ucid] = {
-                "ucid": ucid,
-                "tenant_id": tenant_id,
-                "accounts": accounts,
-            }
-        return out
-
-    def resolve_binding(self, ucid: str) -> Optional[dict[str, Any]]:
-        return self._load_bindings().get(str(ucid).strip())
 
     def _pick_default_system_user(self, accounts: list[dict[str, Any]]) -> str:
         if not accounts:

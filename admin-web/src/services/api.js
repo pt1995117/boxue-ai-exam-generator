@@ -7,6 +7,7 @@ const client = axios.create({
 
 const SYSTEM_USER_KEY = 'system_user';
 const AUTH_TOKEN_KEY = 'auth_token';
+const SSO_ENABLED_KEY = 'sso_enabled';
 const LONG_TASK_TIMEOUT_MS = 90 * 60 * 1000;
 
 export const getSystemUser = () => localStorage.getItem(SYSTEM_USER_KEY) || 'admin';
@@ -17,6 +18,14 @@ export const setAuthToken = (token) => {
     localStorage.setItem(AUTH_TOKEN_KEY, token);
   } else {
     localStorage.removeItem(AUTH_TOKEN_KEY);
+  }
+};
+export const getSsoEnabled = () => localStorage.getItem(SSO_ENABLED_KEY) === 'true';
+export const setSsoEnabled = (enabled) => {
+  if (enabled) {
+    localStorage.setItem(SSO_ENABLED_KEY, 'true');
+  } else {
+    localStorage.removeItem(SSO_ENABLED_KEY);
   }
 };
 
@@ -36,16 +45,14 @@ export const logoutSso = (returnTo = '/') =>
   client.post('/auth/logout', { return_to: returnTo || '/' }).then((r) => r.data);
 
 client.interceptors.request.use((config) => {
-  const user = getSystemUser();
   const token = getAuthToken();
   config.headers = config.headers || {};
   if (token) {
-    // SSO mode: use Bearer token only; do NOT also send X-System-User or the
-    // backend SSO guard will reject the request with SSO_LEGACY_BYPASS_DENIED.
     config.headers.Authorization = `Bearer ${token}`;
-  } else {
-    // Non-SSO mode: authenticate via the legacy X-System-User header.
-    config.headers['X-System-User'] = user;
+  } else if (!getSsoEnabled()) {
+    // Non-SSO mode only: authenticate via legacy X-System-User header.
+    // In SSO mode the browser sends the session cookie automatically.
+    config.headers['X-System-User'] = getSystemUser();
   }
   return config;
 });
